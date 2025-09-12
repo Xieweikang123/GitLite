@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { useGit } from './hooks/useGit'
 import { TopToolbar } from './components/TopToolbar'
-import { RepositorySelector } from './components/RepositorySelector'
+import { WorkspaceStatus } from './components/WorkspaceStatus'
 import { CommitList } from './components/CommitList'
 import { DiffViewer } from './components/DiffViewer'
 import { FileList } from './components/FileList'
@@ -84,6 +84,18 @@ function App() {
     }
   }
 
+  const handleRefresh = async () => {
+    if (!repoInfo) return
+    
+    try {
+      // 重新获取仓库信息以更新提交列表
+      await openRepositoryByPath(repoInfo.path)
+      // 仓库信息会通过 useEffect 自动更新
+    } catch (error) {
+      console.error('Failed to refresh repository:', error)
+    }
+  }
+
   // 当仓库信息更新时，重置提交列表
   React.useEffect(() => {
     if (repoInfo) {
@@ -116,12 +128,12 @@ function App() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-[200px_1fr_1fr] gap-6">
-          {/* 左侧：分支列表 */}
+        <div className="grid grid-cols-1 lg:grid-cols-[200px_400px_1fr] gap-6">
+          {/* 左侧：工作区状态 */}
           <div>
-            <RepositorySelector
-              loading={loading}
+            <WorkspaceStatus
               repoInfo={repoInfo}
+              onRefresh={handleRefresh}
             />
           </div>
 

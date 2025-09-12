@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { open } from '@tauri-apps/api/dialog'
-import { RepoInfo, CommitInfo, FileChange, RecentRepo } from '../types/git'
+import { RepoInfo, CommitInfo, FileChange, RecentRepo, WorkspaceStatus } from '../types/git'
 
 export function useGit() {
   const [repoInfo, setRepoInfo] = useState<RepoInfo | null>(null)
@@ -155,6 +155,70 @@ export function useGit() {
     }
   }, [repoInfo])
 
+  const getWorkspaceStatus = useCallback(async (): Promise<WorkspaceStatus> => {
+    if (!repoInfo) throw new Error('No repository open')
+    
+    try {
+      const status: WorkspaceStatus = await invoke('get_workspace_status', {
+        repoPath: repoInfo.path,
+      })
+      return status
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : '获取工作区状态失败')
+    }
+  }, [repoInfo])
+
+  const stageFile = useCallback(async (filePath: string) => {
+    if (!repoInfo) throw new Error('No repository open')
+    
+    try {
+      await invoke('stage_file', {
+        repoPath: repoInfo.path,
+        filePath,
+      })
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : '暂存文件失败')
+    }
+  }, [repoInfo])
+
+  const unstageFile = useCallback(async (filePath: string) => {
+    if (!repoInfo) throw new Error('No repository open')
+    
+    try {
+      await invoke('unstage_file', {
+        repoPath: repoInfo.path,
+        filePath,
+      })
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : '取消暂存文件失败')
+    }
+  }, [repoInfo])
+
+  const commitChanges = useCallback(async (message: string) => {
+    if (!repoInfo) throw new Error('No repository open')
+    
+    try {
+      await invoke('commit_changes', {
+        repoPath: repoInfo.path,
+        message,
+      })
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : '提交失败')
+    }
+  }, [repoInfo])
+
+  const pushChanges = useCallback(async () => {
+    if (!repoInfo) throw new Error('No repository open')
+    
+    try {
+      await invoke('push_changes', {
+        repoPath: repoInfo.path,
+      })
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : '推送失败')
+    }
+  }, [repoInfo])
+
   return {
     repoInfo,
     loading,
@@ -169,5 +233,10 @@ export function useGit() {
     getCommitFiles,
     getSingleFileDiff,
     getCommitsPaginated,
+    getWorkspaceStatus,
+    stageFile,
+    unstageFile,
+    commitChanges,
+    pushChanges,
   }
 }

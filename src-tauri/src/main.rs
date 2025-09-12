@@ -2,7 +2,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use git2::{Repository, Oid};
-use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::fs;
@@ -31,6 +30,13 @@ pub struct FileChange {
     pub status: String, // "added", "modified", "deleted", "renamed"
     pub additions: i32,
     pub deletions: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WorkspaceStatus {
+    pub staged_files: Vec<FileChange>,
+    pub unstaged_files: Vec<FileChange>,
+    pub untracked_files: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -436,6 +442,189 @@ async fn get_file_diff(repo_path: String, commit_id: String) -> Result<String, S
     Ok(diff_text)
 }
 
+// 获取工作区状态
+#[tauri::command]
+async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, String> {
+    let repo = Repository::open(&repo_path)
+        .map_err(|e| format!("Failed to open repository: {}", e))?;
+    
+    let mut staged_files = Vec::new();
+    let mut unstaged_files = Vec::new();
+    let mut untracked_files = Vec::new();
+    
+    // 获取暂存区的文件
+    let head = repo.head().ok();
+    let head_tree = head.as_ref().and_then(|h| h.peel_to_tree().ok());
+    let mut index = repo.index().map_err(|e| format!("Failed to get index: {}", e))?;
+    let index_tree = repo.find_tree(index.write_tree().map_err(|e| format!("Failed to write tree: {}", e))?)
+        .map_err(|e| format!("Failed to find tree: {}", e))?;
+    
+    let staged_diff = repo.diff_tree_to_tree(head_tree.as_ref(), Some(&index_tree), None)
+        .map_err(|e| format!("Failed to create staged diff: {}", e))?;
+    
+    staged_diff.foreach(
+        &mut |delta, _progress| {
+            let file_path = delta.new_file().path()
+                .or_else(|| delta.old_file().path())
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            
+            let status = match delta.status() {
+                git2::Delta::Added => "added",
+                git2::Delta::Modified => "modified",
+                git2::Delta::Deleted => "deleted",
+                git2::Delta::Renamed => "renamed",
+                _ => "unknown",
+            };
+            
+            staged_files.push(FileChange {
+                path: file_path,
+                status: status.to_string(),
+                additions: 1,
+                deletions: 0,
+            });
+            
+            true
+        },
+        None,
+        None,
+        None,
+    ).map_err(|e| format!("Failed to iterate staged diff: {}", e))?;
+    
+    // 获取工作区的文件
+    let workdir_diff = repo.diff_index_to_workdir(None, None)
+        .map_err(|e| format!("Failed to create workdir diff: {}", e))?;
+    
+    workdir_diff.foreach(
+        &mut |delta, _progress| {
+            let file_path = delta.new_file().path()
+                .or_else(|| delta.old_file().path())
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            
+            let status = match delta.status() {
+                git2::Delta::Added => "added",
+                git2::Delta::Modified => "modified",
+                git2::Delta::Deleted => "deleted",
+                git2::Delta::Renamed => "renamed",
+                git2::Delta::Untracked => {
+                    untracked_files.push(file_path);
+                    return true;
+                },
+                _ => "unknown",
+            };
+            
+            unstaged_files.push(FileChange {
+                path: file_path,
+                status: status.to_string(),
+                additions: 1,
+                deletions: 0,
+            });
+            
+            true
+        },
+        None,
+        None,
+        None,
+    ).map_err(|e| format!("Failed to iterate workdir diff: {}", e))?;
+    
+    Ok(WorkspaceStatus {
+        staged_files,
+        unstaged_files,
+        untracked_files,
+    })
+}
+
+// 暂存文件
+#[tauri::command]
+async fn stage_file(repo_path: String, file_path: String) -> Result<String, String> {
+    let repo = Repository::open(&repo_path)
+        .map_err(|e| format!("Failed to open repository: {}", e))?;
+    
+    let mut index = repo.index().map_err(|e| format!("Failed to get index: {}", e))?;
+    
+    index.add_path(Path::new(&file_path))
+        .map_err(|e| format!("Failed to add file to index: {}", e))?;
+    
+    index.write().map_err(|e| format!("Failed to write index: {}", e))?;
+    
+    Ok(format!("Successfully staged {}", file_path))
+}
+
+// 取消暂存文件
+#[tauri::command]
+async fn unstage_file(repo_path: String, file_path: String) -> Result<String, String> {
+    let repo = Repository::open(&repo_path)
+        .map_err(|e| format!("Failed to open repository: {}", e))?;
+    
+    let mut index = repo.index().map_err(|e| format!("Failed to get index: {}", e))?;
+    
+    index.remove_path(Path::new(&file_path))
+        .map_err(|e| format!("Failed to remove file from index: {}", e))?;
+    
+    index.write().map_err(|e| format!("Failed to write index: {}", e))?;
+    
+    Ok(format!("Successfully unstaged {}", file_path))
+}
+
+// 提交更改
+#[tauri::command]
+async fn commit_changes(repo_path: String, message: String) -> Result<String, String> {
+    let repo = Repository::open(&repo_path)
+        .map_err(|e| format!("Failed to open repository: {}", e))?;
+    
+    let mut index = repo.index().map_err(|e| format!("Failed to get index: {}", e))?;
+    
+    // 检查是否有暂存的文件
+    if index.len() == 0 {
+        return Err("No files staged for commit".to_string());
+    }
+    
+    let tree_id = index.write_tree().map_err(|e| format!("Failed to write tree: {}", e))?;
+    let tree = repo.find_tree(tree_id).map_err(|e| format!("Failed to find tree: {}", e))?;
+    
+    let head = repo.head().ok();
+    let parent_commit = if let Some(head) = head {
+        head.peel_to_commit().ok()
+    } else {
+        None
+    };
+    
+    let signature = git2::Signature::now("GitLite User", "gitlite@example.com")
+        .map_err(|e| format!("Failed to create signature: {}", e))?;
+    
+    let commit_id = repo.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        &message,
+        &tree,
+        &parent_commit.iter().collect::<Vec<_>>(),
+    ).map_err(|e| format!("Failed to commit: {}", e))?;
+    
+    Ok(format!("Successfully committed with ID: {}", commit_id))
+}
+
+// 推送更改
+#[tauri::command]
+async fn push_changes(repo_path: String) -> Result<String, String> {
+    let repo = Repository::open(&repo_path)
+        .map_err(|e| format!("Failed to open repository: {}", e))?;
+    
+    let head = repo.head().map_err(|e| format!("Failed to get HEAD: {}", e))?;
+    let branch_name = head.shorthand().unwrap_or("main");
+    
+    let mut remote = repo.find_remote("origin")
+        .map_err(|e| format!("Failed to find remote 'origin': {}", e))?;
+    
+    let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
+    
+    remote.push(&[&refspec], None)
+        .map_err(|e| format!("Failed to push: {}", e))?;
+    
+    Ok(format!("Successfully pushed to origin/{}", branch_name))
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -446,7 +635,12 @@ fn main() {
             get_commit_files,
             get_single_file_diff,
             get_recent_repos,
-            save_recent_repo
+            save_recent_repo,
+            get_workspace_status,
+            stage_file,
+            unstage_file,
+            commit_changes,
+            push_changes
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -26,6 +26,12 @@ export interface RecentRepo {
   last_opened: string
 }
 
+export interface WorkspaceStatus {
+  staged_files: FileChange[]
+  unstaged_files: FileChange[]
+  untracked_files: string[]
+}
+
 export interface RepoInfo {
   path: string
   current_branch: string
