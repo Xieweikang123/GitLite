@@ -141,6 +141,20 @@ export function useGit() {
     }
   }, [repoInfo])
 
+  const getCommitsPaginated = useCallback(async (limit?: number, offset?: number) => {
+    try {
+      if (!repoInfo) throw new Error('No repository selected')
+      return await invoke<CommitInfo[]>('get_commits_paginated', { 
+        repoPath: repoInfo.path, 
+        limit, 
+        offset 
+      })
+    } catch (error) {
+      console.error('Failed to get paginated commits:', error)
+      throw error
+    }
+  }, [repoInfo])
+
   return {
     repoInfo,
     loading,
@@ -154,5 +168,6 @@ export function useGit() {
     getFileDiff,
     getCommitFiles,
     getSingleFileDiff,
+    getCommitsPaginated,
   }
 }

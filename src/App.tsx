@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { useGit } from './hooks/useGit'
+import { TopToolbar } from './components/TopToolbar'
 import { RepositorySelector } from './components/RepositorySelector'
 import { CommitList } from './components/CommitList'
 import { DiffViewer } from './components/DiffViewer'
@@ -19,11 +20,15 @@ function App() {
     checkoutBranch, 
     getFileDiff, 
     getCommitFiles, 
-    getSingleFileDiff 
+    getSingleFileDiff,
+    getCommitsPaginated
   } = useGit()
   const [selectedCommit, setSelectedCommit] = useState<CommitInfo | null>(null)
   const [commitFiles, setCommitFiles] = useState<FileChange[]>([])
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
+  const [allCommits, setAllCommits] = useState<CommitInfo[]>([])
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMoreCommits, setHasMoreCommits] = useState(true)
 
   const handleCommitSelect = async (commit: CommitInfo) => {
     setSelectedCommit(commit)
@@ -54,18 +59,55 @@ function App() {
     setSelectedCommit(null)
     setCommitFiles([])
     setSelectedFile(null)
+    setAllCommits([])
+    setHasMoreCommits(true)
   }
+
+  const handleLoadMore = async () => {
+    if (loadingMore || !hasMoreCommits || !repoInfo) return
+    
+    setLoadingMore(true)
+    try {
+      const newCommits = await getCommitsPaginated(50, allCommits.length)
+      if (newCommits.length === 0) {
+        setHasMoreCommits(false)
+      } else {
+        setAllCommits(prev => [...prev, ...newCommits])
+        if (newCommits.length < 50) {
+          setHasMoreCommits(false)
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load more commits:', error)
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
+  // 当仓库信息更新时，重置提交列表
+  React.useEffect(() => {
+    if (repoInfo) {
+      setAllCommits(repoInfo.commits)
+      setHasMoreCommits(repoInfo.commits.length >= 50)
+    } else {
+      setAllCommits([])
+      setHasMoreCommits(true)
+    }
+  }, [repoInfo])
 
   return (
     <div className="min-h-screen bg-background">
-      <div className="container mx-auto p-6">
-        <header className="mb-8">
-          <h1 className="text-3xl font-bold text-foreground">GitLite</h1>
-          <p className="text-muted-foreground">
-            轻量级 Git GUI 客户端
-          </p>
-        </header>
+      {/* 顶部工具栏 */}
+      <TopToolbar
+        onOpenRepository={openRepository}
+        onRepoSelect={handleRecentRepoSelect}
+        recentRepos={recentRepos}
+        autoOpenEnabled={autoOpenEnabled}
+        onToggleAutoOpen={setAutoOpenEnabled}
+        loading={loading}
+      />
 
+      <div className="container mx-auto p-6">
         {error && (
           <div className="mb-6 p-4 bg-destructive/10 border border-destructive/20 rounded-lg">
             <p className="text-destructive">{error}</p>
@@ -73,49 +115,38 @@ function App() {
         )}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* 左侧：仓库选择 */}
+          {/* 左侧：当前仓库信息 */}
           <div>
             <RepositorySelector
-              onOpenRepository={openRepository}
-              onRepoSelect={handleRecentRepoSelect}
               onBranchSelect={handleBranchSelect}
               loading={loading}
               repoInfo={repoInfo}
-              recentRepos={recentRepos}
-              autoOpenEnabled={autoOpenEnabled}
-              onToggleAutoOpen={setAutoOpenEnabled}
             />
           </div>
 
-          {/* 中间：提交列表 */}
-          <div>
-            {repoInfo ? (
-              <CommitList
-                commits={repoInfo.commits}
-                onCommitSelect={handleCommitSelect}
-              />
-            ) : (
-              <div className="text-center py-12">
-                <p className="text-muted-foreground">
-                  请先选择一个 Git 仓库
-                </p>
-              </div>
-            )}
-          </div>
-
-          {/* 文件列表 */}
-          <div>
-            {selectedCommit ? (
+          {/* 中间：文件变更和提交列表 */}
+          <div className="space-y-6">
+            {selectedCommit && (
               <FileList
                 files={commitFiles}
                 selectedFile={selectedFile}
                 onFileSelect={handleFileSelect}
                 loading={loading}
               />
+            )}
+            
+            {repoInfo ? (
+              <CommitList
+                commits={allCommits}
+                onCommitSelect={handleCommitSelect}
+                onLoadMore={handleLoadMore}
+                hasMore={hasMoreCommits}
+                loading={loadingMore}
+              />
             ) : (
               <div className="text-center py-12">
                 <p className="text-muted-foreground">
-                  选择一个提交查看文件变更
+                  请先选择一个 Git 仓库
                 </p>
               </div>
             )}

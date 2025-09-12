@@ -187,8 +187,13 @@ fn get_repository_info(repo: &Repository, path: &str) -> Result<RepoInfo> {
     })
 }
 
-// 获取提交历史
+// 获取提交历史（初始加载，只获取前50个）
 fn get_commit_history(repo: &Repository) -> Result<Vec<CommitInfo>> {
+    get_commit_history_paginated(repo, Some(50), Some(0))
+}
+
+// 获取分页提交历史
+fn get_commit_history_paginated(repo: &Repository, limit: Option<usize>, offset: Option<usize>) -> Result<Vec<CommitInfo>> {
     let mut revwalk = repo.revwalk()
         .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
     
@@ -196,8 +201,21 @@ fn get_commit_history(repo: &Repository) -> Result<Vec<CommitInfo>> {
         .map_err(|e| anyhow::anyhow!("Failed to push HEAD: {}", e))?;
     
     let mut commits = Vec::new();
+    let limit = limit.unwrap_or(50);
+    let offset = offset.unwrap_or(0);
+    let mut count = 0;
+    let mut skipped = 0;
     
     for oid_result in revwalk {
+        if skipped < offset {
+            skipped += 1;
+            continue;
+        }
+        
+        if count >= limit {
+            break;
+        }
+        
         let oid = oid_result
             .map_err(|e| anyhow::anyhow!("Failed to get OID: {}", e))?;
         
@@ -220,11 +238,20 @@ fn get_commit_history(repo: &Repository) -> Result<Vec<CommitInfo>> {
             date,
         });
         
-        // 限制提交数量，避免性能问题
-        if commits.len() >= 100 {
-            break;
-        }
+        count += 1;
     }
+    
+    Ok(commits)
+}
+
+// 获取分页提交历史
+#[tauri::command]
+async fn get_commits_paginated(repo_path: String, limit: Option<usize>, offset: Option<usize>) -> Result<Vec<CommitInfo>, String> {
+    let repo = Repository::open(&repo_path)
+        .map_err(|e| format!("Failed to open repository: {}", e))?;
+    
+    let commits = get_commit_history_paginated(&repo, limit, offset)
+        .map_err(|e| format!("Failed to get commit history: {}", e))?;
     
     Ok(commits)
 }
@@ -413,6 +440,7 @@ fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             open_repository,
+            get_commits_paginated,
             checkout_branch,
             get_file_diff,
             get_commit_files,
