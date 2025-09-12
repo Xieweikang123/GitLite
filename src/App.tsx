@@ -128,7 +128,7 @@ function App() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-[200px_400px_1fr] gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-[450px_400px_1fr] gap-6">
           {/* 左侧：工作区状态 */}
           <div>
             <WorkspaceStatus

@@ -241,18 +241,19 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
           <CardContent>
             <div className="space-y-2">
               {workspaceStatus.staged_files.map((file, index) => (
-                <div key={index} className="flex items-center justify-between p-2 border rounded">
-                  <div className="flex items-center gap-2">
-                    <Badge variant={getStatusBadgeVariant(file.status)}>
-                      {getStatusText(file.status)}
-                    </Badge>
-                    <span className="text-sm font-mono">{file.path}</span>
+                <div key={index} className="flex items-start gap-2 p-2 border rounded">
+                  <Badge variant={getStatusBadgeVariant(file.status)} className="flex-shrink-0">
+                    {getStatusText(file.status)}
+                  </Badge>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-mono break-all">{file.path}</div>
                   </div>
                   <Button
                     size="sm"
                     variant="outline"
                     onClick={() => unstageFile(file.path)}
                     disabled={loading}
+                    className="flex-shrink-0"
                   >
                     取消暂存
                   </Button>
@@ -272,17 +273,18 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
           <CardContent>
             <div className="space-y-2">
               {workspaceStatus.unstaged_files.map((file, index) => (
-                <div key={index} className="flex items-center justify-between p-2 border rounded">
-                  <div className="flex items-center gap-2">
-                    <Badge variant={getStatusBadgeVariant(file.status)}>
-                      {getStatusText(file.status)}
-                    </Badge>
-                    <span className="text-sm font-mono">{file.path}</span>
+                <div key={index} className="flex items-start gap-2 p-2 border rounded">
+                  <Badge variant={getStatusBadgeVariant(file.status)} className="flex-shrink-0">
+                    {getStatusText(file.status)}
+                  </Badge>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-mono break-all">{file.path}</div>
                   </div>
                   <Button
                     size="sm"
                     onClick={() => stageFile(file.path)}
                     disabled={loading}
+                    className="flex-shrink-0"
                   >
                     暂存
                   </Button>
@@ -302,15 +304,16 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
           <CardContent>
             <div className="space-y-2">
               {workspaceStatus.untracked_files.map((file, index) => (
-                <div key={index} className="flex items-center justify-between p-2 border rounded">
-                  <div className="flex items-center gap-2">
-                    <Badge variant="outline">未跟踪</Badge>
-                    <span className="text-sm font-mono">{file}</span>
+                <div key={index} className="flex items-start gap-2 p-2 border rounded">
+                  <Badge variant="outline" className="flex-shrink-0">未跟踪</Badge>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-mono break-all">{file}</div>
                   </div>
                   <Button
                     size="sm"
                     onClick={() => stageFile(file)}
                     disabled={loading}
+                    className="flex-shrink-0"
                   >
                     添加
                   </Button>

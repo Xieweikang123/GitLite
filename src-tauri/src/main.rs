@@ -452,7 +452,7 @@ async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, Stri
     let mut unstaged_files = Vec::new();
     let mut untracked_files = Vec::new();
     
-    // 获取暂存区的文件
+    // 获取暂存区的文件（HEAD 到 INDEX 的差异）
     let head = repo.head().ok();
     let head_tree = head.as_ref().and_then(|h| h.peel_to_tree().ok());
     let mut index = repo.index().map_err(|e| format!("Failed to get index: {}", e))?;
@@ -491,7 +491,7 @@ async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, Stri
         None,
     ).map_err(|e| format!("Failed to iterate staged diff: {}", e))?;
     
-    // 获取工作区的文件
+    // 获取工作区的文件（INDEX 到 WORKDIR 的差异）
     let workdir_diff = repo.diff_index_to_workdir(None, None)
         .map_err(|e| format!("Failed to create workdir diff: {}", e))?;
     
@@ -527,6 +527,25 @@ async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, Stri
         None,
         None,
     ).map_err(|e| format!("Failed to iterate workdir diff: {}", e))?;
+    
+    // 获取未跟踪的文件
+    let mut status_options = git2::StatusOptions::new();
+    status_options.include_untracked(true);
+    status_options.include_ignored(false);
+    
+    let statuses = repo.statuses(Some(&mut status_options))
+        .map_err(|e| format!("Failed to get statuses: {}", e))?;
+    
+    for entry in statuses.iter() {
+        let file_path = entry.path().unwrap_or("").to_string();
+        let status = entry.status();
+        
+        if status.contains(git2::Status::WT_NEW) {
+            if !untracked_files.contains(&file_path) {
+                untracked_files.push(file_path);
+            }
+        }
+    }
     
     Ok(WorkspaceStatus {
         staged_files,
