@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { open } from '@tauri-apps/api/dialog'
-import { RepoInfo, CommitInfo } from '../types/git'
+import { RepoInfo, CommitInfo, FileChange } from '../types/git'
 
 export function useGit() {
   const [repoInfo, setRepoInfo] = useState<RepoInfo | null>(null)
@@ -55,6 +55,35 @@ export function useGit() {
     }
   }, [repoInfo])
 
+  const getCommitFiles = useCallback(async (commitId: string): Promise<FileChange[]> => {
+    if (!repoInfo) throw new Error('No repository open')
+    
+    try {
+      const files: FileChange[] = await invoke('get_commit_files', {
+        repoPath: repoInfo.path,
+        commitId,
+      })
+      return files
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : '获取文件列表失败')
+    }
+  }, [repoInfo])
+
+  const getSingleFileDiff = useCallback(async (commitId: string, filePath: string): Promise<string> => {
+    if (!repoInfo) throw new Error('No repository open')
+    
+    try {
+      const diff: string = await invoke('get_single_file_diff', {
+        repoPath: repoInfo.path,
+        commitId,
+        filePath,
+      })
+      return diff
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : '获取文件差异失败')
+    }
+  }, [repoInfo])
+
   const getFileDiff = useCallback(async (commitId: string): Promise<string> => {
     if (!repoInfo) throw new Error('No repository open')
     
@@ -76,5 +105,7 @@ export function useGit() {
     openRepository,
     checkoutBranch,
     getFileDiff,
+    getCommitFiles,
+    getSingleFileDiff,
   }
 }

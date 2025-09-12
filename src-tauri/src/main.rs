@@ -25,6 +25,20 @@ pub struct BranchInfo {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct FileChange {
+    pub path: String,
+    pub status: String, // "added", "modified", "deleted", "renamed"
+    pub additions: i32,
+    pub deletions: i32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CommitDiff {
+    pub commit: CommitInfo,
+    pub files: Vec<FileChange>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RepoInfo {
     pub path: String,
     pub current_branch: String,
@@ -149,7 +163,128 @@ async fn checkout_branch(repo_path: String, branch_name: String) -> Result<Strin
     Ok(format!("Successfully checked out to {}", branch_name))
 }
 
-// 获取文件差异
+// 获取提交的文件列表
+#[tauri::command]
+async fn get_commit_files(repo_path: String, commit_id: String) -> Result<Vec<FileChange>, String> {
+    let repo = Repository::open(&repo_path)
+        .map_err(|e| format!("Failed to open repository: {}", e))?;
+    
+    let oid = Oid::from_str(&commit_id)
+        .map_err(|e| format!("Invalid commit ID: {}", e))?;
+    
+    let commit = repo.find_commit(oid)
+        .map_err(|e| format!("Failed to find commit: {}", e))?;
+    
+    let tree = commit.tree()
+        .map_err(|e| format!("Failed to get commit tree: {}", e))?;
+    
+    let parent = if commit.parent_count() > 0 {
+        Some(commit.parent(0)
+            .map_err(|e| format!("Failed to get parent commit: {}", e))?
+            .tree()
+            .map_err(|e| format!("Failed to get parent tree: {}", e))?)
+    } else {
+        None
+    };
+    
+    let diff = repo.diff_tree_to_tree(parent.as_ref(), Some(&tree), None)
+        .map_err(|e| format!("Failed to create diff: {}", e))?;
+    
+    let mut files = Vec::new();
+    
+    diff.foreach(
+        &mut |delta, _progress| {
+            let old_path = delta.old_file().path().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+            let new_path = delta.new_file().path().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+            
+            let status = match delta.status() {
+                git2::Delta::Added => "added",
+                git2::Delta::Modified => "modified", 
+                git2::Delta::Deleted => "deleted",
+                git2::Delta::Renamed => "renamed",
+                git2::Delta::Copied => "copied",
+                _ => "unknown",
+            };
+            
+            // 获取正确的文件路径
+            let file_path = if new_path.is_empty() { old_path } else { new_path };
+            
+            // 简化的统计方法 - 先确保文件被检测到
+            let additions = match status {
+                "added" => 1, // 新增文件至少算1行
+                "deleted" => 0,
+                _ => 1, // 其他情况先算1行
+            };
+            
+            let deletions = match status {
+                "deleted" => 1, // 删除文件至少算1行
+                "added" => 0,
+                _ => 0, // 其他情况先算0行
+            };
+            
+            files.push(FileChange {
+                path: file_path,
+                status: status.to_string(),
+                additions,
+                deletions,
+            });
+            
+            true
+        },
+        None,
+        None,
+        None,
+    ).map_err(|e| format!("Failed to iterate diff: {}", e))?;
+    
+    Ok(files)
+}
+
+// 获取单个文件的差异
+#[tauri::command]
+async fn get_single_file_diff(repo_path: String, commit_id: String, file_path: String) -> Result<String, String> {
+    let repo = Repository::open(&repo_path)
+        .map_err(|e| format!("Failed to open repository: {}", e))?;
+    
+    let oid = Oid::from_str(&commit_id)
+        .map_err(|e| format!("Invalid commit ID: {}", e))?;
+    
+    let commit = repo.find_commit(oid)
+        .map_err(|e| format!("Failed to find commit: {}", e))?;
+    
+    let tree = commit.tree()
+        .map_err(|e| format!("Failed to get commit tree: {}", e))?;
+    
+    let parent = if commit.parent_count() > 0 {
+        Some(commit.parent(0)
+            .map_err(|e| format!("Failed to get parent commit: {}", e))?
+            .tree()
+            .map_err(|e| format!("Failed to get parent tree: {}", e))?)
+    } else {
+        None
+    };
+    
+    // 创建差异，然后过滤特定文件
+    let diff = repo.diff_tree_to_tree(parent.as_ref(), Some(&tree), None)
+        .map_err(|e| format!("Failed to create diff: {}", e))?;
+    
+    let mut diff_text = String::new();
+    diff.print(git2::DiffFormat::Patch, |delta, _hunk, line| {
+        // 检查是否是目标文件
+        let current_file = delta.new_file().path()
+            .or_else(|| delta.old_file().path())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        
+        if current_file == file_path {
+            diff_text.push_str(&format!("{}\n", std::str::from_utf8(line.content()).unwrap_or("")));
+        }
+        true
+    }).map_err(|e| format!("Failed to print diff: {}", e))?;
+    
+    Ok(diff_text)
+}
+
+// 获取文件差异（保持向后兼容）
 #[tauri::command]
 async fn get_file_diff(repo_path: String, commit_id: String) -> Result<String, String> {
     let repo = Repository::open(&repo_path)
@@ -190,7 +325,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             open_repository,
             checkout_branch,
-            get_file_diff
+            get_file_diff,
+            get_commit_files,
+            get_single_file_diff
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

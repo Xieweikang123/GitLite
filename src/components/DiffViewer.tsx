@@ -2,25 +2,32 @@ import React, { useState, useEffect } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Button } from './ui/button'
 import { CommitInfo } from '../types/git'
+import { Copy, FileText } from 'lucide-react'
 
 interface DiffViewerProps {
   commit: CommitInfo | null
+  selectedFile: string | null
   onGetDiff: (commitId: string) => Promise<string>
+  onGetSingleFileDiff: (commitId: string, filePath: string) => Promise<string>
 }
 
-export function DiffViewer({ commit, onGetDiff }: DiffViewerProps) {
+export function DiffViewer({ commit, selectedFile, onGetDiff, onGetSingleFileDiff }: DiffViewerProps) {
   const [diff, setDiff] = useState<string>('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     if (commit) {
-      loadDiff(commit.id)
+      if (selectedFile) {
+        loadSingleFileDiff(commit.id, selectedFile)
+      } else {
+        loadDiff(commit.id)
+      }
     } else {
       setDiff('')
       setError(null)
     }
-  }, [commit])
+  }, [commit, selectedFile])
 
   const loadDiff = async (commitId: string) => {
     try {
@@ -32,6 +39,28 @@ export function DiffViewer({ commit, onGetDiff }: DiffViewerProps) {
       setError(err instanceof Error ? err.message : '加载差异失败')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadSingleFileDiff = async (commitId: string, filePath: string) => {
+    try {
+      setLoading(true)
+      setError(null)
+      const diffContent = await onGetSingleFileDiff(commitId, filePath)
+      setDiff(diffContent)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '加载文件差异失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const copyToClipboard = async () => {
+    try {
+      await navigator.clipboard.writeText(diff)
+      // 这里可以添加一个 toast 提示
+    } catch (err) {
+      console.error('复制失败:', err)
     }
   }
 
@@ -53,9 +82,32 @@ export function DiffViewer({ commit, onGetDiff }: DiffViewerProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>文件差异</CardTitle>
-        <div className="text-sm text-muted-foreground">
-          {commit.message} - {commit.short_id}
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5" />
+              文件差异
+            </CardTitle>
+            <div className="text-sm text-muted-foreground">
+              {commit.message} - {commit.short_id}
+            </div>
+            {selectedFile && (
+              <div className="text-sm text-primary font-medium mt-1">
+                文件: {selectedFile}
+              </div>
+            )}
+          </div>
+          {diff && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={copyToClipboard}
+              className="flex items-center gap-2"
+            >
+              <Copy className="h-4 w-4" />
+              复制
+            </Button>
+          )}
         </div>
       </CardHeader>
       <CardContent>
@@ -80,8 +132,8 @@ export function DiffViewer({ commit, onGetDiff }: DiffViewerProps) {
         )}
         
         {!loading && !error && diff && (
-          <div className="bg-muted rounded-lg p-4">
-            <pre className="text-sm overflow-auto whitespace-pre-wrap">
+          <div className="bg-muted rounded-lg p-4 max-h-96 overflow-auto">
+            <pre className="text-sm whitespace-pre-wrap font-mono">
               <code>{diff}</code>
             </pre>
           </div>

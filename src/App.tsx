@@ -4,19 +4,46 @@ import { RepositorySelector } from './components/RepositorySelector'
 import { CommitList } from './components/CommitList'
 import { BranchList } from './components/BranchList'
 import { DiffViewer } from './components/DiffViewer'
-import { CommitInfo } from './types/git'
+import { FileList } from './components/FileList'
+import { CommitInfo, FileChange } from './types/git'
 
 function App() {
-  const { repoInfo, loading, error, openRepository, checkoutBranch, getFileDiff } = useGit()
+  const { 
+    repoInfo, 
+    loading, 
+    error, 
+    openRepository, 
+    checkoutBranch, 
+    getFileDiff, 
+    getCommitFiles, 
+    getSingleFileDiff 
+  } = useGit()
   const [selectedCommit, setSelectedCommit] = useState<CommitInfo | null>(null)
+  const [commitFiles, setCommitFiles] = useState<FileChange[]>([])
+  const [selectedFile, setSelectedFile] = useState<string | null>(null)
 
-  const handleCommitSelect = (commit: CommitInfo) => {
+  const handleCommitSelect = async (commit: CommitInfo) => {
     setSelectedCommit(commit)
+    setSelectedFile(null) // 清除选中的文件
+    
+    try {
+      const files = await getCommitFiles(commit.id)
+      setCommitFiles(files)
+    } catch (err) {
+      console.error('获取文件列表失败:', err)
+      setCommitFiles([])
+    }
+  }
+
+  const handleFileSelect = (filePath: string) => {
+    setSelectedFile(filePath)
   }
 
   const handleBranchSelect = async (branchName: string) => {
     await checkoutBranch(branchName)
     setSelectedCommit(null) // 清除选中的提交
+    setCommitFiles([])
+    setSelectedFile(null)
   }
 
   return (
@@ -35,7 +62,7 @@ function App() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
           {/* 左侧：仓库选择和分支 */}
           <div className="space-y-6">
             <RepositorySelector
@@ -70,12 +97,32 @@ function App() {
             )}
           </div>
 
+          {/* 文件列表 */}
+          <div>
+            {selectedCommit ? (
+              <FileList
+                files={commitFiles}
+                selectedFile={selectedFile}
+                onFileSelect={handleFileSelect}
+                loading={loading}
+              />
+            ) : (
+              <div className="text-center py-12">
+                <p className="text-muted-foreground">
+                  选择一个提交查看文件变更
+                </p>
+              </div>
+            )}
+          </div>
+
           {/* 右侧：差异查看器 */}
           <div>
             {repoInfo ? (
               <DiffViewer
                 commit={selectedCommit}
+                selectedFile={selectedFile}
                 onGetDiff={getFileDiff}
+                onGetSingleFileDiff={getSingleFileDiff}
               />
             ) : (
               <div className="text-center py-12">
