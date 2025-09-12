@@ -101,10 +101,12 @@ function App() {
       <TopToolbar
         onOpenRepository={openRepository}
         onRepoSelect={handleRecentRepoSelect}
+        onBranchSelect={handleBranchSelect}
         recentRepos={recentRepos}
         autoOpenEnabled={autoOpenEnabled}
         onToggleAutoOpen={setAutoOpenEnabled}
         loading={loading}
+        repoInfo={repoInfo}
       />
 
       <div className="container mx-auto p-6">
@@ -114,11 +116,10 @@ function App() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* 左侧：当前仓库信息 */}
+        <div className="grid grid-cols-1 lg:grid-cols-[200px_1fr_1fr] gap-6">
+          {/* 左侧：分支列表 */}
           <div>
             <RepositorySelector
-              onBranchSelect={handleBranchSelect}
               loading={loading}
               repoInfo={repoInfo}
             />
