@@ -12,7 +12,11 @@ function App() {
     repoInfo, 
     loading, 
     error, 
+    recentRepos,
+    autoOpenEnabled,
+    setAutoOpenEnabled,
     openRepository, 
+    openRepositoryByPath,
     checkoutBranch, 
     getFileDiff, 
     getCommitFiles, 
@@ -46,6 +50,13 @@ function App() {
     setSelectedFile(null)
   }
 
+  const handleRecentRepoSelect = async (path: string) => {
+    await openRepositoryByPath(path)
+    setSelectedCommit(null)
+    setCommitFiles([])
+    setSelectedFile(null)
+  }
+
   return (
     <div className="min-h-screen bg-background">
       <div className="container mx-auto p-6">
@@ -67,8 +78,12 @@ function App() {
           <div className="space-y-6">
             <RepositorySelector
               onOpenRepository={openRepository}
+              onRepoSelect={handleRecentRepoSelect}
               loading={loading}
               repoInfo={repoInfo}
+              recentRepos={recentRepos}
+              autoOpenEnabled={autoOpenEnabled}
+              onToggleAutoOpen={setAutoOpenEnabled}
             />
             
             {repoInfo && (

@@ -1,12 +1,14 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { open } from '@tauri-apps/api/dialog'
-import { RepoInfo, CommitInfo, FileChange } from '../types/git'
+import { RepoInfo, CommitInfo, FileChange, RecentRepo } from '../types/git'
 
 export function useGit() {
   const [repoInfo, setRepoInfo] = useState<RepoInfo | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [recentRepos, setRecentRepos] = useState<RecentRepo[]>([])
+  const [autoOpenEnabled, setAutoOpenEnabled] = useState(true) // 默认启用自动打开
 
   const openRepository = useCallback(async () => {
     try {
@@ -23,6 +25,8 @@ export function useGit() {
           path: selectedPath,
         })
         setRepoInfo(repoInfo)
+        // 刷新最近仓库列表
+        loadRecentRepos()
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '打开仓库失败')
@@ -30,6 +34,45 @@ export function useGit() {
       setLoading(false)
     }
   }, [])
+
+  const openRepositoryByPath = useCallback(async (path: string) => {
+    try {
+      setLoading(true)
+      setError(null)
+      
+      const repoInfo: RepoInfo = await invoke('open_repository', {
+        path,
+      })
+      setRepoInfo(repoInfo)
+      // 刷新最近仓库列表
+      loadRecentRepos()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '打开仓库失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const loadRecentRepos = useCallback(async () => {
+    try {
+      const repos: RecentRepo[] = await invoke('get_recent_repos')
+      setRecentRepos(repos)
+    } catch (err) {
+      console.error('Failed to load recent repos:', err)
+    }
+  }, [])
+
+  // 组件加载时获取最近仓库列表
+  useEffect(() => {
+    loadRecentRepos()
+  }, [])
+
+  // 当最近仓库列表加载完成后，自动打开最新的仓库
+  useEffect(() => {
+    if (autoOpenEnabled && recentRepos.length > 0 && !repoInfo) {
+      openRepositoryByPath(recentRepos[0].path)
+    }
+  }, [recentRepos, repoInfo, openRepositoryByPath, autoOpenEnabled])
 
   const checkoutBranch = useCallback(async (branchName: string) => {
     if (!repoInfo) return
@@ -102,7 +145,11 @@ export function useGit() {
     repoInfo,
     loading,
     error,
+    recentRepos,
+    autoOpenEnabled,
+    setAutoOpenEnabled,
     openRepository,
+    openRepositoryByPath,
     checkoutBranch,
     getFileDiff,
     getCommitFiles,

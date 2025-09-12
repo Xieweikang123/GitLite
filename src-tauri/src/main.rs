@@ -1,10 +1,11 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use git2::{Repository, Commit, Oid};
+use git2::{Repository, Oid};
 use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::fs;
 use anyhow::Result;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -39,11 +40,94 @@ pub struct CommitDiff {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct RecentRepo {
+    pub path: String,
+    pub name: String,
+    pub last_opened: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RepoInfo {
     pub path: String,
     pub current_branch: String,
     pub branches: Vec<BranchInfo>,
     pub commits: Vec<CommitInfo>,
+}
+
+// 获取最近打开的仓库列表
+#[tauri::command]
+async fn get_recent_repos() -> Result<Vec<RecentRepo>, String> {
+    let config_dir = get_config_dir();
+    let config_file = config_dir.join("recent_repos.json");
+    
+    if !config_file.exists() {
+        return Ok(Vec::new());
+    }
+    
+    let content = fs::read_to_string(&config_file)
+        .map_err(|e| format!("Failed to read config file: {}", e))?;
+    
+    let repos: Vec<RecentRepo> = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse config file: {}", e))?;
+    Ok(repos)
+}
+
+// 保存最近打开的仓库
+#[tauri::command]
+async fn save_recent_repo(path: String) -> Result<(), String> {
+    let config_dir = get_config_dir();
+    fs::create_dir_all(&config_dir)
+        .map_err(|e| format!("Failed to create config directory: {}", e))?;
+    
+    let config_file = config_dir.join("recent_repos.json");
+    
+    // 读取现有列表
+    let mut repos = if config_file.exists() {
+        let content = fs::read_to_string(&config_file)
+            .map_err(|e| format!("Failed to read config file: {}", e))?;
+        serde_json::from_str::<Vec<RecentRepo>>(&content)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    
+    // 获取仓库名称
+    let repo_name = Path::new(&path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Unknown")
+        .to_string();
+    
+    // 移除已存在的相同路径
+    repos.retain(|repo| repo.path != path);
+    
+    // 添加新的仓库到列表开头
+    let recent_repo = RecentRepo {
+        path: path.clone(),
+        name: repo_name,
+        last_opened: chrono::Utc::now().to_rfc3339(),
+    };
+    repos.insert(0, recent_repo);
+    
+    // 限制最多保存10个
+    if repos.len() > 10 {
+        repos.truncate(10);
+    }
+    
+    // 保存到文件
+    let content = serde_json::to_string_pretty(&repos)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    fs::write(&config_file, content)
+        .map_err(|e| format!("Failed to write config file: {}", e))?;
+    
+    Ok(())
+}
+
+// 获取配置目录
+fn get_config_dir() -> std::path::PathBuf {
+    let mut config_dir = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    config_dir.push("GitLite");
+    config_dir
 }
 
 // 打开 Git 仓库
@@ -54,6 +138,11 @@ async fn open_repository(path: String) -> Result<RepoInfo, String> {
     
     let repo_info = get_repository_info(&repo, &path)
         .map_err(|e| format!("Failed to get repository info: {}", e))?;
+    
+    // 保存到最近打开的仓库列表
+    if let Err(e) = save_recent_repo(path).await {
+        eprintln!("Failed to save recent repo: {}", e);
+    }
     
     Ok(repo_info)
 }
@@ -70,7 +159,7 @@ fn get_repository_info(repo: &Repository, path: &str) -> Result<RepoInfo> {
         .map_err(|e| anyhow::anyhow!("Failed to get branches: {}", e))?;
     
     for branch_result in branch_iter {
-        let (branch, branch_type) = branch_result
+        let (branch, _branch_type) = branch_result
             .map_err(|e| anyhow::anyhow!("Failed to iterate branch: {}", e))?;
         
         let branch_name = branch.name()
@@ -327,7 +416,9 @@ fn main() {
             checkout_branch,
             get_file_diff,
             get_commit_files,
-            get_single_file_diff
+            get_single_file_diff,
+            get_recent_repos,
+            save_recent_repo
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

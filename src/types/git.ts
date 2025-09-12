@@ -20,6 +20,12 @@ export interface FileChange {
   deletions: number
 }
 
+export interface RecentRepo {
+  path: string
+  name: string
+  last_opened: string
+}
+
 export interface RepoInfo {
   path: string
   current_branch: string
