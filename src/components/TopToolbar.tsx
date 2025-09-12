@@ -1,26 +1,17 @@
 import { Button } from './ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger } from './ui/select'
-import { FolderOpen, Clock, Settings, GitBranch, FileText } from 'lucide-react'
-import { RecentRepo } from '../types/git'
+import { FolderOpen, GitBranch } from 'lucide-react'
 
 interface TopToolbarProps {
   onOpenRepository: () => void
-  onRepoSelect: (path: string) => void
   onBranchSelect: (branchName: string) => void
-  recentRepos: RecentRepo[]
-  autoOpenEnabled: boolean
-  onToggleAutoOpen: (enabled: boolean) => void
   loading: boolean
   repoInfo: any
 }
 
 export function TopToolbar({
   onOpenRepository,
-  onRepoSelect,
   onBranchSelect,
-  recentRepos,
-  autoOpenEnabled,
-  onToggleAutoOpen,
   loading,
   repoInfo
 }: TopToolbarProps) {
@@ -34,7 +25,7 @@ export function TopToolbar({
         </p>
       </div>
 
-      {/* 中间：当前仓库信息和最近仓库 */}
+      {/* 中间：当前仓库信息 */}
       <div className="flex items-center gap-6">
         {/* 当前仓库信息和分支选择 */}
         {repoInfo && (
@@ -68,45 +59,10 @@ export function TopToolbar({
             </div>
           </div>
         )}
-        
-        {/* 最近仓库 */}
-        {recentRepos.length > 0 && (
-          <div className="flex items-center gap-2">
-            <Clock className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm text-muted-foreground">最近:</span>
-            <div className="flex gap-2">
-              {recentRepos.slice(0, 3).map((repo) => (
-                <Button
-                  key={repo.path}
-                  size="sm"
-                  variant="outline"
-                  onClick={() => onRepoSelect(repo.path)}
-                  disabled={loading}
-                  className="h-8 px-3 text-xs"
-                >
-                  {repo.name}
-                </Button>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* 右侧：操作按钮 */}
       <div className="flex items-center gap-3">
-        <div className="flex items-center gap-2 text-sm">
-          <Settings className="h-4 w-4" />
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={autoOpenEnabled}
-              onChange={(e) => onToggleAutoOpen(e.target.checked)}
-              className="rounded"
-            />
-            自动打开
-          </label>
-        </div>
-        
         <Button
           onClick={onOpenRepository}
           disabled={loading}
@@ -114,22 +70,6 @@ export function TopToolbar({
         >
           <FolderOpen className="h-4 w-4" />
           {loading ? '打开中...' : '打开仓库'}
-        </Button>
-
-        {/* 查看日志 */}
-        <Button
-          variant="outline"
-          className="flex items-center gap-2"
-          onClick={async () => {
-            const { invoke } = await import('@tauri-apps/api/tauri')
-            try {
-              await invoke('open_log_dir')
-            } catch (err) {
-              console.error('打开日志失败', err)
-            }
-          }}
-        >
-          <FileText className="h-4 w-4" /> 查看日志
         </Button>
       </div>
     </div>

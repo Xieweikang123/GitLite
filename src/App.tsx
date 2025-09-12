@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { useGit } from './hooks/useGit'
 import { TopToolbar } from './components/TopToolbar'
+import { MenuToolbar } from './components/MenuToolbar'
 import { WorkspaceStatus } from './components/WorkspaceStatus'
 import { CommitList } from './components/CommitList'
 import { DiffViewer } from './components/DiffViewer'
@@ -109,14 +110,21 @@ function App() {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* 顶部工具栏 */}
-      <TopToolbar
+      {/* 菜单工具栏 */}
+      <MenuToolbar
         onOpenRepository={openRepository}
         onRepoSelect={handleRecentRepoSelect}
-        onBranchSelect={handleBranchSelect}
         recentRepos={recentRepos}
         autoOpenEnabled={autoOpenEnabled}
         onToggleAutoOpen={setAutoOpenEnabled}
+        loading={loading}
+        repoInfo={repoInfo}
+      />
+      
+      {/* 顶部工具栏 */}
+      <TopToolbar
+        onOpenRepository={openRepository}
+        onBranchSelect={handleBranchSelect}
         loading={loading}
         repoInfo={repoInfo}
       />
