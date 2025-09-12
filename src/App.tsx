@@ -2,7 +2,6 @@ import React, { useState } from 'react'
 import { useGit } from './hooks/useGit'
 import { RepositorySelector } from './components/RepositorySelector'
 import { CommitList } from './components/CommitList'
-import { BranchList } from './components/BranchList'
 import { DiffViewer } from './components/DiffViewer'
 import { FileList } from './components/FileList'
 import { CommitInfo, FileChange } from './types/git'
@@ -73,27 +72,19 @@ function App() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          {/* 左侧：仓库选择和分支 */}
-          <div className="space-y-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* 左侧：仓库选择 */}
+          <div>
             <RepositorySelector
               onOpenRepository={openRepository}
               onRepoSelect={handleRecentRepoSelect}
+              onBranchSelect={handleBranchSelect}
               loading={loading}
               repoInfo={repoInfo}
               recentRepos={recentRepos}
               autoOpenEnabled={autoOpenEnabled}
               onToggleAutoOpen={setAutoOpenEnabled}
             />
-            
-            {repoInfo && (
-              <BranchList
-                branches={repoInfo.branches}
-                currentBranch={repoInfo.current_branch}
-                onBranchSelect={handleBranchSelect}
-                loading={loading}
-              />
-            )}
           </div>
 
           {/* 中间：提交列表 */}
