@@ -21,6 +21,9 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
   const [commitMessage, setCommitMessage] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [autoRefresh, setAutoRefresh] = useState(true)
+  const [refreshIntervalSec] = useState(10)
+  const [countdown, setCountdown] = useState<number>(refreshIntervalSec)
 
   // 获取工作区状态
   const fetchWorkspaceStatus = async () => {
@@ -42,6 +45,50 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
       setLoading(false)
     }
   }
+
+  const handleManualRefresh = async () => {
+    await fetchWorkspaceStatus()
+    setCountdown(refreshIntervalSec)
+  }
+
+  // 自动刷新定时器与倒计时
+  useEffect(() => {
+    if (!repoInfo || !autoRefresh) {
+      setCountdown(refreshIntervalSec)
+      return
+    }
+
+    let mounted = true
+    const tick = () => {
+      setCountdown(prev => {
+        if (prev <= 1) {
+          // 触发刷新并重置倒计时
+          ;(async () => {
+            try {
+              await fetchWorkspaceStatus()
+            } catch (_) {
+              // 已在 fetch 内部处理错误
+            }
+          })()
+          return refreshIntervalSec
+        }
+        return prev - 1
+      })
+    }
+
+    // 首次立即拉取一次，随后开始计时
+    ;(async () => {
+      if (mounted) {
+        await fetchWorkspaceStatus()
+      }
+    })()
+
+    const intervalId = setInterval(tick, 1000)
+    return () => {
+      mounted = false
+      clearInterval(intervalId)
+    }
+  }, [repoInfo, autoRefresh, refreshIntervalSec])
 
   // 暂存文件
   const stageFile = async (filePath: string) => {
@@ -193,6 +240,31 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
 
   return (
     <div className="space-y-4">
+      {/* 刷新与自动刷新控制栏 */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleManualRefresh}
+            disabled={loading || !repoInfo}
+          >
+            刷新
+          </Button>
+          <label className="flex items-center gap-2 text-sm select-none cursor-pointer">
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(e) => setAutoRefresh(e.target.checked)}
+            />
+            自动刷新
+          </label>
+        </div>
+        {autoRefresh && (
+          <div className="text-xs text-muted-foreground">{countdown}s 后自动刷新</div>
+        )}
+      </div>
+
       {error && (
         <div className="p-3 bg-destructive/10 border border-destructive/20 rounded-lg">
           <p className="text-destructive text-sm">{error}</p>
