@@ -40,23 +40,20 @@ export function CommitList({
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center justify-between">
-          <CardTitle>提交历史</CardTitle>
-          <div className="flex items-center gap-2">
-            <div className="relative">
-              <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="搜索提交..."
-                value={searchTerm}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchTerm(e.target.value)}
-                className="pl-8 w-64"
-              />
-            </div>
+        <div className="flex items-center justify-center">
+          <div className="relative">
+            <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="搜索提交..."
+              value={searchTerm}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchTerm(e.target.value)}
+              className="pl-8 w-80"
+            />
           </div>
         </div>
       </CardHeader>
       <CardContent>
-        <div className="space-y-4">
+        <div className="space-y-4 max-h-[500px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
           {filteredCommits.map((commit) => (
             <div
               key={commit.id}
@@ -90,26 +87,27 @@ export function CommitList({
             </div>
           )}
           
-          {hasMore && (
-            <div className="flex justify-center pt-4">
-              <Button
-                onClick={onLoadMore}
-                disabled={loading}
-                variant="outline"
-                className="flex items-center gap-2"
-              >
-                {loading ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    加载中...
-                  </>
-                ) : (
-                  '加载更多'
-                )}
-              </Button>
-            </div>
-          )}
         </div>
+        
+        {hasMore && (
+          <div className="flex justify-center pt-4 border-t mt-4">
+            <Button
+              onClick={onLoadMore}
+              disabled={loading}
+              variant="outline"
+              className="flex items-center gap-2"
+            >
+              {loading ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  加载中...
+                </>
+              ) : (
+                '加载更多'
+              )}
+            </Button>
+          </div>
+        )}
       </CardContent>
     </Card>
   )
