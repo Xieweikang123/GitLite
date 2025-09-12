@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use git2::{Repository, Oid};
+use git2::build::CheckoutBuilder;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::fs;
@@ -58,6 +59,25 @@ pub struct RepoInfo {
     pub current_branch: String,
     pub branches: Vec<BranchInfo>,
     pub commits: Vec<CommitInfo>,
+}
+
+// 判断某路径是否在 HEAD（上一次提交）中被追踪
+fn path_tracked_in_head(repo: &Repository, file_path: &str) -> bool {
+    if let Ok(head) = repo.head() {
+        if let Ok(tree) = head.peel_to_tree() {
+            if let Ok(path) = std::path::Path::new(file_path).strip_prefix("./") {
+                // normalize leading ./ if any
+                if tree.get_path(path).is_ok() {
+                    return true;
+                }
+            }
+            // try original path
+            if tree.get_path(Path::new(file_path)).is_ok() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 // 获取最近打开的仓库列表
@@ -452,86 +472,12 @@ async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, Stri
     let mut unstaged_files = Vec::new();
     let mut untracked_files = Vec::new();
     
-    // 获取暂存区的文件（HEAD 到 INDEX 的差异）
-    let head = repo.head().ok();
-    let head_tree = head.as_ref().and_then(|h| h.peel_to_tree().ok());
-    let mut index = repo.index().map_err(|e| format!("Failed to get index: {}", e))?;
-    let index_tree = repo.find_tree(index.write_tree().map_err(|e| format!("Failed to write tree: {}", e))?)
-        .map_err(|e| format!("Failed to find tree: {}", e))?;
     
-    let staged_diff = repo.diff_tree_to_tree(head_tree.as_ref(), Some(&index_tree), None)
-        .map_err(|e| format!("Failed to create staged diff: {}", e))?;
-    
-    staged_diff.foreach(
-        &mut |delta, _progress| {
-            let file_path = delta.new_file().path()
-                .or_else(|| delta.old_file().path())
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default();
-            
-            let status = match delta.status() {
-                git2::Delta::Added => "added",
-                git2::Delta::Modified => "modified",
-                git2::Delta::Deleted => "deleted",
-                git2::Delta::Renamed => "renamed",
-                _ => "unknown",
-            };
-            
-            staged_files.push(FileChange {
-                path: file_path,
-                status: status.to_string(),
-                additions: 1,
-                deletions: 0,
-            });
-            
-            true
-        },
-        None,
-        None,
-        None,
-    ).map_err(|e| format!("Failed to iterate staged diff: {}", e))?;
-    
-    // 获取工作区的文件（INDEX 到 WORKDIR 的差异）
-    let workdir_diff = repo.diff_index_to_workdir(None, None)
-        .map_err(|e| format!("Failed to create workdir diff: {}", e))?;
-    
-    workdir_diff.foreach(
-        &mut |delta, _progress| {
-            let file_path = delta.new_file().path()
-                .or_else(|| delta.old_file().path())
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default();
-            
-            let status = match delta.status() {
-                git2::Delta::Added => "added",
-                git2::Delta::Modified => "modified",
-                git2::Delta::Deleted => "deleted",
-                git2::Delta::Renamed => "renamed",
-                git2::Delta::Untracked => {
-                    untracked_files.push(file_path);
-                    return true;
-                },
-                _ => "unknown",
-            };
-            
-            unstaged_files.push(FileChange {
-                path: file_path,
-                status: status.to_string(),
-                additions: 1,
-                deletions: 0,
-            });
-            
-            true
-        },
-        None,
-        None,
-        None,
-    ).map_err(|e| format!("Failed to iterate workdir diff: {}", e))?;
-    
-    // 获取未跟踪的文件
+    // 使用 git status 来获取更准确的状态信息
     let mut status_options = git2::StatusOptions::new();
     status_options.include_untracked(true);
     status_options.include_ignored(false);
+    status_options.include_unmodified(false);
     
     let statuses = repo.statuses(Some(&mut status_options))
         .map_err(|e| format!("Failed to get statuses: {}", e))?;
@@ -540,11 +486,140 @@ async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, Stri
         let file_path = entry.path().unwrap_or("").to_string();
         let status = entry.status();
         
+        // 优先处理暂存状态，如果文件在暂存区，就不处理工作区状态
+        if status.contains(git2::Status::INDEX_NEW) {
+            staged_files.push(FileChange {
+                path: file_path.clone(),
+                status: "added".to_string(),
+                additions: 1,
+                deletions: 0,
+            });
+        } else if status.contains(git2::Status::INDEX_MODIFIED) {
+            staged_files.push(FileChange {
+                path: file_path.clone(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+            });
+        } else if status.contains(git2::Status::INDEX_DELETED) {
+            // 与 git status 保持一致：即便工作区有 WT_NEW，也要在暂存区显示 deleted
+            staged_files.push(FileChange {
+                path: file_path.clone(),
+                status: "deleted".to_string(),
+                additions: 0,
+                deletions: 1,
+            });
+        } else if status.contains(git2::Status::INDEX_RENAMED) {
+            staged_files.push(FileChange {
+                path: file_path.clone(),
+                status: "renamed".to_string(),
+                additions: 1,
+                deletions: 0,
+            });
+        }
+        
+        // 处理工作区状态（无论文件是否在暂存区）
         if status.contains(git2::Status::WT_NEW) {
-            if !untracked_files.contains(&file_path) {
+            // 与 git status 对齐：若该路径在 HEAD 存在且索引为 deleted，则工作区提示应为 Untracked
+            if path_tracked_in_head(&repo, &file_path) && status.contains(git2::Status::INDEX_DELETED) {
+                if !untracked_files.contains(&file_path) {
+                    untracked_files.push(file_path);
+                }
+            } else if path_tracked_in_head(&repo, &file_path) {
+                // HEAD 有且索引未删除，才视为修改
+                if !unstaged_files.iter().any(|f: &FileChange| f.path == file_path) {
+                    unstaged_files.push(FileChange {
+                        path: file_path.clone(),
+                        status: "modified".to_string(),
+                        additions: 1,
+                        deletions: 0,
+                    });
+                }
+            } else if !untracked_files.contains(&file_path) {
                 untracked_files.push(file_path);
             }
+        } else if status.contains(git2::Status::WT_MODIFIED) {
+            // 如果文件在工作区被修改但没有暂存，添加到未暂存列表
+            if !status.contains(git2::Status::INDEX_MODIFIED) {
+                unstaged_files.push(FileChange {
+                    path: file_path.clone(),
+                    status: "modified".to_string(),
+                    additions: 1,
+                    deletions: 0,
+                });
+            }
+        } else if status.contains(git2::Status::WT_DELETED) {
+            // 如果文件在工作区被删除但没有暂存，添加到未暂存列表
+            if !status.contains(git2::Status::INDEX_DELETED) {
+                unstaged_files.push(FileChange {
+                    path: file_path.clone(),
+                    status: "deleted".to_string(),
+                    additions: 0,
+                    deletions: 1,
+                });
+            }
+        } else if status.contains(git2::Status::WT_TYPECHANGE) {
+            // 文件类型改变
+            unstaged_files.push(FileChange {
+                path: file_path.clone(),
+                status: "modified".to_string(),
+                additions: 1,
+                deletions: 0,
+            });
         }
+    }
+    
+    // 处理取消暂存的情况：检查 HEAD 到工作区的差异
+    let head = repo.head().ok();
+    let head_tree = head.as_ref().and_then(|h| h.peel_to_tree().ok());
+    
+    if let Some(head_tree) = head_tree {
+        let workdir_diff = repo.diff_tree_to_workdir(Some(&head_tree), None)
+            .map_err(|e| format!("Failed to create workdir diff: {}", e))?;
+        
+        workdir_diff.foreach(
+            &mut |delta, _progress| {
+                let file_path = delta.new_file().path()
+                    .or_else(|| delta.old_file().path())
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                
+                // 检查这个文件是否已经在暂存区
+                let is_staged = staged_files.iter().any(|f| f.path == file_path);
+                
+                // 如果不在暂存区，但在工作区有变化，则添加到未暂存列表
+                if !is_staged {
+                    let status = match delta.status() {
+                        git2::Delta::Added => "added",
+                        git2::Delta::Modified => "modified",
+                        git2::Delta::Deleted => "deleted",
+                        git2::Delta::Renamed => "renamed",
+                        git2::Delta::Untracked => {
+                            if !untracked_files.contains(&file_path) {
+                                untracked_files.push(file_path);
+                            }
+                            return true;
+                        },
+                        _ => return true,
+                    };
+                    
+                    // 检查是否已经在未暂存列表中
+                    if !unstaged_files.iter().any(|f: &FileChange| f.path == file_path) {
+                        unstaged_files.push(FileChange {
+                            path: file_path,
+                            status: status.to_string(),
+                            additions: 1,
+                            deletions: 0,
+                        });
+                    }
+                }
+                
+                true
+            },
+            None,
+            None,
+            None,
+        ).map_err(|e| format!("Failed to iterate workdir diff: {}", e))?;
     }
     
     Ok(WorkspaceStatus {
@@ -575,13 +650,17 @@ async fn stage_file(repo_path: String, file_path: String) -> Result<String, Stri
 async fn unstage_file(repo_path: String, file_path: String) -> Result<String, String> {
     let repo = Repository::open(&repo_path)
         .map_err(|e| format!("Failed to open repository: {}", e))?;
-    
-    let mut index = repo.index().map_err(|e| format!("Failed to get index: {}", e))?;
-    
-    index.remove_path(Path::new(&file_path))
-        .map_err(|e| format!("Failed to remove file from index: {}", e))?;
-    
-    index.write().map_err(|e| format!("Failed to write index: {}", e))?;
+
+    // 等价于：git restore --staged <path>（将索引恢复到 HEAD）
+    let head_obj = repo.revparse_single("HEAD")
+        .map_err(|e| format!("Failed to get HEAD object: {}", e))?;
+
+    let mut checkout = CheckoutBuilder::new();
+    // 仅重置指定路径的索引条目
+    checkout.path(&file_path);
+
+    repo.reset(&head_obj, git2::ResetType::Mixed, Some(&mut checkout))
+        .map_err(|e| format!("Failed to reset index for path: {}", e))?;
     
     Ok(format!("Successfully unstaged {}", file_path))
 }

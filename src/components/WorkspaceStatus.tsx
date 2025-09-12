@@ -149,6 +149,8 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
         return '修改'
       case 'deleted':
         return '删除'
+      case 'deleted_restored':
+        return '删除(已恢复)'
       case 'renamed':
         return '重命名'
       default:
