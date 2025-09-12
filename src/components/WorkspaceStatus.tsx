@@ -108,6 +108,33 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
     }
   }
 
+  // 暂存所有未暂存的文件
+  const stageAllFiles = async () => {
+    if (!repoInfo || !workspaceStatus?.unstaged_files) return
+    
+    try {
+      setLoading(true)
+      setError(null)
+      
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      
+      // 批量暂存所有未暂存的文件
+      for (const file of workspaceStatus.unstaged_files) {
+        await invoke('stage_file', {
+          repoPath: repoInfo.path,
+          filePath: file.path,
+        })
+      }
+      
+      // 刷新工作区状态
+      await fetchWorkspaceStatus()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '批量暂存失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   // 取消暂存文件
   const unstageFile = async (filePath: string) => {
     if (!repoInfo) return
@@ -342,7 +369,17 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
       {workspaceStatus?.unstaged_files && workspaceStatus.unstaged_files.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">未暂存的文件</CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-lg">未暂存的文件</CardTitle>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={stageAllFiles}
+                disabled={loading}
+              >
+                暂存所有
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
             <div className="space-y-2">

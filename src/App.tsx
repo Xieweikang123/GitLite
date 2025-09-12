@@ -155,6 +155,7 @@ function App() {
                 onLoadMore={handleLoadMore}
                 hasMore={hasMoreCommits}
                 loading={loadingMore}
+                aheadCount={repoInfo?.ahead ?? 0}
               />
             ) : (
               <div className="text-center py-12">

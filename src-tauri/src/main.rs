@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::fs;
 use anyhow::Result;
+use std::io::Write;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CommitInfo {
@@ -59,6 +60,8 @@ pub struct RepoInfo {
     pub current_branch: String,
     pub branches: Vec<BranchInfo>,
     pub commits: Vec<CommitInfo>,
+    pub ahead: u32,   // 本地比远端超前的提交数（待推送）
+    pub behind: u32,  // 本地比远端落后的提交数（待拉取）
 }
 
 // 判断某路径是否在 HEAD（上一次提交）中被追踪
@@ -156,6 +159,70 @@ fn get_config_dir() -> std::path::PathBuf {
     config_dir
 }
 
+// 简单日志写入（追加到 GitLite/logs/gitlite.log）
+fn log_message(level: &str, message: &str) {
+    let base = get_config_dir();
+    let log_dir = base.join("logs");
+    if let Err(e) = fs::create_dir_all(&log_dir) {
+        eprintln!("Failed to create log dir: {}", e);
+        return;
+    }
+    let log_file = log_dir.join("gitlite.log");
+    let timestamp = chrono::Local::now().to_rfc3339();
+    let line = format!("[{}][{}] {}\n", timestamp, level, message);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_file) {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+// 返回日志文件完整路径（若目录不存在则创建）
+#[tauri::command]
+async fn get_log_file_path() -> Result<String, String> {
+    let base = get_config_dir();
+    let log_dir = base.join("logs");
+    if let Err(e) = fs::create_dir_all(&log_dir) {
+        return Err(format!("Failed to create log directory: {}", e));
+    }
+    let log_file = log_dir.join("gitlite.log");
+    Ok(log_file.to_string_lossy().to_string())
+}
+
+// 打开日志目录（跨平台）
+#[tauri::command]
+async fn open_log_dir() -> Result<(), String> {
+    let base = get_config_dir();
+    let log_dir = base.join("logs");
+    if let Err(e) = fs::create_dir_all(&log_dir) {
+        return Err(format!("Failed to create log directory: {}", e));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(log_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(log_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(log_dir)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+
+    Ok(())
+}
+
 // 打开 Git 仓库
 #[tauri::command]
 async fn open_repository(path: String) -> Result<RepoInfo, String> {
@@ -204,12 +271,31 @@ fn get_repository_info(repo: &Repository, path: &str) -> Result<RepoInfo> {
     
     // 获取提交历史
     let commits = get_commit_history(repo)?;
+
+    // 计算当前分支与上游的 ahead/behind
+    let mut ahead: u32 = 0;
+    let mut behind: u32 = 0;
+    // 通过分支名找到本地与上游引用
+    if let Ok(mut branch) = repo.find_branch(&current_branch, git2::BranchType::Local) {
+        // 本地提交
+        let local_oid_opt = branch.get().target();
+        // 上游跟踪分支（origin/<branch>）
+        let upstream_oid_opt = branch.upstream().ok().and_then(|up| up.get().target());
+        if let (Some(local_oid), Some(upstream_oid)) = (local_oid_opt, upstream_oid_opt) {
+            if let Ok((a, b)) = repo.graph_ahead_behind(local_oid, upstream_oid) {
+                ahead = a as u32;
+                behind = b as u32;
+            }
+        }
+    }
     
     Ok(RepoInfo {
         path: path.to_string(),
         current_branch,
         branches,
         commits,
+        ahead,
+        behind,
     })
 }
 
@@ -569,58 +655,57 @@ async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, Stri
         }
     }
     
-    // 处理取消暂存的情况：检查 HEAD 到工作区的差异
-    let head = repo.head().ok();
-    let head_tree = head.as_ref().and_then(|h| h.peel_to_tree().ok());
+    // 使用 index 到 workdir 的差异更可靠地获取"未暂存"
+    log_message("DEBUG", &format!("workspace_status: starting index->workdir diff | staged_count={} unstaged_count={}", staged_files.len(), unstaged_files.len()));
+    let index = repo.index().map_err(|e| format!("Failed to get index: {}", e))?;
+    let mut diff_opts = git2::DiffOptions::new();
+    diff_opts.include_untracked(true).recurse_untracked_dirs(true);
+    let diff = repo.diff_index_to_workdir(Some(&index), Some(&mut diff_opts))
+        .map_err(|e| format!("Failed to create index->workdir diff: {}", e))?;
     
-    if let Some(head_tree) = head_tree {
-        let workdir_diff = repo.diff_tree_to_workdir(Some(&head_tree), None)
-            .map_err(|e| format!("Failed to create workdir diff: {}", e))?;
-        
-        workdir_diff.foreach(
-            &mut |delta, _progress| {
-                let file_path = delta.new_file().path()
-                    .or_else(|| delta.old_file().path())
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                
-                // 检查这个文件是否已经在暂存区
-                let is_staged = staged_files.iter().any(|f| f.path == file_path);
-                
-                // 如果不在暂存区，但在工作区有变化，则添加到未暂存列表
-                if !is_staged {
-                    let status = match delta.status() {
-                        git2::Delta::Added => "added",
-                        git2::Delta::Modified => "modified",
-                        git2::Delta::Deleted => "deleted",
-                        git2::Delta::Renamed => "renamed",
-                        git2::Delta::Untracked => {
-                            if !untracked_files.contains(&file_path) {
-                                untracked_files.push(file_path);
-                            }
-                            return true;
-                        },
-                        _ => return true,
-                    };
-                    
-                    // 检查是否已经在未暂存列表中
-                    if !unstaged_files.iter().any(|f: &FileChange| f.path == file_path) {
-                        unstaged_files.push(FileChange {
-                            path: file_path,
-                            status: status.to_string(),
-                            additions: 1,
-                            deletions: 0,
-                        });
+     
+    let mut diff_count = 0;
+    diff.foreach(
+        &mut |delta, _| {
+            diff_count += 1;
+            let file_path = delta.new_file().path()
+                .or_else(|| delta.old_file().path())
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            let delta_status = format!("{:?}", delta.status());
+            log_message("DEBUG", &format!("workspace_status: delta[{}] {} | path={}", diff_count, delta_status, file_path));
+            // 注意：同一文件可以同时有暂存和未暂存的修改，所以不跳过
+            // 识别类型
+            let status = match delta.status() {
+                git2::Delta::Added => "added",
+                git2::Delta::Modified => "modified",
+                git2::Delta::Deleted => "deleted",
+                git2::Delta::Renamed => "renamed",
+                git2::Delta::Untracked => {
+                    if !untracked_files.contains(&file_path) {
+                        untracked_files.push(file_path.clone());
+                        log_message("DEBUG", &format!("workspace_status: added untracked | path={}", file_path));
                     }
-                }
-                
-                true
-            },
-            None,
-            None,
-            None,
-        ).map_err(|e| format!("Failed to iterate workdir diff: {}", e))?;
-    }
+                    return true;
+                },
+                _ => "modified",
+            };
+            if !unstaged_files.iter().any(|f| f.path == file_path) {
+                unstaged_files.push(FileChange {
+                    path: file_path.clone(),
+                    status: status.to_string(),
+                    additions: 1,
+                    deletions: 0,
+                });
+                log_message("DEBUG", &format!("workspace_status: added unstaged | path={} status={}", file_path, status));
+            }
+            true
+        },
+        None,
+        None,
+        None,
+    ).map_err(|e| format!("Failed to iterate index->workdir diff: {}", e))?;
+    log_message("DEBUG", &format!("workspace_status: completed | total_deltas={} final_unstaged={} final_untracked={}", diff_count, unstaged_files.len(), untracked_files.len()));
     
     Ok(WorkspaceStatus {
         staged_files,
@@ -703,23 +788,76 @@ async fn commit_changes(repo_path: String, message: String) -> Result<String, St
     Ok(format!("Successfully committed with ID: {}", commit_id))
 }
 
-// 推送更改
+// 推送更改（支持认证与自动设置上游）
 #[tauri::command]
 async fn push_changes(repo_path: String) -> Result<String, String> {
-    let repo = Repository::open(&repo_path)
-        .map_err(|e| format!("Failed to open repository: {}", e))?;
-    
-    let head = repo.head().map_err(|e| format!("Failed to get HEAD: {}", e))?;
+    log_message("INFO", &format!("push: attempt start | path={}", repo_path));
+    let repo = match Repository::open(&repo_path) {
+        Ok(r) => r,
+        Err(e) => {
+            log_message("ERROR", &format!("push: open repository failed: {} | path={}", e, repo_path));
+            return Err(format!("Failed to open repository: {}", e));
+        }
+    };
+
+    let head = match repo.head() {
+        Ok(h) => h,
+        Err(e) => {
+            log_message("ERROR", &format!("push: get HEAD failed: {}", e));
+            return Err(format!("Failed to get HEAD: {}", e));
+        }
+    };
     let branch_name = head.shorthand().unwrap_or("main");
-    
-    let mut remote = repo.find_remote("origin")
-        .map_err(|e| format!("Failed to find remote 'origin': {}", e))?;
-    
+
+    let mut remote = match repo.find_remote("origin") {
+        Ok(r) => r,
+        Err(e) => {
+            log_message("ERROR", &format!("push: find remote 'origin' failed: {}", e));
+            return Err(format!("Failed to find remote 'origin': {}", e));
+        }
+    };
+
+    // 认证与 Push 选项
+    let cfg = repo.config().ok();
+    let mut callbacks = git2::RemoteCallbacks::new();
+    callbacks.credentials(move |url, username_from_url, allowed| {
+        if allowed.contains(git2::CredentialType::DEFAULT) {
+            return git2::Cred::default();
+        }
+        if allowed.contains(git2::CredentialType::SSH_KEY) {
+            return git2::Cred::ssh_key_from_agent(username_from_url.unwrap_or("git"));
+        }
+        if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+            if let Some(cfg) = cfg.as_ref() {
+                if let Ok(cred) = git2::Cred::credential_helper(cfg, url, username_from_url) {
+                    return Ok(cred);
+                }
+            }
+        }
+        Err(git2::Error::from_str("No authentication method available"))
+    });
+
+    let mut push_opts = git2::PushOptions::new();
+    push_opts.remote_callbacks(callbacks);
+
     let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
-    
-    remote.push(&[&refspec], None)
-        .map_err(|e| format!("Failed to push: {}", e))?;
-    
+    if let Err(e) = remote.push(&[&refspec], Some(&mut push_opts)) {
+        let url = remote.url().unwrap_or("");
+        log_message("ERROR", &format!("push: git push failed: {} | url={} refspec={} branch={}", e, url, refspec, branch_name));
+        let log_path = get_config_dir().join("logs").join("gitlite.log");
+        return Err(format!("Failed to push: {} (see log: {})", e, log_path.display()));
+    }
+
+    // 若本地分支没有上游，自动设置到 origin/<branch>
+    if let Ok(mut branch) = repo.find_branch(branch_name, git2::BranchType::Local) {
+        if branch.upstream().is_err() {
+            if let Err(e) = branch.set_upstream(Some(&format!("origin/{}", branch_name))) {
+                log_message("WARN", &format!("push: set upstream failed but push succeeded: {}", e));
+            }
+        }
+    }
+
+    log_message("INFO", &format!("push: success | branch={} refspec={}", branch_name, refspec));
     Ok(format!("Successfully pushed to origin/{}", branch_name))
 }
 
@@ -738,7 +876,9 @@ fn main() {
             stage_file,
             unstage_file,
             commit_changes,
-            push_changes
+            push_changes,
+            get_log_file_path,
+            open_log_dir
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

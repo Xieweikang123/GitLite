@@ -12,6 +12,7 @@ interface CommitListProps {
   onLoadMore?: () => void
   hasMore?: boolean
   loading?: boolean
+  aheadCount?: number // 处于待推送的本地提交数量
 }
 
 export function CommitList({ 
@@ -19,9 +20,11 @@ export function CommitList({
   onCommitSelect, 
   onLoadMore, 
   hasMore = false, 
-  loading = false 
+  loading = false,
+  aheadCount = 0
 }: CommitListProps) {
   const [searchTerm, setSearchTerm] = useState('')
+  const [onlyPending, setOnlyPending] = useState(false)
 
   // 过滤提交
   const filteredCommits = useMemo(() => {
@@ -37,10 +40,16 @@ export function CommitList({
     )
   }, [commits, searchTerm])
 
+  // 计算待推送提交集合（取列表前 aheadCount 个）
+  const pendingPushIds = useMemo(() => {
+    if (!Array.isArray(commits) || aheadCount <= 0) return new Set<string>()
+    return new Set(commits.slice(0, aheadCount).map(c => c.id))
+  }, [commits, aheadCount])
+
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center justify-center">
+        <div className="flex items-center justify-between">
           <div className="relative">
             <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
@@ -50,11 +59,20 @@ export function CommitList({
               className="pl-8 w-64"
             />
           </div>
+          <label className="text-sm flex items-center gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={onlyPending}
+              onChange={(e) => setOnlyPending(e.target.checked)}
+              disabled={aheadCount <= 0}
+            />
+            仅显示待推送
+          </label>
         </div>
       </CardHeader>
       <CardContent>
         <div className="space-y-3 max-h-[400px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
-          {filteredCommits.map((commit) => (
+          {(onlyPending ? filteredCommits.filter(c => pendingPushIds.has(c.id)) : filteredCommits).map((commit) => (
             <div
               key={commit.id}
               className="border rounded-lg p-4 hover:bg-accent cursor-pointer transition-colors"
@@ -74,9 +92,12 @@ export function CommitList({
                     </span>
                   </div>
                 </div>
-                <Badge variant="outline" className="ml-2">
-                  {commit.short_id}
-                </Badge>
+                <div className="flex items-center gap-2 ml-2">
+                  {pendingPushIds.has(commit.id) && (
+                    <Badge className="bg-blue-600 text-white hover:bg-blue-600/90">待推送</Badge>
+                  )}
+                  <Badge variant="outline">{commit.short_id}</Badge>
+                </div>
               </div>
             </div>
           ))}
@@ -84,6 +105,12 @@ export function CommitList({
           {filteredCommits.length === 0 && searchTerm && (
             <div className="text-center py-8 text-muted-foreground">
               没有找到匹配的提交
+            </div>
+          )}
+
+          {(!searchTerm && onlyPending && aheadCount > 0 && filteredCommits.filter(c => pendingPushIds.has(c.id)).length === 0) && (
+            <div className="text-center py-8 text-muted-foreground">
+              当前分页中没有“待推送”的提交
             </div>
           )}
           

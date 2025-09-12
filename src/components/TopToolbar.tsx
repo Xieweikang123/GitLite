@@ -1,6 +1,6 @@
 import { Button } from './ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger } from './ui/select'
-import { FolderOpen, Clock, Settings, GitBranch } from 'lucide-react'
+import { FolderOpen, Clock, Settings, GitBranch, FileText } from 'lucide-react'
 import { RecentRepo } from '../types/git'
 
 interface TopToolbarProps {
@@ -54,8 +54,14 @@ export function TopToolbar({
                 </SelectContent>
               </Select>
             </div>
-            <div className="text-sm">
+            <div className="flex items-center gap-3 text-sm">
               <span className="text-muted-foreground">{repoInfo.commits.length} 提交</span>
+              {typeof repoInfo.ahead === 'number' && repoInfo.ahead > 0 && (
+                <span className="text-xs rounded bg-blue-600/10 text-blue-600 px-2 py-0.5">{repoInfo.ahead} 待推送</span>
+              )}
+              {typeof repoInfo.behind === 'number' && repoInfo.behind > 0 && (
+                <span className="text-xs rounded bg-amber-600/10 text-amber-600 px-2 py-0.5">{repoInfo.behind} 待拉取</span>
+              )}
             </div>
             <div className="text-xs text-muted-foreground max-w-xs truncate">
               {repoInfo.path}
@@ -108,6 +114,22 @@ export function TopToolbar({
         >
           <FolderOpen className="h-4 w-4" />
           {loading ? '打开中...' : '打开仓库'}
+        </Button>
+
+        {/* 查看日志 */}
+        <Button
+          variant="outline"
+          className="flex items-center gap-2"
+          onClick={async () => {
+            const { invoke } = await import('@tauri-apps/api/tauri')
+            try {
+              await invoke('open_log_dir')
+            } catch (err) {
+              console.error('打开日志失败', err)
+            }
+          }}
+        >
+          <FileText className="h-4 w-4" /> 查看日志
         </Button>
       </div>
     </div>

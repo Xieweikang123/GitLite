@@ -37,4 +37,6 @@ export interface RepoInfo {
   current_branch: string
   branches: BranchInfo[]
   commits: CommitInfo[]
+  ahead: number // 本地比远端超前（待推送）
+  behind: number // 本地比远端落后（待拉取）
 }
