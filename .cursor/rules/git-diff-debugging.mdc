@@ -1,0 +1,64 @@
+---
+description: Git diff debugging and parsing best practices
+globs: *.ts,*.tsx,*.rs
+---
+
+# Git Diff Debugging and Parsing Best Practices
+
+## Key Lesson: Always Check Backend Diff Format
+
+When implementing Git diff viewers, the most common issue is **missing diff line prefixes** in the backend output.
+
+### The Problem
+- Frontend expects standard Git diff format with `+`, `-`, and ` ` (space) prefixes
+- Backend was only outputting `line.content()` without prefixes
+- This caused all lines to be parsed as `unchanged` instead of `added`/`deleted`
+
+### The Solution
+In Rust backend using `git2` crate, always include line prefixes:
+
+```rust
+// ❌ WRONG - Missing prefixes
+diff_text.push_str(&format!("{}\n", std::str::from_utf8(line.content()).unwrap_or("")));
+
+// ✅ CORRECT - Include prefixes
+let prefix = match line.origin() {
+    '+' => "+",
+    '-' => "-", 
+    ' ' => " ",
+    _ => "",
+};
+diff_text.push_str(&format!("{}{}\n", prefix, std::str::from_utf8(line.content()).unwrap_or("")));
+```
+
+### Debugging Strategy
+1. **Check raw diff content first** - Use `console.log('Raw diff content:', diff)` to verify backend output
+2. **Verify line prefixes** - Ensure `+`, `-`, and ` ` prefixes are present
+3. **Test parsing logic** - Add detailed logging in `parseDiffToFullFile` function
+4. **Check line.origin()** - In Rust, use `line.origin()` to get the correct prefix character
+
+### Frontend Parsing Logic
+When parsing Git diffs in React/TypeScript:
+
+```typescript
+// Always check line prefixes
+if (line.startsWith('+')) {
+  // Handle added lines
+} else if (line.startsWith('-')) {
+  // Handle deleted lines  
+} else if (line.startsWith(' ')) {
+  // Handle unchanged lines
+}
+```
+
+### Common Issues
+- **Infinite re-renders**: Use proper `useEffect` dependencies
+- **Missing file content**: Implement `fillUnchangedLines` to show complete file
+- **Incorrect line numbers**: Handle hunk headers properly with `@@ -old,count +new,count @@`
+
+### Files Involved
+- Backend: [src-tauri/src/main.rs](mdc:src-tauri/src/main.rs) - `get_staged_file_diff`, `get_unstaged_file_diff`
+- Frontend: [src/components/VSCodeDiff.tsx](mdc:src/components/VSCodeDiff.tsx) - `parseDiffToFullFile`
+- Modal: [src/components/FileDiffModal.tsx](mdc:src/components/FileDiffModal.tsx) - Data fetching
+
+Remember: **The backend diff format is the foundation** - if it's wrong, the frontend will never work correctly!

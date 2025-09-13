@@ -4,6 +4,8 @@ import { Input } from './ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
 import { FileChange } from '../types/git'
+import { FileDiffModal } from './FileDiffModal'
+import { Eye } from 'lucide-react'
 
 interface WorkspaceStatusProps {
   repoInfo: any
@@ -24,6 +26,10 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [refreshIntervalSec] = useState(10)
   const [countdown, setCountdown] = useState<number>(refreshIntervalSec)
+  
+  // 文件差异查看状态
+  const [diffModalOpen, setDiffModalOpen] = useState(false)
+  const [selectedFile, setSelectedFile] = useState<{path: string, type: 'staged' | 'unstaged' | 'untracked'} | null>(null)
 
   // 获取工作区状态
   const fetchWorkspaceStatus = async () => {
@@ -232,6 +238,18 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
     }
   }
 
+  // 查看文件差异
+  const viewFileDiff = (filePath: string, type: 'staged' | 'unstaged' | 'untracked') => {
+    setSelectedFile({ path: filePath, type })
+    setDiffModalOpen(true)
+  }
+
+  // 关闭差异查看弹窗
+  const closeDiffModal = () => {
+    setDiffModalOpen(false)
+    setSelectedFile(null)
+  }
+
   // 当仓库信息变化时获取工作区状态
   useEffect(() => {
     if (repoInfo) {
@@ -349,15 +367,25 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-mono break-all">{file.path}</div>
                   </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => unstageFile(file.path)}
-                    disabled={loading}
-                    className="flex-shrink-0"
-                  >
-                    取消暂存
-                  </Button>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => viewFileDiff(file.path, 'staged')}
+                      className="flex items-center gap-1"
+                    >
+                      <Eye className="h-3 w-3" />
+                      查看
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => unstageFile(file.path)}
+                      disabled={loading}
+                    >
+                      取消暂存
+                    </Button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -391,14 +419,24 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-mono break-all">{file.path}</div>
                   </div>
-                  <Button
-                    size="sm"
-                    onClick={() => stageFile(file.path)}
-                    disabled={loading}
-                    className="flex-shrink-0"
-                  >
-                    暂存
-                  </Button>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => viewFileDiff(file.path, 'unstaged')}
+                      className="flex items-center gap-1"
+                    >
+                      <Eye className="h-3 w-3" />
+                      查看
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => stageFile(file.path)}
+                      disabled={loading}
+                    >
+                      暂存
+                    </Button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -420,14 +458,24 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-mono break-all">{file}</div>
                   </div>
-                  <Button
-                    size="sm"
-                    onClick={() => stageFile(file)}
-                    disabled={loading}
-                    className="flex-shrink-0"
-                  >
-                    添加
-                  </Button>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => viewFileDiff(file, 'untracked')}
+                      className="flex items-center gap-1"
+                    >
+                      <Eye className="h-3 w-3" />
+                      查看
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => stageFile(file)}
+                      disabled={loading}
+                    >
+                      添加
+                    </Button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -450,6 +498,17 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
             </Button>
           </CardContent>
         </Card>
+      )}
+
+      {/* 文件差异查看弹窗 */}
+      {selectedFile && (
+        <FileDiffModal
+          isOpen={diffModalOpen}
+          onClose={closeDiffModal}
+          filePath={selectedFile.path}
+          repoPath={repoInfo.path}
+          fileType={selectedFile.type}
+        />
       )}
     </div>
   )

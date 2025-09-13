@@ -861,6 +861,132 @@ async fn push_changes(repo_path: String) -> Result<String, String> {
     Ok(format!("Successfully pushed to origin/{}", branch_name))
 }
 
+// 获取已暂存文件的差异
+#[tauri::command]
+async fn get_staged_file_diff(repo_path: String, file_path: String) -> Result<String, String> {
+    let repo = Repository::open(&repo_path)
+        .map_err(|e| format!("Failed to open repository: {}", e))?;
+    
+    let head = repo.head()
+        .map_err(|e| format!("Failed to get HEAD: {}", e))?
+        .peel_to_commit()
+        .map_err(|e| format!("Failed to peel to commit: {}", e))?;
+    
+    let head_tree = head.tree()
+        .map_err(|e| format!("Failed to get HEAD tree: {}", e))?;
+    
+    let mut index = repo.index()
+        .map_err(|e| format!("Failed to get index: {}", e))?;
+    
+    let index_tree = repo.find_tree(index.write_tree().map_err(|e| format!("Failed to write tree: {}", e))?)
+        .map_err(|e| format!("Failed to find index tree: {}", e))?;
+    
+    let diff = repo.diff_tree_to_tree(Some(&head_tree), Some(&index_tree), None)
+        .map_err(|e| format!("Failed to create diff: {}", e))?;
+    
+    let mut diff_text = String::new();
+    diff.print(git2::DiffFormat::Patch, |delta, _hunk, line| {
+        // 检查是否是目标文件
+        let current_file = delta.new_file().path()
+            .or_else(|| delta.old_file().path())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        
+        if current_file == file_path {
+            // 添加diff行前缀
+            let prefix = match line.origin() {
+                '+' => "+",
+                '-' => "-",
+                ' ' => " ",
+                _ => "",
+            };
+            diff_text.push_str(&format!("{}{}\n", prefix, std::str::from_utf8(line.content()).unwrap_or("")));
+        }
+        true
+    }).map_err(|e| format!("Failed to print diff: {}", e))?;
+    
+    Ok(diff_text)
+}
+
+// 获取未暂存文件的差异
+#[tauri::command]
+async fn get_unstaged_file_diff(repo_path: String, file_path: String) -> Result<String, String> {
+    let repo = Repository::open(&repo_path)
+        .map_err(|e| format!("Failed to open repository: {}", e))?;
+    
+    let index = repo.index()
+        .map_err(|e| format!("Failed to get index: {}", e))?;
+    
+    let diff = repo.diff_index_to_workdir(Some(&index), None)
+        .map_err(|e| format!("Failed to create diff: {}", e))?;
+    
+    let mut diff_text = String::new();
+    diff.print(git2::DiffFormat::Patch, |delta, _hunk, line| {
+        // 检查是否是目标文件
+        let current_file = delta.new_file().path()
+            .or_else(|| delta.old_file().path())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        
+        if current_file == file_path {
+            // 添加diff行前缀
+            let prefix = match line.origin() {
+                '+' => "+",
+                '-' => "-",
+                ' ' => " ",
+                _ => "",
+            };
+            diff_text.push_str(&format!("{}{}\n", prefix, std::str::from_utf8(line.content()).unwrap_or("")));
+        }
+        true
+    }).map_err(|e| format!("Failed to print diff: {}", e))?;
+    
+    Ok(diff_text)
+}
+
+// 获取未跟踪文件的内容
+#[tauri::command]
+async fn get_untracked_file_content(repo_path: String, file_path: String) -> Result<String, String> {
+    let full_path = Path::new(&repo_path).join(&file_path);
+    
+    if full_path.is_dir() {
+        return Err("Cannot show content of directory".to_string());
+    }
+    
+    let content = fs::read_to_string(&full_path)
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+    
+    // 格式化为类似diff的格式，显示为新增文件
+    let lines: Vec<&str> = content.lines().collect();
+    let mut diff_text = format!("diff --git a/{} b/{}\n", file_path, file_path);
+    diff_text.push_str("new file mode 100644\n");
+    diff_text.push_str("index 0000000..0000000\n");
+    diff_text.push_str("--- /dev/null\n");
+    diff_text.push_str(&format!("+++ b/{}\n", file_path));
+    
+    for (i, line) in lines.iter().enumerate() {
+        diff_text.push_str(&format!("@@ -0,0 +{},1 @@\n", i + 1));
+        diff_text.push_str(&format!("+{}\n", line));
+    }
+    
+    Ok(diff_text)
+}
+
+// 获取文件内容
+#[tauri::command]
+async fn get_file_content(repo_path: String, file_path: String) -> Result<String, String> {
+    let full_path = Path::new(&repo_path).join(&file_path);
+    
+    if full_path.is_dir() {
+        return Err("Cannot read content of directory".to_string());
+    }
+    
+    let content = fs::read_to_string(&full_path)
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+    
+    Ok(content)
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -878,7 +1004,11 @@ fn main() {
             commit_changes,
             push_changes,
             get_log_file_path,
-            open_log_dir
+            open_log_dir,
+            get_staged_file_diff,
+            get_unstaged_file_diff,
+            get_untracked_file_content,
+            get_file_content
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

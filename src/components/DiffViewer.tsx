@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Button } from './ui/button'
 import { CommitInfo } from '../types/git'
 import { Copy, FileText } from 'lucide-react'
+import { VSCodeDiff } from './VSCodeDiff'
 
 interface DiffViewerProps {
   commit: CommitInfo | null
@@ -132,11 +133,9 @@ export function DiffViewer({ commit, selectedFile, onGetDiff, onGetSingleFileDif
         )}
         
         {!loading && !error && diff && (
-          <div className="bg-muted rounded-lg p-4 max-h-96 overflow-auto">
-            <pre className="text-sm whitespace-pre-wrap font-mono">
-              <code>{diff}</code>
-            </pre>
-          </div>
+          <VSCodeDiff 
+            diff={diff}
+          />
         )}
         
         {!loading && !error && !diff && (
