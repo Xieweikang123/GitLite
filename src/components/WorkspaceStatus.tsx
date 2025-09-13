@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
 import { FileChange } from '../types/git'
 import { FileDiffModal } from './FileDiffModal'
-import { Eye } from 'lucide-react'
+import { Eye, Archive, ArchiveRestore, Trash2 } from 'lucide-react'
 
 interface WorkspaceStatusProps {
   repoInfo: any
@@ -16,6 +16,13 @@ interface WorkspaceStatusData {
   staged_files: FileChange[]
   unstaged_files: FileChange[]
   untracked_files: string[]
+}
+
+interface StashInfo {
+  id: string
+  message: string
+  timestamp: string
+  branch: string
 }
 
 export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
@@ -30,6 +37,11 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
   // 文件差异查看状态
   const [diffModalOpen, setDiffModalOpen] = useState(false)
   const [selectedFile, setSelectedFile] = useState<{path: string, type: 'staged' | 'unstaged' | 'untracked'} | null>(null)
+  
+  // 贮藏相关状态
+  const [stashList, setStashList] = useState<StashInfo[]>([])
+  const [stashMessage, setStashMessage] = useState('')
+  const [showStashInput, setShowStashInput] = useState(false)
 
   // 获取工作区状态
   const fetchWorkspaceStatus = async () => {
@@ -52,9 +64,96 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
     }
   }
 
+  // 获取贮藏列表
+  const fetchStashList = async () => {
+    if (!repoInfo) return
+    
+    try {
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      const stashes: StashInfo[] = await invoke('get_stash_list', {
+        repoPath: repoInfo.path,
+      })
+      
+      setStashList(stashes)
+    } catch (err) {
+      console.error('获取贮藏列表失败:', err)
+    }
+  }
+
   const handleManualRefresh = async () => {
     await fetchWorkspaceStatus()
+    await fetchStashList()
     setCountdown(refreshIntervalSec)
+  }
+
+  // 创建贮藏
+  const createStash = async () => {
+    if (!repoInfo || !stashMessage.trim()) return
+    
+    try {
+      setLoading(true)
+      setError(null)
+      
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      await invoke('create_stash', {
+        repoPath: repoInfo.path,
+        message: stashMessage.trim(),
+      })
+      
+      setStashMessage('')
+      setShowStashInput(false)
+      await fetchWorkspaceStatus()
+      await fetchStashList()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '创建贮藏失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // 应用贮藏
+  const applyStash = async (stashId: string) => {
+    if (!repoInfo) return
+    
+    try {
+      setLoading(true)
+      setError(null)
+      
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      await invoke('apply_stash', {
+        repoPath: repoInfo.path,
+        stashId,
+      })
+      
+      await fetchWorkspaceStatus()
+      await fetchStashList()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '应用贮藏失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // 删除贮藏
+  const deleteStash = async (stashId: string) => {
+    if (!repoInfo) return
+    
+    try {
+      setLoading(true)
+      setError(null)
+      
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      await invoke('delete_stash', {
+        repoPath: repoInfo.path,
+        stashId,
+      })
+      
+      await fetchStashList()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '删除贮藏失败')
+    } finally {
+      setLoading(false)
+    }
   }
 
   // 自动刷新定时器与倒计时
@@ -72,6 +171,7 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
           ;(async () => {
             try {
               await fetchWorkspaceStatus()
+              await fetchStashList()
             } catch (_) {
               // 已在 fetch 内部处理错误
             }
@@ -86,6 +186,7 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
     ;(async () => {
       if (mounted) {
         await fetchWorkspaceStatus()
+        await fetchStashList()
       }
     })()
 
@@ -254,8 +355,10 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
   useEffect(() => {
     if (repoInfo) {
       fetchWorkspaceStatus()
+      fetchStashList()
     } else {
       setWorkspaceStatus(null)
+      setStashList([])
     }
   }, [repoInfo])
 
@@ -348,6 +451,115 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
               推送
             </Button>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* 贮藏区域 */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-lg">贮藏</CardTitle>
+            <div className="flex gap-2">
+              {!showStashInput && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setShowStashInput(true)}
+                  disabled={loading || !hasChanges}
+                  className="flex items-center gap-1"
+                >
+                  <Archive className="h-3 w-3" />
+                  贮藏更改
+                </Button>
+              )}
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* 贮藏输入区域 */}
+          {showStashInput && (
+            <div className="flex gap-2">
+              <Input
+                placeholder="输入贮藏信息..."
+                value={stashMessage}
+                onChange={(e) => setStashMessage(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    createStash()
+                  } else if (e.key === 'Escape') {
+                    setShowStashInput(false)
+                    setStashMessage('')
+                  }
+                }}
+                autoFocus
+              />
+              <Button 
+                onClick={createStash}
+                disabled={!stashMessage.trim() || loading}
+                size="sm"
+              >
+                贮藏
+              </Button>
+              <Button 
+                variant="outline"
+                onClick={() => {
+                  setShowStashInput(false)
+                  setStashMessage('')
+                }}
+                disabled={loading}
+                size="sm"
+              >
+                取消
+              </Button>
+            </div>
+          )}
+
+          {/* 贮藏列表 */}
+          {stashList.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-sm font-medium text-muted-foreground">贮藏列表</div>
+              {stashList.map((stash, index) => (
+                <div key={stash.id} className="flex items-start gap-2 p-2 border rounded">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium">{stash.message}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {stash.branch} • {new Date(stash.timestamp).toLocaleString()}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => applyStash(stash.id)}
+                      disabled={loading}
+                      className="flex items-center gap-1"
+                    >
+                      <ArchiveRestore className="h-3 w-3" />
+                      应用
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => deleteStash(stash.id)}
+                      disabled={loading}
+                      className="flex items-center gap-1 text-destructive hover:text-destructive"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                      删除
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* 无贮藏状态 */}
+          {stashList.length === 0 && !showStashInput && (
+            <div className="text-center py-4">
+              <p className="text-sm text-muted-foreground">暂无贮藏</p>
+            </div>
+          )}
         </CardContent>
       </Card>
 

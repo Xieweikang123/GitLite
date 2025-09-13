@@ -5,8 +5,9 @@ use git2::{Repository, Oid};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::fs;
-use anyhow::Result;
+use anyhow::Result; 
 use std::io::Write;
+use std::str::FromStr;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CommitInfo {
@@ -38,6 +39,14 @@ pub struct WorkspaceStatus {
     pub staged_files: Vec<FileChange>,
     pub unstaged_files: Vec<FileChange>,
     pub untracked_files: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StashInfo {
+    pub id: String,
+    pub message: String,
+    pub timestamp: String,
+    pub branch: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -984,6 +993,120 @@ async fn get_file_content(repo_path: String, file_path: String) -> Result<String
     Ok(content)
 }
 
+// 获取贮藏列表
+#[tauri::command]
+async fn get_stash_list(repo_path: String) -> Result<Vec<StashInfo>, String> {
+    let mut repo = Repository::open(&repo_path)
+        .map_err(|e| format!("Failed to open repository: {}", e))?;
+
+    let mut stashes = Vec::new();
+    
+    // 获取当前分支名
+    let current_branch = match repo.head() {
+        Ok(head) => {
+            if let Some(name) = head.shorthand() {
+                name.to_string()
+            } else {
+                "detached".to_string()
+            }
+        },
+        Err(_) => "unknown".to_string(),
+    };
+    
+    // 收集贮藏信息
+    let mut stash_data = Vec::new();
+    repo.stash_foreach(|_index, message, oid| {
+        stash_data.push((oid.to_string(), message.to_string()));
+        true // 继续遍历
+    }).map_err(|e| format!("Failed to iterate stashes: {}", e))?;
+    
+    // 处理每个贮藏
+    for (stash_id, stash_message) in stash_data {
+        let oid = match Oid::from_str(&stash_id) {
+            Ok(oid) => oid,
+            Err(_) => continue,
+        };
+        let timestamp = match repo.find_commit(oid) {
+            Ok(commit) => commit.time().seconds().to_string(),
+            Err(_) => "0".to_string(),
+        };
+        
+        stashes.push(StashInfo {
+            id: stash_id,
+            message: stash_message,
+            timestamp,
+            branch: current_branch.clone(),
+        });
+    }
+    
+    Ok(stashes)
+}
+
+// 创建贮藏
+#[tauri::command]
+async fn create_stash(repo_path: String, message: String) -> Result<String, String> {
+    let mut repo = Repository::open(&repo_path)
+        .map_err(|e| format!("Failed to open repository: {}", e))?;
+
+    let signature = repo.signature()
+        .map_err(|e| format!("Failed to get signature: {}", e))?;
+
+    let stash_id = repo.stash_save(&signature, &message, None)
+        .map_err(|e| format!("Failed to create stash: {}", e))?;
+    
+    Ok(format!("Successfully created stash: {}", stash_id))
+}
+
+// 应用贮藏
+#[tauri::command]
+async fn apply_stash(repo_path: String, stash_id: String) -> Result<String, String> {
+    let mut repo = Repository::open(&repo_path)
+        .map_err(|e| format!("Failed to open repository: {}", e))?;
+
+    // 查找贮藏的索引
+    let mut stash_index = None;
+    repo.stash_foreach(|index, _message, oid| {
+        if oid.to_string() == stash_id {
+            stash_index = Some(index);
+            false // 停止遍历
+        } else {
+            true // 继续遍历
+        }
+    }).map_err(|e| format!("Failed to find stash: {}", e))?;
+
+    let index = stash_index.ok_or("Stash not found")?;
+
+    repo.stash_apply(index, None)
+        .map_err(|e| format!("Failed to apply stash: {}", e))?;
+    
+    Ok(format!("Successfully applied stash: {}", stash_id))
+}
+
+// 删除贮藏
+#[tauri::command]
+async fn delete_stash(repo_path: String, stash_id: String) -> Result<String, String> {
+    let mut repo = Repository::open(&repo_path)
+        .map_err(|e| format!("Failed to open repository: {}", e))?;
+
+    // 查找贮藏的索引
+    let mut stash_index = None;
+    repo.stash_foreach(|index, _message, oid| {
+        if oid.to_string() == stash_id {
+            stash_index = Some(index);
+            false // 停止遍历
+        } else {
+            true // 继续遍历
+        }
+    }).map_err(|e| format!("Failed to find stash: {}", e))?;
+
+    let index = stash_index.ok_or("Stash not found")?;
+
+    repo.stash_drop(index)
+        .map_err(|e| format!("Failed to delete stash: {}", e))?;
+    
+    Ok(format!("Successfully deleted stash: {}", stash_id))
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -1005,7 +1128,11 @@ fn main() {
             get_staged_file_diff,
             get_unstaged_file_diff,
             get_untracked_file_content,
-            get_file_content
+            get_file_content,
+            get_stash_list,
+            create_stash,
+            apply_stash,
+            delete_stash
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
