@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { Button } from './ui/button'
-import { X, Copy } from 'lucide-react'
+import { Copy } from 'lucide-react'
 import { VSCodeDiff } from './VSCodeDiff'
 
 interface FileDiffModalProps {
@@ -22,6 +22,23 @@ export function FileDiffModal({ isOpen, onClose, filePath, repoPath, fileType }:
       loadFileDiff()
     }
   }, [isOpen, filePath, repoPath, fileType])
+
+  // 添加ESC键关闭功能
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && isOpen) {
+        onClose()
+      }
+    }
+
+    if (isOpen) {
+      document.addEventListener('keydown', handleKeyDown)
+    }
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [isOpen, onClose])
 
   const loadFileDiff = async () => {
     try {
@@ -84,16 +101,8 @@ export function FileDiffModal({ isOpen, onClose, filePath, repoPath, fileType }:
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="max-w-4xl max-h-[80vh] flex flex-col">
         <DialogHeader>
-          <DialogTitle className="flex items-center justify-between">
-            <span>{getModalTitle()}</span>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onClose}
-              className="h-6 w-6 p-0"
-            >
-              <X className="h-4 w-4" />
-            </Button>
+          <DialogTitle>
+            {getModalTitle()}
           </DialogTitle>
           <p className="text-sm text-muted-foreground font-mono">{filePath}</p>
         </DialogHeader>

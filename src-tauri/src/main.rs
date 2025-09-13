@@ -2,7 +2,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use git2::{Repository, Oid};
-use git2::build::CheckoutBuilder;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::fs;
@@ -736,16 +735,14 @@ async fn unstage_file(repo_path: String, file_path: String) -> Result<String, St
     let repo = Repository::open(&repo_path)
         .map_err(|e| format!("Failed to open repository: {}", e))?;
 
-    // 等价于：git restore --staged <path>（将索引恢复到 HEAD）
+    // 获取 HEAD 对象
     let head_obj = repo.revparse_single("HEAD")
         .map_err(|e| format!("Failed to get HEAD object: {}", e))?;
 
-    let mut checkout = CheckoutBuilder::new();
-    // 仅重置指定路径的索引条目
-    checkout.path(&file_path);
-
-    repo.reset(&head_obj, git2::ResetType::Mixed, Some(&mut checkout))
-        .map_err(|e| format!("Failed to reset index for path: {}", e))?;
+    // 使用 reset_default 方法取消暂存指定文件
+    // 这等价于 git reset HEAD <file>，会将文件从暂存区移除但不会标记为删除
+    repo.reset_default(Some(&head_obj), &[Path::new(&file_path)])
+        .map_err(|e| format!("Failed to unstage file: {}", e))?;
     
     Ok(format!("Successfully unstaged {}", file_path))
 }
