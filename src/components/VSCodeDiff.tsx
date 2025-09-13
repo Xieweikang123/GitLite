@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Button } from './ui/button'
-import { Copy, ChevronDown, ChevronRight } from 'lucide-react'
+import { Copy, ChevronDown, ChevronRight, ChevronUp, ChevronDown as ChevronDownIcon, Navigation } from 'lucide-react'
 
 interface FileLine {
   lineNumber: number
@@ -8,6 +8,7 @@ interface FileLine {
   type: 'unchanged' | 'added' | 'deleted' | 'modified'
   oldLineNumber?: number
   segments?: DiffSegment[]
+  changeIndex?: number // 更改的索引
 }
 
 interface DiffSegment {
@@ -24,6 +25,9 @@ interface VSCodeDiffProps {
 export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
   const [fileLines, setFileLines] = useState<FileLine[]>([])
   const [isExpanded, setIsExpanded] = useState(true)
+  const [currentChangeIndex, setCurrentChangeIndex] = useState(0)
+  const [changeCount, setChangeCount] = useState(0)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
 
   // 调试：检查传入的props（只在diff变化时打印）
   useEffect(() => {
@@ -41,11 +45,23 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
       console.log('Raw diff content:', diff)
       const parsedLines = parseDiffToFullFile(diff)
       console.log('Parsed lines:', parsedLines)
-      setFileLines(parsedLines)
+      
+      // 为更改行添加索引
+      const linesWithChangeIndex = addChangeIndices(parsedLines)
+      setFileLines(linesWithChangeIndex)
+      
+      // 计算更改块数量
+      const uniqueChangeIndices = new Set(
+        linesWithChangeIndex
+          .filter(line => line.changeIndex !== undefined)
+          .map(line => line.changeIndex)
+      )
+      setChangeCount(uniqueChangeIndices.size)
+      setCurrentChangeIndex(0)
       
       // 启用文件内容补全，显示完整文件
       if (filePath && repoPath) {
-        fillUnchangedLines(parsedLines, filePath, repoPath)
+        fillUnchangedLines(linesWithChangeIndex, filePath, repoPath)
       }
     }
   }, [diff]) // 只依赖diff，避免无限重新渲染
@@ -87,10 +103,92 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
       }
       
       console.log('Full file lines:', fullFileLines)
-      setFileLines(fullFileLines)
+      // 重新为完整文件行添加更改索引
+      const fullFileLinesWithIndex = addChangeIndices(fullFileLines)
+      setFileLines(fullFileLinesWithIndex)
     } catch (err) {
       console.error('Failed to read file content:', err)
       // 如果读取失败，保持原有内容
+    }
+  }
+
+  // 为更改行添加索引，将连续的行合并为一个更改块
+  const addChangeIndices = (lines: FileLine[]): FileLine[] => {
+    let changeIndex = 0
+    
+    return lines.map((line, index) => {
+      const isChangedLine = line.type === 'added' || line.type === 'deleted' || line.type === 'modified'
+      
+      if (isChangedLine) {
+        // 检查是否与上一行是连续的更改
+        const prevLine = index > 0 ? lines[index - 1] : null
+        const isConsecutive = prevLine && 
+                             (prevLine.type === 'added' || prevLine.type === 'deleted' || prevLine.type === 'modified') &&
+                             (line.lineNumber === prevLine.lineNumber + 1 || 
+                              line.lineNumber === prevLine.lineNumber)
+        
+        if (!isConsecutive) {
+          // 新的更改块
+          changeIndex++
+        }
+        
+        return { ...line, changeIndex: changeIndex - 1 }
+      } else {
+        // 未更改的行
+        return line
+      }
+    })
+  }
+
+  // 导航到下一个更改
+  const goToNextChange = () => {
+    if (currentChangeIndex < changeCount - 1) {
+      const newIndex = currentChangeIndex + 1
+      setCurrentChangeIndex(newIndex)
+      scrollToChange(newIndex)
+    }
+  }
+
+  // 导航到上一个更改
+  const goToPreviousChange = () => {
+    if (currentChangeIndex > 0) {
+      const newIndex = currentChangeIndex - 1
+      setCurrentChangeIndex(newIndex)
+      scrollToChange(newIndex)
+    }
+  }
+
+  // 滚动到指定的更改位置
+  const scrollToChange = (changeIndex: number) => {
+    const changeLines = fileLines.filter(line => line.changeIndex === changeIndex)
+    if (changeLines.length > 0 && scrollContainerRef.current) {
+      // 滚动到更改块的第一行
+      const firstChangeLine = changeLines[0]
+      const lineElement = scrollContainerRef.current.querySelector(`[data-line-number="${firstChangeLine.lineNumber}"]`)
+      if (lineElement) {
+        lineElement.scrollIntoView({ 
+          behavior: 'smooth', 
+          block: 'center' 
+        })
+        // 高亮显示当前更改块的所有行
+        changeLines.forEach(changeLine => {
+          const element = scrollContainerRef.current?.querySelector(`[data-line-number="${changeLine.lineNumber}"]`)
+          if (element) {
+            element.classList.add('ring-2', 'ring-blue-500', 'ring-opacity-50')
+            setTimeout(() => {
+              element.classList.remove('ring-2', 'ring-blue-500', 'ring-opacity-50')
+            }, 2000)
+          }
+        })
+      }
+    }
+  }
+
+  // 跳转到指定更改
+  const jumpToChange = (changeIndex: number) => {
+    if (changeIndex >= 0 && changeIndex < changeCount) {
+      setCurrentChangeIndex(changeIndex)
+      scrollToChange(changeIndex)
     }
   }
 
@@ -357,16 +455,21 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
 
   const renderFullFileView = () => (
     <div className="font-mono text-sm">
-      {fileLines.map((line, index) => (
-        <div 
-          key={index}
-          className={`px-4 py-1 flex items-start gap-4 ${
-            line.type === 'added' ? 'bg-green-50 border-l-4 border-green-500' :
-            line.type === 'deleted' ? 'bg-red-50 border-l-4 border-red-500' :
-            line.type === 'modified' ? 'bg-orange-50 border-l-4 border-orange-500' :
-            'bg-white hover:bg-gray-50'
-          }`}
-        >
+      {fileLines.map((line, index) => {
+        const isCurrentChange = line.changeIndex === currentChangeIndex
+        return (
+          <div 
+            key={index}
+            data-line-number={line.lineNumber}
+            className={`px-4 py-1 flex items-start gap-4 transition-all duration-200 ${
+              line.type === 'added' ? 'bg-green-50 border-l-4 border-green-500' :
+              line.type === 'deleted' ? 'bg-red-50 border-l-4 border-red-500' :
+              line.type === 'modified' ? 'bg-orange-50 border-l-4 border-orange-500' :
+              'bg-white hover:bg-gray-50'
+            } ${
+              isCurrentChange ? 'ring-2 ring-blue-500 ring-opacity-50 bg-blue-50' : ''
+            }`}
+          >
           {/* Line Number */}
           <div className="text-xs text-gray-500 w-12 text-right flex-shrink-0">
             {line.lineNumber}
@@ -446,7 +549,8 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
             )}
           </div>
         </div>
-      ))}
+        )
+      })}
     </div>
   )
 
@@ -474,10 +578,85 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
             复制
           </Button>
         </div>
+        
+        {/* 更改导航控件 */}
+        {changeCount > 0 && (
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-muted-foreground whitespace-nowrap">
+              更改 {currentChangeIndex + 1} / {changeCount}
+            </span>
+            
+            {/* 滑动条 */}
+            {changeCount > 1 && (
+              <div className="flex items-center gap-2 min-w-0 flex-1 max-w-32">
+                <input
+                  type="range"
+                  min="0"
+                  max={changeCount - 1}
+                  value={currentChangeIndex}
+                  onChange={(e) => {
+                    const newIndex = parseInt(e.target.value)
+                    setCurrentChangeIndex(newIndex)
+                    scrollToChange(newIndex)
+                  }}
+                  className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                  style={{
+                    background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${(currentChangeIndex / (changeCount - 1)) * 100}%, #e5e7eb ${(currentChangeIndex / (changeCount - 1)) * 100}%, #e5e7eb 100%)`,
+                    WebkitAppearance: 'none',
+                    appearance: 'none'
+                  }}
+                  title={`滑动到更改 ${currentChangeIndex + 1}`}
+                />
+              </div>
+            )}
+            
+            <div className="flex items-center gap-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={goToPreviousChange}
+                disabled={currentChangeIndex === 0}
+                className="p-1 h-8 w-8"
+                title="上一个更改"
+              >
+                <ChevronUp className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={goToNextChange}
+                disabled={currentChangeIndex === changeCount - 1}
+                className="p-1 h-8 w-8"
+                title="下一个更改"
+              >
+                <ChevronDownIcon className="h-4 w-4" />
+              </Button>
+            </div>
+            {changeCount > 1 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  const input = prompt(`跳转到更改 (1-${changeCount}):`, (currentChangeIndex + 1).toString())
+                  if (input) {
+                    const index = parseInt(input) - 1
+                    if (!isNaN(index) && index >= 0 && index < changeCount) {
+                      jumpToChange(index)
+                    }
+                  }
+                }}
+                className="p-1 h-8 w-8"
+                title="跳转到指定更改"
+              >
+                <Navigation className="h-4 w-4" />
+              </Button>
+            )}
+          </div>
+        )}
       </div>
       
       {isExpanded && (
-        <div className="max-h-96 overflow-y-auto">
+        <div ref={scrollContainerRef} className="max-h-96 overflow-y-auto">
           {fileLines.length === 0 ? (
             <div className="p-4 text-center text-muted-foreground">
               没有差异内容
