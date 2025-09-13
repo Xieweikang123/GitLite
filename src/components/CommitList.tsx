@@ -24,7 +24,6 @@ export function CommitList({
   aheadCount = 0
 }: CommitListProps) {
   const [searchTerm, setSearchTerm] = useState('')
-  const [onlyPending, setOnlyPending] = useState(false)
 
   // 过滤提交
   const filteredCommits = useMemo(() => {
@@ -59,20 +58,11 @@ export function CommitList({
               className="pl-8 w-64"
             />
           </div>
-          <label className="text-sm flex items-center gap-2 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={onlyPending}
-              onChange={(e) => setOnlyPending(e.target.checked)}
-              disabled={aheadCount <= 0}
-            />
-            仅显示待推送
-          </label>
         </div>
       </CardHeader>
       <CardContent>
         <div className="space-y-3 max-h-[400px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
-          {(onlyPending ? filteredCommits.filter(c => pendingPushIds.has(c.id)) : filteredCommits).map((commit) => (
+          {filteredCommits.map((commit) => (
             <div
               key={commit.id}
               className="border rounded-lg p-4 hover:bg-accent cursor-pointer transition-colors"
@@ -108,11 +98,6 @@ export function CommitList({
             </div>
           )}
 
-          {(!searchTerm && onlyPending && aheadCount > 0 && filteredCommits.filter(c => pendingPushIds.has(c.id)).length === 0) && (
-            <div className="text-center py-8 text-muted-foreground">
-              当前分页中没有“待推送”的提交
-            </div>
-          )}
           
         </div>
         

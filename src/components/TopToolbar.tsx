@@ -1,10 +1,11 @@
 import { Button } from './ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger } from './ui/select'
-import { FolderOpen, GitBranch } from 'lucide-react'
+import { FolderOpen, GitBranch, ExternalLink } from 'lucide-react'
 
 interface TopToolbarProps {
   onOpenRepository: () => void
   onBranchSelect: (branchName: string) => void
+  onOpenRemoteRepository?: () => void
   loading: boolean
   repoInfo: any
 }
@@ -12,6 +13,7 @@ interface TopToolbarProps {
 export function TopToolbar({
   onOpenRepository,
   onBranchSelect,
+  onOpenRemoteRepository,
   loading,
   repoInfo
 }: TopToolbarProps) {
@@ -63,6 +65,16 @@ export function TopToolbar({
 
       {/* 右侧：操作按钮 */}
       <div className="flex items-center gap-3">
+        {repoInfo?.remote_url && onOpenRemoteRepository && (
+          <Button
+            onClick={onOpenRemoteRepository}
+            variant="outline"
+            className="flex items-center gap-2"
+          >
+            <ExternalLink className="h-4 w-4" />
+            打开远程仓库
+          </Button>
+        )}
         <Button
           onClick={onOpenRepository}
           disabled={loading}

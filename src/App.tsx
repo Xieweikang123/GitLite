@@ -7,6 +7,7 @@ import { CommitList } from './components/CommitList'
 import { DiffViewer } from './components/DiffViewer'
 import { FileList } from './components/FileList'
 import { CommitInfo, FileChange } from './types/git'
+import { invoke } from '@tauri-apps/api/tauri'
 
 function App() {
   const { 
@@ -97,6 +98,19 @@ function App() {
     }
   }
 
+  const handleOpenRemoteRepository = async () => {
+    if (repoInfo?.remote_url) {
+      try {
+        // 使用 Tauri 的 shell API 在默认浏览器中打开外部链接
+        await invoke('open_external_url', { url: repoInfo.remote_url })
+      } catch (error) {
+        console.error('Failed to open remote repository:', error)
+        // 如果 Tauri API 失败，回退到 window.open
+        window.open(repoInfo.remote_url, '_blank')
+      }
+    }
+  }
+
   // 当仓库信息更新时，重置提交列表
   React.useEffect(() => {
     if (repoInfo) {
@@ -125,6 +139,7 @@ function App() {
       <TopToolbar
         onOpenRepository={openRepository}
         onBranchSelect={handleBranchSelect}
+        onOpenRemoteRepository={handleOpenRemoteRepository}
         loading={loading}
         repoInfo={repoInfo}
       />

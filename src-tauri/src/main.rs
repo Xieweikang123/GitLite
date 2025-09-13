@@ -70,6 +70,7 @@ pub struct RepoInfo {
     pub commits: Vec<CommitInfo>,
     pub ahead: u32,   // 本地比远端超前的提交数（待推送）
     pub behind: u32,  // 本地比远端落后的提交数（待拉取）
+    pub remote_url: Option<String>, // 远程仓库URL
 }
 
 // 判断某路径是否在 HEAD（上一次提交）中被追踪
@@ -231,6 +232,36 @@ async fn open_log_dir() -> Result<(), String> {
     Ok(())
 }
 
+// 在默认浏览器中打开外部链接（跨平台）
+#[tauri::command]
+async fn open_external_url(url: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .spawn()
+            .map_err(|e| format!("Failed to open URL: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("Failed to open URL: {}", e))?;
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("Failed to open URL: {}", e))?;
+    }
+
+    Ok(())
+}
+
 // 打开 Git 仓库
 #[tauri::command]
 async fn open_repository(path: String) -> Result<RepoInfo, String> {
@@ -297,6 +328,11 @@ fn get_repository_info(repo: &Repository, path: &str) -> Result<RepoInfo> {
         }
     }
     
+    // 获取远程仓库URL
+    let remote_url = repo.find_remote("origin")
+        .ok()
+        .and_then(|remote| remote.url().map(|url| url.to_string()));
+    
     Ok(RepoInfo {
         path: path.to_string(),
         current_branch,
@@ -304,6 +340,7 @@ fn get_repository_info(repo: &Repository, path: &str) -> Result<RepoInfo> {
         commits,
         ahead,
         behind,
+        remote_url,
     })
 }
 
@@ -1155,6 +1192,7 @@ fn main() {
             push_changes,
             get_log_file_path,
             open_log_dir,
+            open_external_url,
             get_staged_file_diff,
             get_unstaged_file_diff,
             get_untracked_file_content,
