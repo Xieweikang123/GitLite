@@ -1,6 +1,6 @@
 import { Button } from './ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger } from './ui/select'
-import { FolderOpen, GitBranch, ExternalLink } from 'lucide-react'
+import { FolderOpen, GitBranch, ExternalLink, Moon, Sun } from 'lucide-react'
 
 interface TopToolbarProps {
   onOpenRepository: () => void
@@ -8,6 +8,8 @@ interface TopToolbarProps {
   onOpenRemoteRepository?: () => void
   loading: boolean
   repoInfo: any
+  isDark: boolean
+  onToggleDarkMode: () => void
 }
 
 export function TopToolbar({
@@ -15,7 +17,9 @@ export function TopToolbar({
   onBranchSelect,
   onOpenRemoteRepository,
   loading,
-  repoInfo
+  repoInfo,
+  isDark,
+  onToggleDarkMode
 }: TopToolbarProps) {
   return (
     <div className="flex items-center justify-between bg-card border-b px-6 py-3">
@@ -65,6 +69,21 @@ export function TopToolbar({
 
       {/* 右侧：操作按钮 */}
       <div className="flex items-center gap-3">
+        {/* 暗色模式切换按钮 */}
+        <Button
+          onClick={onToggleDarkMode}
+          variant="outline"
+          size="icon"
+          className="h-9 w-9"
+          title={isDark ? '切换到亮色模式' : '切换到暗色模式'}
+        >
+          {isDark ? (
+            <Sun className="h-4 w-4" />
+          ) : (
+            <Moon className="h-4 w-4" />
+          )}
+        </Button>
+        
         {repoInfo?.remote_url && onOpenRemoteRepository && (
           <Button
             onClick={onOpenRemoteRepository}

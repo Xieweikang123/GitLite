@@ -136,7 +136,7 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
       // 检查是否是重复应用的错误
       if (errorMessage.includes('already been applied') || errorMessage.includes('no changes to apply')) {
         // 这实际上是一个成功的情况，只是贮藏已经被应用过了
-        console.log('贮藏已经被应用过了:', result)
+        console.log('贮藏已经被应用过了')
         await fetchWorkspaceStatus()
         await fetchStashList()
         return // 不显示错误，直接返回

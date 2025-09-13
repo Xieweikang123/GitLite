@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { useGit } from './hooks/useGit'
+import { useDarkMode } from './hooks/useDarkMode'
 import { TopToolbar } from './components/TopToolbar'
 import { MenuToolbar } from './components/MenuToolbar'
 import { WorkspaceStatus } from './components/WorkspaceStatus'
@@ -25,6 +26,8 @@ function App() {
     getSingleFileDiff,
     getCommitsPaginated
   } = useGit()
+  
+  const { isDark, toggleDarkMode } = useDarkMode()
   const [selectedCommit, setSelectedCommit] = useState<CommitInfo | null>(null)
   const [commitFiles, setCommitFiles] = useState<FileChange[]>([])
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
@@ -142,6 +145,8 @@ function App() {
         onOpenRemoteRepository={handleOpenRemoteRepository}
         loading={loading}
         repoInfo={repoInfo}
+        isDark={isDark}
+        onToggleDarkMode={toggleDarkMode}
       />
 
       <div className="container mx-auto p-6">

@@ -62,9 +62,35 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
       // 启用文件内容补全，显示完整文件
       if (filePath && repoPath) {
         fillUnchangedLines(linesWithChangeIndex, filePath, repoPath)
+      } else {
+        // 如果没有文件路径，直接滚动到第一个更改
+        scrollToFirstChange(linesWithChangeIndex)
       }
     }
   }, [diff]) // 只依赖diff，避免无限重新渲染
+
+  const scrollToFirstChange = (lines: FileLine[]) => {
+    // 找到第一个有更改的行
+    const firstChangeLine = lines.find(line => 
+      line.type === 'added' || line.type === 'deleted' || line.type === 'modified'
+    )
+    
+    if (firstChangeLine && scrollContainerRef.current) {
+      // 使用 setTimeout 确保 DOM 已经更新
+      setTimeout(() => {
+        const element = scrollContainerRef.current?.querySelector(
+          `[data-line-number="${firstChangeLine.lineNumber}"]`
+        ) as HTMLElement
+        
+        if (element) {
+          element.scrollIntoView({ 
+            behavior: 'smooth', 
+            block: 'center' 
+          })
+        }
+      }, 100)
+    }
+  }
 
   const fillUnchangedLines = async (lines: FileLine[], filePath: string, repoPath: string) => {
     try {
@@ -106,9 +132,13 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
       // 重新为完整文件行添加更改索引
       const fullFileLinesWithIndex = addChangeIndices(fullFileLines)
       setFileLines(fullFileLinesWithIndex)
+      
+      // 在文件内容加载完成后，滚动到第一个更改
+      scrollToFirstChange(fullFileLinesWithIndex)
     } catch (err) {
       console.error('Failed to read file content:', err)
       // 如果读取失败，保持原有内容
+      scrollToFirstChange(lines)
     }
   }
 
@@ -287,9 +317,10 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
             newLength: newContent.length
           })
           
-          if (oldContent.trim() === newContent.trim() && oldContent !== newContent) {
-            // 这是空白字符的变化，创建修改行
-            console.log('Detected whitespace change:', { oldContent, newContent })
+          // 检查是否是同一行的修改（删除+添加）
+          if (oldContent !== newContent) {
+            // 这是同一行的修改，创建修改行
+            console.log('Detected line modification:', { oldContent, newContent })
             const segments = detectCharacterLevelDiff(oldContent, newContent)
             console.log('Generated segments:', segments)
             
@@ -323,8 +354,8 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
           const oldContent = prevLine.content
           const newContent = nextLine.content
           
-          if (oldContent.trim() === newContent.trim() && oldContent !== newContent) {
-            // 这是空白字符的变化，创建修改行
+          if (oldContent !== newContent) {
+            // 这是同一行的修改，创建修改行
             const segments = detectCharacterLevelDiff(oldContent, newContent)
             
             processedLines.push({
@@ -462,25 +493,25 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
             key={index}
             data-line-number={line.lineNumber}
             className={`px-4 py-1 flex items-start gap-4 transition-all duration-200 ${
-              line.type === 'added' ? 'bg-green-50 border-l-4 border-green-500' :
-              line.type === 'deleted' ? 'bg-red-50 border-l-4 border-red-500' :
-              line.type === 'modified' ? 'bg-orange-50 border-l-4 border-orange-500' :
-              'bg-white hover:bg-gray-50'
+              line.type === 'added' ? 'bg-green-50 border-l-4 border-green-500 dark:bg-green-900/20 dark:border-green-400' :
+              line.type === 'deleted' ? 'bg-red-50 border-l-4 border-red-500 dark:bg-red-900/20 dark:border-red-400' :
+              line.type === 'modified' ? 'bg-orange-50 border-l-4 border-orange-500 dark:bg-orange-900/20 dark:border-orange-400' :
+              'bg-white hover:bg-gray-50 dark:bg-gray-900 dark:hover:bg-gray-800'
             } ${
-              isCurrentChange ? 'ring-2 ring-blue-500 ring-opacity-50 bg-blue-50' : ''
+              isCurrentChange ? 'ring-2 ring-blue-500 ring-opacity-50 bg-blue-50 dark:bg-blue-900/20' : ''
             }`}
           >
           {/* Line Number */}
-          <div className="text-xs text-gray-500 w-12 text-right flex-shrink-0">
+          <div className="text-xs text-gray-500 dark:text-gray-400 w-12 text-right flex-shrink-0">
             {line.lineNumber}
           </div>
           
           {/* Line Icon */}
           <div className="w-4 flex-shrink-0 text-center">
-            {line.type === 'added' && <span className="text-green-600 font-bold">+</span>}
-            {line.type === 'deleted' && <span className="text-red-600 font-bold">-</span>}
-            {line.type === 'modified' && <span className="text-orange-600 font-bold">~</span>}
-            {line.type === 'unchanged' && <span className="text-gray-400"> </span>}
+            {line.type === 'added' && <span className="text-green-600 dark:text-green-400 font-bold">+</span>}
+            {line.type === 'deleted' && <span className="text-red-600 dark:text-red-400 font-bold">-</span>}
+            {line.type === 'modified' && <span className="text-orange-600 dark:text-orange-400 font-bold">~</span>}
+            {line.type === 'unchanged' && <span className="text-gray-400 dark:text-gray-500"> </span>}
           </div>
           
           {/* Line Content */}
@@ -494,24 +525,19 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
                   
                   if (segment.type === 'added') {
                     segmentStyle = { 
-                      backgroundColor: '#dcfce7', 
-                      color: '#166534',
                       padding: '1px 2px',
                       borderRadius: '2px'
                     };
-                    segmentClass = 'bg-green-200 text-green-800';
+                    segmentClass = 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300';
                   } else if (segment.type === 'deleted') {
                     segmentStyle = { 
-                      backgroundColor: '#fecaca', 
-                      color: '#991b1b',
-                      textDecoration: 'line-through',
                       padding: '1px 2px',
                       borderRadius: '2px'
                     };
-                    segmentClass = 'bg-red-200 text-red-800 line-through';
+                    segmentClass = 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300';
                   } else {
-                    segmentStyle = { color: '#111827' };
-                    segmentClass = 'text-gray-900';
+                    segmentStyle = {};
+                    segmentClass = 'text-foreground';
                   }
                   
                   // 保持原始内容显示，只通过样式高亮空白字符

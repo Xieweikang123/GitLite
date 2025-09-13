@@ -107,24 +107,24 @@ export function VisualDiff({ diff, fileName, commitInfo }: VisualDiffProps) {
   const getLineClassName = (type: DiffLine['type']) => {
     switch (type) {
       case 'added':
-        return 'bg-green-50 border-l-4 border-green-500 text-green-800'
+        return 'bg-green-50 border-l-4 border-green-500 text-green-800 dark:bg-green-900/20 dark:border-green-400 dark:text-green-300'
       case 'deleted':
-        return 'bg-red-50 border-l-4 border-red-500 text-red-800'
+        return 'bg-red-50 border-l-4 border-red-500 text-red-800 dark:bg-red-900/20 dark:border-red-400 dark:text-red-300'
       case 'context':
-        return 'bg-gray-50 text-gray-700'
+        return 'bg-gray-50 text-gray-700 dark:bg-gray-800/50 dark:text-gray-300'
       default:
-        return 'bg-gray-100 text-gray-600'
+        return 'bg-gray-100 text-gray-600 dark:bg-gray-800/30 dark:text-gray-400'
     }
   }
 
   const getLineIcon = (type: DiffLine['type']) => {
     switch (type) {
       case 'added':
-        return <span className="text-green-600 font-bold">+</span>
+        return <span className="text-green-600 dark:text-green-400 font-bold">+</span>
       case 'deleted':
-        return <span className="text-red-600 font-bold">-</span>
+        return <span className="text-red-600 dark:text-red-400 font-bold">-</span>
       default:
-        return <span className="text-gray-400"> </span>
+        return <span className="text-gray-400 dark:text-gray-500"> </span>
     }
   }
 
