@@ -5,8 +5,14 @@ import { Copy, ChevronDown, ChevronRight } from 'lucide-react'
 interface FileLine {
   lineNumber: number
   content: string
-  type: 'unchanged' | 'added' | 'deleted'
+  type: 'unchanged' | 'added' | 'deleted' | 'modified'
   oldLineNumber?: number
+  segments?: DiffSegment[]
+}
+
+interface DiffSegment {
+  content: string
+  type: 'added' | 'deleted' | 'unchanged'
 }
 
 interface VSCodeDiffProps {
@@ -88,6 +94,162 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
     }
   }
 
+  // 检测字符级别的差异
+  const detectCharacterLevelDiff = (oldContent: string, newContent: string): DiffSegment[] => {
+    console.log('detectCharacterLevelDiff input:', { oldContent, newContent, oldLength: oldContent.length, newLength: newContent.length })
+    
+    // 简化算法：直接比较每个字符
+    const segments: DiffSegment[] = []
+    const maxLength = Math.max(oldContent.length, newContent.length)
+    
+    for (let i = 0; i < maxLength; i++) {
+      const oldChar = i < oldContent.length ? oldContent[i] : null
+      const newChar = i < newContent.length ? newContent[i] : null
+      
+      if (oldChar === null && newChar !== null) {
+        // 只有新字符
+        segments.push({
+          content: newChar,
+          type: 'added'
+        })
+      } else if (oldChar !== null && newChar === null) {
+        // 只有旧字符
+        segments.push({
+          content: oldChar,
+          type: 'deleted'
+        })
+      } else if (oldChar === newChar) {
+        // 相同字符
+        segments.push({
+          content: oldChar!,
+          type: 'unchanged'
+        })
+      } else {
+        // 不同字符
+        segments.push({
+          content: oldChar!,
+          type: 'deleted'
+        })
+        segments.push({
+          content: newChar!,
+          type: 'added'
+        })
+      }
+    }
+    
+    // 合并相邻的相同类型分段
+    const mergedSegments: DiffSegment[] = []
+    for (let i = 0; i < segments.length; i++) {
+      const current = segments[i]
+      
+      if (mergedSegments.length === 0) {
+        mergedSegments.push(current)
+      } else {
+        const last = mergedSegments[mergedSegments.length - 1]
+        if (last.type === current.type) {
+          // 合并相同类型的分段
+          last.content += current.content
+        } else {
+          mergedSegments.push(current)
+        }
+      }
+    }
+    
+    console.log('detectCharacterLevelDiff output:', mergedSegments)
+    return mergedSegments
+  }
+
+  // 检测空白字符的变化
+  const detectWhitespaceChanges = (lines: FileLine[]): FileLine[] => {
+    const processedLines: FileLine[] = []
+    
+    for (let i = 0; i < lines.length; i++) {
+      const currentLine = lines[i]
+      
+      // 检查当前行是否是删除行，下一行是否是添加行
+      if (currentLine.type === 'deleted') {
+        const nextLine = i < lines.length - 1 ? lines[i + 1] : null
+        
+        if (nextLine && 
+            nextLine.type === 'added' &&
+            currentLine.lineNumber === nextLine.lineNumber) {
+          
+          // 检测是否是空白字符的变化
+          const oldContent = currentLine.content
+          const newContent = nextLine.content
+          
+          console.log('Checking deleted+added pair:', { 
+            oldContent, 
+            newContent, 
+            oldTrim: oldContent.trim(), 
+            newTrim: newContent.trim(),
+            trimEqual: oldContent.trim() === newContent.trim(),
+            contentNotEqual: oldContent !== newContent,
+            oldLength: oldContent.length,
+            newLength: newContent.length
+          })
+          
+          if (oldContent.trim() === newContent.trim() && oldContent !== newContent) {
+            // 这是空白字符的变化，创建修改行
+            console.log('Detected whitespace change:', { oldContent, newContent })
+            const segments = detectCharacterLevelDiff(oldContent, newContent)
+            console.log('Generated segments:', segments)
+            
+            processedLines.push({
+              lineNumber: currentLine.lineNumber,
+              content: newContent,
+              type: 'modified',
+              oldLineNumber: currentLine.oldLineNumber,
+              segments: segments
+            })
+            
+            // 跳过下一行（添加行）
+            i++
+            continue
+          }
+        }
+      }
+      
+      // 检查当前行是否是未更改行，前后是否有删除和添加行
+      if (currentLine.type === 'unchanged') {
+        const prevLine = i > 0 ? lines[i - 1] : null
+        const nextLine = i < lines.length - 1 ? lines[i + 1] : null
+        
+        if (prevLine && nextLine && 
+            prevLine.type === 'deleted' && 
+            nextLine.type === 'added' &&
+            prevLine.lineNumber === currentLine.lineNumber &&
+            nextLine.lineNumber === currentLine.lineNumber) {
+          
+          // 检测是否是空白字符的变化
+          const oldContent = prevLine.content
+          const newContent = nextLine.content
+          
+          if (oldContent.trim() === newContent.trim() && oldContent !== newContent) {
+            // 这是空白字符的变化，创建修改行
+            const segments = detectCharacterLevelDiff(oldContent, newContent)
+            
+            processedLines.push({
+              lineNumber: currentLine.lineNumber,
+              content: newContent,
+              type: 'modified',
+              oldLineNumber: currentLine.oldLineNumber,
+              segments: segments
+            })
+            
+            // 跳过下一行（添加行）
+            i++
+            continue
+          }
+        }
+      }
+      
+      processedLines.push(currentLine)
+    }
+    
+    return processedLines
+  }
+
   const parseDiffToFullFile = (diffText: string): FileLine[] => {
     const lines = diffText.split('\n')
     const fileLines: FileLine[] = []
@@ -131,7 +293,7 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
         if (line.startsWith('+')) {
           // 新增的行
           const content = line.substring(1)
-          console.log('Found added line:', content)
+          console.log('Found added line:', content, 'currentLineNumber:', currentLineNumber)
           fileLines.push({
             lineNumber: currentLineNumber,
             content,
@@ -141,13 +303,14 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
         } else if (line.startsWith('-')) {
           // 删除的行
           const content = line.substring(1)
-          console.log('Found deleted line:', content)
+          console.log('Found deleted line:', content, 'currentLineNumber:', currentLineNumber)
           fileLines.push({
             lineNumber: currentLineNumber,
             content,
             type: 'deleted',
             oldLineNumber: oldLineNumber
           })
+          // 删除行不增加 currentLineNumber，但增加 oldLineNumber
           oldLineNumber++
         } else if (line.startsWith(' ')) {
           // 未修改的行
@@ -176,7 +339,12 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
     }
 
     console.log('Final parsed lines:', fileLines)
-    return fileLines
+    
+    // 后处理：检测空白字符的变化
+    const processedLines = detectWhitespaceChanges(fileLines)
+    console.log('Processed lines after whitespace detection:', processedLines)
+    
+    return processedLines
   }
 
   const copyToClipboard = async () => {
@@ -195,6 +363,7 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
           className={`px-4 py-1 flex items-start gap-4 ${
             line.type === 'added' ? 'bg-green-50 border-l-4 border-green-500' :
             line.type === 'deleted' ? 'bg-red-50 border-l-4 border-red-500' :
+            line.type === 'modified' ? 'bg-orange-50 border-l-4 border-orange-500' :
             'bg-white hover:bg-gray-50'
           }`}
         >
@@ -207,12 +376,74 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
           <div className="w-4 flex-shrink-0 text-center">
             {line.type === 'added' && <span className="text-green-600 font-bold">+</span>}
             {line.type === 'deleted' && <span className="text-red-600 font-bold">-</span>}
+            {line.type === 'modified' && <span className="text-orange-600 font-bold">~</span>}
             {line.type === 'unchanged' && <span className="text-gray-400"> </span>}
           </div>
           
           {/* Line Content */}
           <div className="flex-1 min-w-0 break-all">
-            {line.content || ' '}
+            {line.type === 'modified' && line.segments ? (
+              // 显示字符级别的差异
+              <div className="inline">
+                {line.segments.map((segment, segmentIndex) => {
+                  let segmentStyle = {};
+                  let segmentClass = '';
+                  
+                  if (segment.type === 'added') {
+                    segmentStyle = { 
+                      backgroundColor: '#dcfce7', 
+                      color: '#166534',
+                      padding: '1px 2px',
+                      borderRadius: '2px'
+                    };
+                    segmentClass = 'bg-green-200 text-green-800';
+                  } else if (segment.type === 'deleted') {
+                    segmentStyle = { 
+                      backgroundColor: '#fecaca', 
+                      color: '#991b1b',
+                      textDecoration: 'line-through',
+                      padding: '1px 2px',
+                      borderRadius: '2px'
+                    };
+                    segmentClass = 'bg-red-200 text-red-800 line-through';
+                  } else {
+                    segmentStyle = { color: '#111827' };
+                    segmentClass = 'text-gray-900';
+                  }
+                  
+                  // 保持原始内容显示，只通过样式高亮空白字符
+                  const displayContent = segment.content;
+                  
+                  return (
+                    <span
+                      key={segmentIndex}
+                      className={segmentClass}
+                      style={{
+                        ...segmentStyle,
+                        // 为空白字符添加特殊样式
+                        ...(segment.content.match(/^[\s]+$/) && {
+                          border: '1px dashed rgba(0,0,0,0.3)',
+                          fontFamily: 'monospace',
+                          fontWeight: 'bold'
+                        })
+                      }}
+                      title={`空白字符: "${segment.content}"`}
+                    >
+                      {displayContent}
+                    </span>
+                  );
+                })}
+              </div>
+            ) : (
+              <span
+                style={{
+                  // 为非分段内容也添加空白字符可视化
+                  fontFamily: 'monospace'
+                }}
+              >
+                {line.content || ' '}
+              </span>
+            )}
           </div>
         </div>
       ))}

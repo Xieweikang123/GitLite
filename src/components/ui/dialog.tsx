@@ -66,7 +66,7 @@ const DialogContent: React.FC<DialogContentProps> = ({
       <div 
         className="fixed inset-0 bg-black/80 z-40"
         onClick={() => onOpenChange?.(false)}
-      />
+      /> 
       
       {/* Content */}
       <div

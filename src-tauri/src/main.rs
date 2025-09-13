@@ -906,7 +906,9 @@ async fn get_staged_file_diff(repo_path: String, file_path: String) -> Result<St
                 ' ' => " ",
                 _ => "",
             };
-            diff_text.push_str(&format!("{}{}\n", prefix, std::str::from_utf8(line.content()).unwrap_or("")));
+            // 安全地处理 UTF-8 编码
+            let content = std::str::from_utf8(line.content()).unwrap_or("[INVALID UTF-8]");
+            diff_text.push_str(&format!("{}{}\n", prefix, content));
         }
         true
     }).map_err(|e| format!("Failed to print diff: {}", e))?;
@@ -942,7 +944,9 @@ async fn get_unstaged_file_diff(repo_path: String, file_path: String) -> Result<
                 ' ' => " ",
                 _ => "",
             };
-            diff_text.push_str(&format!("{}{}\n", prefix, std::str::from_utf8(line.content()).unwrap_or("")));
+            // 安全地处理 UTF-8 编码
+            let content = std::str::from_utf8(line.content()).unwrap_or("[INVALID UTF-8]");
+            diff_text.push_str(&format!("{}{}\n", prefix, content));
         }
         true
     }).map_err(|e| format!("Failed to print diff: {}", e))?;
