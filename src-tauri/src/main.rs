@@ -1076,10 +1076,36 @@ async fn apply_stash(repo_path: String, stash_id: String) -> Result<String, Stri
 
     let index = stash_index.ok_or("Stash not found")?;
 
-    repo.stash_apply(index, None)
-        .map_err(|e| format!("Failed to apply stash: {}", e))?;
+    // 创建贮藏应用选项
+    let mut options = git2::StashApplyOptions::new();
+    options.reinstantiate_index();
     
-    Ok(format!("Successfully applied stash: {}", stash_id))
+    match repo.stash_apply(index, Some(&mut options)) {
+        Ok(_) => Ok(format!("Successfully applied stash: {}", stash_id)),
+        Err(e) => {
+            let error_msg = e.message();
+            
+            // 检查是否是重复应用的错误
+            if error_msg.contains("already applied") || error_msg.contains("nothing to commit") {
+                Ok(format!("Stash {} has already been applied or there are no changes to apply", stash_id))
+            } else if error_msg.contains("conflict") {
+                Err(format!("Failed to apply stash due to conflicts: {}. Please resolve conflicts manually.", error_msg))
+            } else {
+                // 尝试不使用选项
+                match repo.stash_apply(index, None) {
+                    Ok(_) => Ok(format!("Successfully applied stash: {}", stash_id)),
+                    Err(e2) => {
+                        let error_msg2 = e2.message();
+                        if error_msg2.contains("already applied") || error_msg2.contains("nothing to commit") {
+                            Ok(format!("Stash {} has already been applied or there are no changes to apply", stash_id))
+                        } else {
+                            Err(format!("Failed to apply stash: {}. This may be because the stash has already been applied or there are conflicts.", error_msg2))
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 // 删除贮藏
