@@ -1171,6 +1171,433 @@ async fn fetch_changes_with_logs(repo_path: String) -> Result<Vec<(String, Strin
     }
 }
 
+// 推送更改 - 带日志流
+#[tauri::command]
+async fn push_changes_with_logs(repo_path: String) -> Result<Vec<(String, String, String)>, String> {
+    let mut logs = Vec::new();
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    
+    logs.push((timestamp, "INFO".to_string(), format!("push: attempt start | path={}", repo_path)));
+    
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "正在打开仓库...".to_string()));
+    
+    let repo = match Repository::open(&repo_path) {
+        Ok(r) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "INFO".to_string(), "仓库打开成功".to_string()));
+            r
+        },
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("打开仓库失败: {}", e)));
+            return Err(format!("Failed to open repository: {}", e));
+        }
+    };
+
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "正在获取HEAD引用...".to_string()));
+
+    let head = match repo.head() {
+        Ok(h) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "INFO".to_string(), "获取HEAD引用成功".to_string()));
+            h
+        },
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("获取HEAD失败: {}", e)));
+            return Err(format!("Failed to get HEAD: {}", e));
+        }
+    };
+    
+    let branch_name = head.shorthand().unwrap_or("main");
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), format!("当前分支: {}", branch_name)));
+
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "正在查找远程仓库 origin...".to_string()));
+
+    let mut remote = match repo.find_remote("origin") {
+        Ok(r) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "INFO".to_string(), "找到远程仓库 origin".to_string()));
+            r
+        },
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("未找到远程仓库 origin: {}", e)));
+            return Err(format!("Failed to find remote 'origin': {}", e));
+        }
+    };
+
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "正在设置认证...".to_string()));
+
+    // 认证与 Push 选项
+    let cfg = repo.config().ok();
+    let mut callbacks = git2::RemoteCallbacks::new();
+    callbacks.credentials(move |url, username_from_url, allowed| {
+        if allowed.contains(git2::CredentialType::DEFAULT) {
+            return git2::Cred::default();
+        }
+        if allowed.contains(git2::CredentialType::SSH_KEY) {
+            return git2::Cred::ssh_key_from_agent(username_from_url.unwrap_or("git"));
+        }
+        if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+            if let Some(cfg) = cfg.as_ref() {
+                if let Ok(cred) = git2::Cred::credential_helper(cfg, url, username_from_url) {
+                    return Ok(cred);
+                }
+            }
+        }
+        Err(git2::Error::from_str("No authentication method available"))
+    });
+
+    let mut push_opts = git2::PushOptions::new();
+    push_opts.remote_callbacks(callbacks);
+
+    let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), format!("开始推送分支 {} 到 origin...", branch_name)));
+
+    // 执行推送
+    match remote.push(&[&refspec], Some(&mut push_opts)) {
+        Ok(_) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "INFO".to_string(), "推送成功！".to_string()));
+            
+            // 若本地分支没有上游，自动设置到 origin/<branch>
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "INFO".to_string(), "正在检查上游分支设置...".to_string()));
+            
+            if let Ok(mut branch) = repo.find_branch(branch_name, git2::BranchType::Local) {
+                if branch.upstream().is_err() {
+                    if let Err(e) = branch.set_upstream(Some(&format!("origin/{}", branch_name))) {
+                        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                        logs.push((timestamp, "WARN".to_string(), format!("设置上游分支失败: {}", e)));
+                    } else {
+                        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                        logs.push((timestamp, "INFO".to_string(), format!("已设置上游分支: origin/{}", branch_name)));
+                    }
+                } else {
+                    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                    logs.push((timestamp, "INFO".to_string(), "上游分支已存在".to_string()));
+                }
+            }
+            
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "SUCCESS".to_string(), format!("操作完成 - 已推送到 origin/{}", branch_name)));
+            
+            Ok(logs)
+        },
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("推送失败: {}", e)));
+            
+            let url = remote.url().unwrap_or("");
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("远程仓库URL: {}", url)));
+            
+            return Err(format!("Failed to push: {}", e));
+        }
+    }
+}
+
+// 拉取更改 - 带日志流
+#[tauri::command]
+async fn pull_changes_with_logs(repo_path: String) -> Result<Vec<(String, String, String)>, String> {
+    let mut logs = Vec::new();
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    
+    logs.push((timestamp, "INFO".to_string(), format!("pull: attempt start | path={}", repo_path)));
+    
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "正在打开仓库...".to_string()));
+    
+    let repo = match Repository::open(&repo_path) {
+        Ok(r) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "INFO".to_string(), "仓库打开成功".to_string()));
+            r
+        },
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("打开仓库失败: {}", e)));
+            return Err(format!("Failed to open repository: {}", e));
+        }
+    };
+
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "正在获取HEAD引用...".to_string()));
+
+    let head = match repo.head() {
+        Ok(h) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "INFO".to_string(), "获取HEAD引用成功".to_string()));
+            h
+        },
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("获取HEAD失败: {}", e)));
+            return Err(format!("Failed to get HEAD: {}", e));
+        }
+    };
+    
+    let branch_name = head.shorthand().unwrap_or("main");
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), format!("当前分支: {}", branch_name)));
+
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "正在查找远程仓库 origin...".to_string()));
+
+    let mut remote = match repo.find_remote("origin") {
+        Ok(r) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "INFO".to_string(), "找到远程仓库 origin".to_string()));
+            r
+        },
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("未找到远程仓库 origin: {}", e)));
+            return Err(format!("Failed to find remote 'origin': {}", e));
+        }
+    };
+
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "正在设置认证...".to_string()));
+
+    // 认证与 Fetch 选项
+    let cfg = repo.config().ok();
+    let mut callbacks = git2::RemoteCallbacks::new();
+    callbacks.credentials(move |url, username_from_url, allowed| {
+        if allowed.contains(git2::CredentialType::DEFAULT) {
+            return git2::Cred::default();
+        }
+        if allowed.contains(git2::CredentialType::SSH_KEY) {
+            return git2::Cred::ssh_key_from_agent(username_from_url.unwrap_or("git"));
+        }
+        if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+            if let Some(cfg) = cfg.as_ref() {
+                if let Ok(cred) = git2::Cred::credential_helper(cfg, url, username_from_url) {
+                    return Ok(cred);
+                }
+            }
+        }
+        Err(git2::Error::from_str("No authentication method available"))
+    });
+
+    let mut fetch_opts = git2::FetchOptions::new();
+    fetch_opts.remote_callbacks(callbacks);
+
+    // 首先执行 fetch
+    let refspec = format!("refs/heads/{}:refs/remotes/origin/{}", branch_name, branch_name);
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), format!("开始获取远程分支 {}...", branch_name)));
+
+    match remote.fetch::<&str>(&[&refspec], Some(&mut fetch_opts), None) {
+        Ok(_) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "INFO".to_string(), "获取远程信息成功".to_string()));
+        },
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("获取远程信息失败: {}", e)));
+            return Err(format!("Failed to fetch: {}", e));
+        }
+    }
+
+    // 获取远程分支引用
+    let remote_branch_ref = format!("refs/remotes/origin/{}", branch_name);
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), format!("正在获取远程分支引用: {}", remote_branch_ref)));
+
+    let remote_branch_oid = match repo.refname_to_id(&remote_branch_ref) {
+        Ok(oid) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "INFO".to_string(), "获取远程分支引用成功".to_string()));
+            oid
+        },
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("获取远程分支引用失败: {}", e)));
+            return Err(format!("Failed to get remote branch reference: {}", e));
+        }
+    };
+
+    // 获取本地HEAD的OID
+    let local_head_oid = match repo.refname_to_id("HEAD") {
+        Ok(oid) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "INFO".to_string(), "获取本地HEAD引用成功".to_string()));
+            oid
+        },
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("获取本地HEAD引用失败: {}", e)));
+            return Err(format!("Failed to get local HEAD reference: {}", e));
+        }
+    };
+
+    // 检查是否需要合并
+    if remote_branch_oid == local_head_oid {
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "INFO".to_string(), "本地分支已是最新状态".to_string()));
+        
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "SUCCESS".to_string(), "操作完成 - 无需拉取".to_string()));
+        
+        return Ok(logs);
+    }
+
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "检测到远程更新，准备合并...".to_string()));
+
+    // 检查工作区是否有未提交的更改
+    let index = match repo.index() {
+        Ok(i) => i,
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("获取索引失败: {}", e)));
+            return Err(format!("Failed to get index: {}", e));
+        }
+    };
+
+    // 检查是否有未暂存的更改
+    let diff_count = repo.diff_index_to_workdir(Some(&index), None)
+        .map_err(|e| format!("Failed to create diff: {}", e))?
+        .stats()
+        .map_err(|e| format!("Failed to get diff stats: {}", e))?
+        .files_changed();
+
+    if diff_count > 0 {
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "WARN".to_string(), format!("检测到 {} 个未提交的更改", diff_count)));
+        
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "ERROR".to_string(), "无法拉取：存在未提交的更改，请先提交或贮藏".to_string()));
+        
+        return Err("Cannot pull: You have uncommitted changes. Please commit or stash them first.".to_string());
+    }
+
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "工作区状态检查通过，开始合并...".to_string()));
+
+    // 执行合并
+    let remote_commit = match repo.find_commit(remote_branch_oid) {
+        Ok(c) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "INFO".to_string(), "找到远程提交".to_string()));
+            c
+        },
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("查找远程提交失败: {}", e)));
+            return Err(format!("Failed to find remote commit: {}", e));
+        }
+    };
+
+    let local_commit = match repo.find_commit(local_head_oid) {
+        Ok(c) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "INFO".to_string(), "找到本地提交".to_string()));
+            c
+        },
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("查找本地提交失败: {}", e)));
+            return Err(format!("Failed to find local commit: {}", e));
+        }
+    };
+
+    // 检查是否是快进合并
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "正在检查合并类型...".to_string()));
+
+    let is_ff = match repo.merge_base(local_head_oid, remote_branch_oid) {
+        Ok(base) => base == local_head_oid,
+        Err(_) => false,
+    };
+
+    if is_ff {
+        // 快进合并
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "INFO".to_string(), "检测到快进合并，执行快进操作...".to_string()));
+
+        let mut reference = match repo.find_reference("HEAD") {
+            Ok(r) => {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "INFO".to_string(), "找到HEAD引用".to_string()));
+                r
+            },
+            Err(e) => {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "ERROR".to_string(), format!("查找HEAD引用失败: {}", e)));
+                return Err(format!("Failed to find HEAD reference: {}", e));
+            }
+        };
+
+        if let Err(e) = reference.set_target(remote_branch_oid, "Fast-forward merge") {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("快进合并失败: {}", e)));
+            return Err(format!("Failed to fast-forward: {}", e));
+        }
+
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "INFO".to_string(), "快进合并成功".to_string()));
+        
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "SUCCESS".to_string(), "操作完成 - 快进合并成功".to_string()));
+        
+        Ok(logs)
+    } else {
+        // 需要创建合并提交
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "INFO".to_string(), "检测到需要合并提交，开始合并操作...".to_string()));
+
+        let mut merge_index = match repo.merge_commits(&local_commit, &remote_commit, None) {
+            Ok(index) => {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "INFO".to_string(), "合并提交创建成功".to_string()));
+                index
+            },
+            Err(e) => {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "ERROR".to_string(), format!("合并提交失败: {}", e)));
+                return Err(format!("Failed to merge: {}", e));
+            }
+        };
+
+        // 将合并结果写入工作区
+        let merge_tree = repo.find_tree(merge_index.write_tree().map_err(|e| format!("Failed to write merge tree: {}", e))?)
+            .map_err(|e| format!("Failed to find merge tree: {}", e))?;
+
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "INFO".to_string(), "正在创建合并提交...".to_string()));
+
+        // 创建合并提交
+        let signature = git2::Signature::now("GitLite User", "gitlite@example.com")
+            .map_err(|e| format!("Failed to create signature: {}", e))?;
+
+        let merge_commit_id = repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            &format!("Merge branch 'origin/{}'", branch_name),
+            &merge_tree,
+            &[&local_commit, &remote_commit],
+        ).map_err(|e| format!("Failed to create merge commit: {}", e))?;
+
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "INFO".to_string(), "合并提交创建成功".to_string()));
+        
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "SUCCESS".to_string(), format!("操作完成 - 合并提交成功 (commit: {})", merge_commit_id)));
+
+        Ok(logs)
+    }
+}
+
 // 获取已暂存文件的差异
 #[tauri::command]
 async fn get_staged_file_diff(repo_path: String, file_path: String) -> Result<String, String> {

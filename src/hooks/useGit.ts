@@ -279,6 +279,46 @@ export function useGit() {
     }
   }, [repoInfo])
 
+  const pushChangesWithLogs = useCallback(async () => {
+    if (!repoInfo) throw new Error('No repository open')
+    
+    try {
+      const logs: Array<[string, string, string]> = await invoke('push_changes_with_logs', {
+        repoPath: repoInfo.path,
+      })
+      
+      // 推送成功后，重新获取仓库信息以更新状态
+      const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
+        path: repoInfo.path,
+      })
+      setRepoInfo(updatedRepoInfo)
+      
+      return logs
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : '推送失败')
+    }
+  }, [repoInfo])
+
+  const pullChangesWithLogs = useCallback(async () => {
+    if (!repoInfo) throw new Error('No repository open')
+    
+    try {
+      const logs: Array<[string, string, string]> = await invoke('pull_changes_with_logs', {
+        repoPath: repoInfo.path,
+      })
+      
+      // 拉取成功后，重新获取仓库信息以更新状态
+      const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
+        path: repoInfo.path,
+      })
+      setRepoInfo(updatedRepoInfo)
+      
+      return logs
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : '拉取失败')
+    }
+  }, [repoInfo])
+
   return {
     repoInfo,
     loading,
@@ -301,5 +341,7 @@ export function useGit() {
     pullChanges,
     fetchChanges,
     fetchChangesWithLogs,
+    pushChangesWithLogs,
+    pullChangesWithLogs,
   }
 }

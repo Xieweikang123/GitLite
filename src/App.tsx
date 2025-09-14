@@ -26,8 +26,9 @@ function App() {
     getCommitFiles, 
     getSingleFileDiff,
     getCommitsPaginated,
-    pullChanges,
-    fetchChangesWithLogs
+    fetchChangesWithLogs,
+    pushChangesWithLogs,
+    pullChangesWithLogs
   } = useGit()
   
   const { isDark, toggleDarkMode } = useDarkMode()
@@ -126,9 +127,24 @@ function App() {
   const handlePullChanges = async () => {
     if (!repoInfo) return
     
+    // 打开日志弹窗
+    setLogModalTitle('拉取远程更改')
+    setLogs([])
+    setLogModalOpen(true)
+    setIsOperationRunning(true)
+    
     try {
-      const result = await pullChanges()
-      console.log('拉取成功:', result)
+      const logData: Array<[string, string, string]> = await pullChangesWithLogs()
+      
+      // 转换日志格式
+      const formattedLogs = logData.map(([timestamp, level, message]) => ({
+        timestamp,
+        level: level as 'INFO' | 'DEBUG' | 'WARN' | 'ERROR',
+        message
+      }))
+      
+      setLogs(formattedLogs)
+      setIsOperationRunning(false)
       
       // 拉取成功后重置状态
       setSelectedCommit(null)
@@ -138,6 +154,15 @@ function App() {
       setHasMoreCommits(true)
     } catch (error) {
       console.error('拉取失败:', error)
+      setIsOperationRunning(false)
+      
+      // 添加错误日志
+      const errorLog = {
+        timestamp: new Date().toLocaleTimeString(),
+        level: 'ERROR' as const,
+        message: `拉取失败: ${error instanceof Error ? error.message : '未知错误'}`
+      }
+      setLogs(prev => [...prev, errorLog])
     }
   }
 
@@ -178,6 +203,64 @@ function App() {
       }
       setLogs(prev => [...prev, errorLog])
     }
+  }
+
+  // 通用的Git操作日志处理函数
+  const handleGitOperationWithLogs = async (
+    operation: () => Promise<Array<[string, string, string]>>,
+    title: string,
+    resetState: boolean = false
+  ) => {
+    if (!repoInfo) return
+    
+    // 打开日志弹窗
+    setLogModalTitle(title)
+    setLogs([])
+    setLogModalOpen(true)
+    setIsOperationRunning(true)
+    
+    try {
+      const logData: Array<[string, string, string]> = await operation()
+      
+      // 转换日志格式
+      const formattedLogs = logData.map(([timestamp, level, message]) => ({
+        timestamp,
+        level: level as 'INFO' | 'DEBUG' | 'WARN' | 'ERROR',
+        message
+      }))
+      
+      setLogs(formattedLogs)
+      setIsOperationRunning(false)
+      
+      // 如果需要重置状态
+      if (resetState) {
+        setSelectedCommit(null)
+        setCommitFiles([])
+        setSelectedFile(null)
+        setAllCommits([])
+        setHasMoreCommits(true)
+      }
+    } catch (error) {
+      console.error(`${title}失败:`, error)
+      setIsOperationRunning(false)
+      
+      // 添加错误日志
+      const errorLog = {
+        timestamp: new Date().toLocaleTimeString(),
+        level: 'ERROR' as const,
+        message: `${title}失败: ${error instanceof Error ? error.message : '未知错误'}`
+      }
+      setLogs(prev => [...prev, errorLog])
+    }
+  }
+
+  // 推送处理函数
+  const handlePushChanges = async () => {
+    await handleGitOperationWithLogs(
+      () => pushChangesWithLogs(),
+      '推送本地更改',
+      true
+    )
   }
 
   // 当仓库信息更新时，重置提交列表
@@ -230,6 +313,7 @@ function App() {
             <WorkspaceStatus
               repoInfo={repoInfo}
               onRefresh={handleRefresh}
+              onPushChanges={handlePushChanges}
             />
           </div>
 

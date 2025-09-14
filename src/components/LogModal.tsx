@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { Button } from './ui/button'
-import { X, Copy, Download } from 'lucide-react'
+import { Copy, Download } from 'lucide-react'
 
 interface LogEntry {
   timestamp: string
@@ -26,6 +26,23 @@ export function LogModal({ isOpen, onClose, title, logs, isRunning }: LogModalPr
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight
     }
   }, [logs])
+
+  // ESC键关闭弹窗
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && isOpen) {
+        onClose()
+      }
+    }
+
+    if (isOpen) {
+      document.addEventListener('keydown', handleKeyDown)
+    }
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [isOpen, onClose])
 
   const getLevelColor = (level: string) => {
     switch (level) {
@@ -86,15 +103,6 @@ export function LogModal({ isOpen, onClose, title, logs, isRunning }: LogModalPr
                 title="下载日志"
               >
                 <Download className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={onClose}
-                className="text-green-400 hover:text-green-300 hover:bg-green-900/20"
-                title="关闭"
-              >
-                <X className="h-4 w-4" />
               </Button>
             </div>
           </div>

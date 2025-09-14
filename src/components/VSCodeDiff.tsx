@@ -29,6 +29,29 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
   const [changeCount, setChangeCount] = useState(0)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
 
+  // 防止滚动事件冒泡到主界面
+  useEffect(() => {
+    const scrollContainer = scrollContainerRef.current
+    if (!scrollContainer) return
+
+    const handleWheel = (e: WheelEvent) => {
+      // 完全阻止事件冒泡和默认行为
+      e.stopPropagation()
+      e.preventDefault()
+      
+      // 手动控制滚动
+      const scrollAmount = e.deltaY
+      scrollContainer.scrollTop += scrollAmount
+    }
+
+    // 添加滚动事件监听器，使用捕获阶段确保优先级
+    scrollContainer.addEventListener('wheel', handleWheel, { passive: false, capture: true })
+
+    return () => {
+      scrollContainer.removeEventListener('wheel', handleWheel, { capture: true })
+    }
+  }, [])
+
   // 调试：检查传入的props（只在diff变化时打印）
   useEffect(() => {
     console.log('VSCodeDiff props changed:', {

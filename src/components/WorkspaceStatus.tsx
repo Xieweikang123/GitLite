@@ -10,6 +10,7 @@ import { Eye, Archive, ArchiveRestore, Trash2 } from 'lucide-react'
 interface WorkspaceStatusProps {
   repoInfo: any
   onRefresh: () => void
+  onPushChanges?: () => void
 }
 
 interface WorkspaceStatusData {
@@ -25,7 +26,7 @@ interface StashInfo {
   branch: string
 }
 
-export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
+export function WorkspaceStatus({ repoInfo, onRefresh, onPushChanges }: WorkspaceStatusProps) {
   const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatusData | null>(null)
   const [commitMessage, setCommitMessage] = useState('')
   const [loading, setLoading] = useState(false)
@@ -276,6 +277,33 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
     }
   }
 
+  // 取消所有暂存文件
+  const unstageAllFiles = async () => {
+    if (!repoInfo || !workspaceStatus?.staged_files?.length) return
+    
+    try {
+      setLoading(true)
+      setError(null)
+      
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      
+      // 批量取消暂存所有文件
+      for (const file of workspaceStatus.staged_files) {
+        await invoke('unstage_file', {
+          repoPath: repoInfo.path,
+          filePath: file.path,
+        })
+      }
+      
+      // 刷新工作区状态
+      await fetchWorkspaceStatus()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '取消所有暂存失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   // 提交更改
   const commitChanges = async () => {
     if (!repoInfo || !commitMessage.trim()) return
@@ -461,7 +489,7 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
             </Button>
             <Button 
               variant="outline"
-              onClick={pushChanges}
+              onClick={onPushChanges || pushChanges}
               disabled={loading}
             >
               推送
@@ -583,7 +611,18 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
       {workspaceStatus?.staged_files && workspaceStatus.staged_files.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">已暂存的文件</CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-lg">已暂存的文件</CardTitle>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={unstageAllFiles}
+                disabled={loading || !workspaceStatus?.staged_files?.length}
+                className="flex items-center gap-1"
+              >
+                取消所有暂存
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
             <div className="space-y-2">

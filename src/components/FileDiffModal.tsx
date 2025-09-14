@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { Button } from './ui/button'
 import { VSCodeDiff } from './VSCodeDiff'
@@ -15,6 +15,7 @@ export function FileDiffModal({ isOpen, onClose, filePath, repoPath, fileType }:
   const [diff, setDiff] = useState<string>('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const modalContentRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (isOpen && filePath && repoPath) {
@@ -38,6 +39,37 @@ export function FileDiffModal({ isOpen, onClose, filePath, repoPath, fileType }:
       document.removeEventListener('keydown', handleKeyDown)
     }
   }, [isOpen, onClose])
+
+  // 防止弹窗滚动事件冒泡到主界面
+  useEffect(() => {
+    const modalContent = modalContentRef.current
+    if (!modalContent || !isOpen) return
+
+    const handleWheel = (e: WheelEvent) => {
+      // 检查滚动事件是否来自弹窗内部的滚动容器
+      const scrollContainer = modalContent.querySelector('.overflow-y-auto')
+      
+      if (scrollContainer && scrollContainer.contains(e.target as Node)) {
+        // 如果事件来自滚动容器，完全阻止冒泡和默认行为
+        e.stopPropagation()
+        e.preventDefault()
+        
+        // 手动控制滚动
+        const scrollAmount = e.deltaY
+        ;(scrollContainer as HTMLElement).scrollTop += scrollAmount
+      } else {
+        // 如果事件来自弹窗的其他区域，只阻止冒泡
+        e.stopPropagation()
+      }
+    }
+
+    // 在弹窗内容区域添加滚动事件监听器
+    modalContent.addEventListener('wheel', handleWheel, { passive: false, capture: true })
+
+    return () => {
+      modalContent.removeEventListener('wheel', handleWheel, { capture: true })
+    }
+  }, [isOpen])
 
   const loadFileDiff = async () => {
     try {
@@ -98,7 +130,7 @@ export function FileDiffModal({ isOpen, onClose, filePath, repoPath, fileType }:
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-4xl max-h-[80vh] flex flex-col">
+      <DialogContent ref={modalContentRef} className="max-w-4xl max-h-[80vh] flex flex-col">
         <DialogHeader>
           <DialogTitle>
             {getModalTitle()}
