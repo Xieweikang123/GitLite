@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { useGit } from './hooks/useGit'
 import { useDarkMode } from './hooks/useDarkMode'
+import { invoke } from '@tauri-apps/api/tauri'
 import { TopToolbar } from './components/TopToolbar'
 import { MenuToolbar } from './components/MenuToolbar'
 import { WorkspaceStatus } from './components/WorkspaceStatus'
@@ -9,7 +10,6 @@ import { DiffViewer } from './components/DiffViewer'
 import { FileList } from './components/FileList'
 import { LogModal } from './components/LogModal'
 import { CommitInfo, FileChange } from './types/git'
-import { invoke } from '@tauri-apps/api/tauri'
 
 function App() {
   const { 
@@ -263,6 +263,15 @@ function App() {
     )
   }
 
+  // Git诊断处理函数
+  const handleGitDiagnostics = async () => {
+    await handleGitOperationWithLogs(
+      () => invoke('git_diagnostics', { repoPath: repoInfo?.path }),
+      'Git诊断',
+      false
+    )
+  }
+
   // 当仓库信息更新时，重置提交列表
   React.useEffect(() => {
     if (repoInfo) {
@@ -314,6 +323,7 @@ function App() {
               repoInfo={repoInfo}
               onRefresh={handleRefresh}
               onPushChanges={handlePushChanges}
+              onGitDiagnostics={handleGitDiagnostics}
             />
           </div>
 

@@ -11,6 +11,7 @@ interface WorkspaceStatusProps {
   repoInfo: any
   onRefresh: () => void
   onPushChanges?: () => void
+  onGitDiagnostics?: () => void
 }
 
 interface WorkspaceStatusData {
@@ -26,7 +27,10 @@ interface StashInfo {
   branch: string
 }
 
-export function WorkspaceStatus({ repoInfo, onRefresh, onPushChanges }: WorkspaceStatusProps) {
+export function WorkspaceStatus({  repoInfo,  onRefresh,
+  onPushChanges,
+  onGitDiagnostics
+}: WorkspaceStatusProps) {
   const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatusData | null>(null)
   const [commitMessage, setCommitMessage] = useState('')
   const [loading, setLoading] = useState(false)
@@ -493,6 +497,14 @@ export function WorkspaceStatus({ repoInfo, onRefresh, onPushChanges }: Workspac
               disabled={loading}
             >
               推送
+            </Button>
+            <Button 
+              variant="outline"
+              onClick={onGitDiagnostics}
+              disabled={loading}
+              className="text-xs"
+            >
+              诊断
             </Button>
           </div>
         </CardContent>

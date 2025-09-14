@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { Button } from './ui/button'
-import { Copy, ChevronDown, ChevronRight, ChevronUp, ChevronDown as ChevronDownIcon, Navigation } from 'lucide-react'
+import { Copy, ChevronDown, ChevronRight, ChevronUp, ChevronDown as ChevronDownIcon, Navigation, Sidebar, FileText } from 'lucide-react'
 
 interface FileLine {
   lineNumber: number
@@ -22,11 +23,163 @@ interface VSCodeDiffProps {
   repoPath?: string
 }
 
+// 简单的Tooltip组件
+interface TooltipProps {
+  children: React.ReactNode
+  content: React.ReactNode
+  position?: 'top' | 'bottom' | 'left' | 'right'
+}
+
+function Tooltip({ children, content, position = 'top' }: TooltipProps) {
+  const [isVisible, setIsVisible] = useState(false)
+  const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 })
+  const triggerRef = useRef<HTMLDivElement>(null)
+  const tooltipRef = useRef<HTMLDivElement>(null)
+  const hideTimeoutRef = useRef<number | null>(null)
+
+  const showTooltip = () => {
+    if (hideTimeoutRef.current) {
+      clearTimeout(hideTimeoutRef.current)
+      hideTimeoutRef.current = null
+    }
+    
+    if (triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect()
+      const viewportWidth = window.innerWidth
+      const viewportHeight = window.innerHeight
+      
+      // 估算tooltip尺寸
+      const tooltipWidth = 400
+      const tooltipHeight = 200
+      
+      let x = rect.left
+      let y = rect.top
+      
+      // 根据position计算位置
+      switch (position) {
+        case 'top':
+          x += rect.width / 2
+          y -= 10
+          break
+        case 'bottom':
+          x += rect.width / 2
+          y += rect.height + 10
+          break
+        case 'left':
+          x -= 10
+          y += rect.height / 2
+          break
+        case 'right':
+          x += rect.width + 10
+          y += rect.height / 2
+          break
+      }
+      
+      // 边界检查
+      x = Math.max(10, Math.min(x, viewportWidth - tooltipWidth - 10))
+      y = Math.max(10, Math.min(y, viewportHeight - tooltipHeight - 10))
+      
+      setTooltipPosition({ x, y })
+    }
+    setIsVisible(true)
+  }
+
+  const hideTooltip = () => {
+    hideTimeoutRef.current = setTimeout(() => {
+      setIsVisible(false)
+    }, 100) // 延迟100ms隐藏，避免闪烁
+  }
+
+  const handleMouseEnter = () => {
+    showTooltip()
+  }
+
+  const handleMouseLeave = () => {
+    hideTooltip()
+  }
+
+  const handleTooltipMouseEnter = () => {
+    if (hideTimeoutRef.current) {
+      clearTimeout(hideTimeoutRef.current)
+      hideTimeoutRef.current = null
+    }
+  }
+
+  const handleTooltipMouseLeave = () => {
+    hideTooltip()
+  }
+
+  // 防止Tooltip滚动事件冒泡到主界面
+  useEffect(() => {
+    const tooltipElement = tooltipRef.current
+    if (!tooltipElement || !isVisible) return
+
+    const handleWheel = (e: WheelEvent) => {
+      // 完全阻止滚动事件冒泡和默认行为
+      e.stopPropagation()
+      e.preventDefault()
+    }
+
+    // 添加滚动事件监听器，使用capture模式确保优先级
+    tooltipElement.addEventListener('wheel', handleWheel, { passive: false, capture: true })
+
+    return () => {
+      tooltipElement.removeEventListener('wheel', handleWheel, { capture: true })
+    }
+  }, [isVisible])
+
+  // 清理定时器
+  useEffect(() => {
+    return () => {
+      if (hideTimeoutRef.current) {
+        clearTimeout(hideTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  return (
+    <>
+      <div
+        ref={triggerRef}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+        className="inline-block"
+      >
+        {children}
+      </div>
+      
+      {isVisible && createPortal(
+        <div
+          ref={tooltipRef}
+          className="fixed z-[9999] bg-gray-900 text-white text-xs rounded-lg shadow-lg border border-gray-700 max-w-md"
+          style={{
+            left: tooltipPosition.x,
+            top: tooltipPosition.y,
+            transform: position === 'top' || position === 'bottom' ? 'translateX(-50%)' : 
+                      position === 'left' ? 'translateX(-100%)' : 'translateX(0)',
+            maxWidth: '400px',
+            maxHeight: '300px',
+            overflow: 'auto'
+          }}
+          onMouseEnter={handleTooltipMouseEnter}
+          onMouseLeave={handleTooltipMouseLeave}
+        >
+          <div className="p-3">
+            {content}
+          </div>
+        </div>,
+        document.body
+      )}
+    </>
+  )
+}
+
 export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
   const [fileLines, setFileLines] = useState<FileLine[]>([])
   const [isExpanded, setIsExpanded] = useState(true)
   const [currentChangeIndex, setCurrentChangeIndex] = useState(0)
   const [changeCount, setChangeCount] = useState(0)
+  const [viewMode, setViewMode] = useState<'unified' | 'side-by-side'>('unified')
   const scrollContainerRef = useRef<HTMLDivElement>(null)
 
   // 防止滚动事件冒泡到主界面
@@ -507,7 +660,7 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
     }
   }
 
-  const renderFullFileView = () => (
+  const renderUnifiedView = () => (
     <div className="font-mono text-sm">
       {fileLines.map((line, index) => {
         const isCurrentChange = line.changeIndex === currentChangeIndex
@@ -540,54 +693,77 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
           {/* Line Content */}
           <div className="flex-1 min-w-0 break-all">
             {line.type === 'modified' && line.segments ? (
-              // 显示字符级别的差异
-              <div className="inline">
-                {line.segments.map((segment, segmentIndex) => {
-                  let segmentStyle = {};
-                  let segmentClass = '';
-                  
-                  if (segment.type === 'added') {
-                    segmentStyle = { 
-                      padding: '1px 2px',
-                      borderRadius: '2px'
-                    };
-                    segmentClass = 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300';
-                  } else if (segment.type === 'deleted') {
-                    segmentStyle = { 
-                      padding: '1px 2px',
-                      borderRadius: '2px'
-                    };
-                    segmentClass = 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300';
-                  } else {
-                    segmentStyle = {};
-                    segmentClass = 'text-foreground';
-                  }
-                  
-                  // 保持原始内容显示，只通过样式高亮空白字符
-                  const displayContent = segment.content;
-                  
-                  return (
-                    <span
-                      key={segmentIndex}
-                      className={segmentClass}
-                      style={{
+              // 显示字符级别的差异 - 带Tooltip版本
+              <Tooltip
+                content={
+                  <div className="space-y-2">
+                    <div className="text-red-300 text-xs font-semibold">原始代码:</div>
+                    <div className="bg-red-900/30 p-2 rounded font-mono text-xs break-all">
+                      {line.segments.filter(s => s.type === 'deleted' || s.type === 'unchanged').map(s => s.content).join('')}
+                    </div>
+                    <div className="text-green-300 text-xs font-semibold">修改后:</div>
+                    <div className="bg-green-900/30 p-2 rounded font-mono text-xs break-all">
+                      {line.segments.filter(s => s.type === 'added' || s.type === 'unchanged').map(s => s.content).join('')}
+                    </div>
+                  </div>
+                }
+                position="top"
+              >
+                <div className="inline cursor-help">
+                  {line.segments.map((segment, segmentIndex) => {
+                    let segmentClass = '';
+                    let segmentStyle: React.CSSProperties = {};
+                    
+                    if (segment.type === 'added') {
+                      // 新增内容：使用更柔和的绿色背景
+                      segmentClass = 'bg-green-100 text-green-900 dark:bg-green-900/20 dark:text-green-200';
+                      segmentStyle = { 
+                        padding: '0 2px',
+                        borderRadius: '3px',
+                        fontWeight: '500'
+                      };
+                    } else if (segment.type === 'deleted') {
+                      // 删除内容：使用更柔和的红色背景
+                      segmentClass = 'bg-red-100 text-red-900 dark:bg-red-900/20 dark:text-red-200';
+                      segmentStyle = { 
+                        padding: '0 2px',
+                        borderRadius: '3px',
+                        fontWeight: '500'
+                      };
+                    } else {
+                      // 未更改内容：保持原样
+                      segmentClass = 'text-foreground';
+                      segmentStyle = {};
+                    }
+                    
+                    // 特殊处理空白字符
+                    const isWhitespace = /^[\s]+$/.test(segment.content);
+                    if (isWhitespace) {
+                      segmentStyle = {
                         ...segmentStyle,
-                        // 为空白字符添加特殊样式
-                        ...(segment.content.match(/^[\s]+$/) && {
-                          border: '1px dashed rgba(0,0,0,0.3)',
-                          fontFamily: 'monospace',
-                          fontWeight: 'bold'
-                        })
-                      }}
-                      title={`空白字符: "${segment.content}"`}
-                    >
-                      {displayContent}
-                    </span>
-                  );
-                })}
-              </div>
+                        border: '1px dashed rgba(156, 163, 175, 0.5)',
+                        backgroundColor: 'rgba(156, 163, 175, 0.1)',
+                        borderRadius: '2px',
+                        padding: '0 1px'
+                      };
+                    }
+                    
+                    return (
+                      <span
+                        key={segmentIndex}
+                        className={segmentClass}
+                        style={segmentStyle}
+                        title={isWhitespace ? `空白字符: "${segment.content}"` : undefined}
+                      >
+                        {segment.content}
+                      </span>
+                    );
+                  })}
+                </div>
+              </Tooltip>
             ) : (
               <span
+                className="font-mono"
                 style={{
                   // 为非分段内容也添加空白字符可视化
                   fontFamily: 'monospace'
@@ -602,6 +778,145 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
       })}
     </div>
   )
+
+  const renderSideBySideView = () => {
+    // 分离不同类型的行
+    const unchangedLines = fileLines.filter(line => line.type === 'unchanged')
+    const modifiedLines = fileLines.filter(line => line.type === 'modified')
+    
+    // 创建并排显示的数据结构
+    const sideBySideData: Array<{
+      leftLine?: FileLine
+      rightLine?: FileLine
+      type: 'unchanged' | 'added' | 'deleted' | 'modified'
+      originalLine?: FileLine // 用于Tooltip显示
+    }> = []
+    
+    // 处理修改的行（显示为删除+添加）
+    modifiedLines.forEach(line => {
+      if (line.segments) {
+        const deletedContent = line.segments.filter(s => s.type === 'deleted' || s.type === 'unchanged').map(s => s.content).join('')
+        const addedContent = line.segments.filter(s => s.type === 'added' || s.type === 'unchanged').map(s => s.content).join('')
+        
+        sideBySideData.push({
+          leftLine: { ...line, content: deletedContent, type: 'deleted' },
+          rightLine: { ...line, content: addedContent, type: 'added' },
+          type: 'modified',
+          originalLine: line // 保存原始行信息用于Tooltip
+        })
+      }
+    })
+    
+    // 处理未更改的行
+    unchangedLines.forEach(line => {
+      sideBySideData.push({
+        leftLine: line,
+        rightLine: line,
+        type: 'unchanged'
+      })
+    })
+    
+    return (
+      <div className="font-mono text-sm">
+        <div className="grid grid-cols-2 gap-0 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+          {/* 表头 */}
+          <div className="bg-gray-100 dark:bg-gray-800 px-4 py-2 text-xs font-semibold text-gray-600 dark:text-gray-300 border-r border-gray-200 dark:border-gray-700">
+            删除的内容
+          </div>
+          <div className="bg-gray-100 dark:bg-gray-800 px-4 py-2 text-xs font-semibold text-gray-600 dark:text-gray-300">
+            添加的内容
+          </div>
+          
+          {/* 内容行 */}
+          {sideBySideData.map((item, index) => {
+            const isCurrentChange = item.leftLine?.changeIndex === currentChangeIndex || item.rightLine?.changeIndex === currentChangeIndex
+            
+            return (
+              <div key={index} className={`contents ${isCurrentChange ? 'ring-2 ring-blue-500 ring-opacity-50' : ''}`}>
+                {/* 左侧（删除） */}
+                <div className={`px-4 py-1 flex items-start gap-2 ${
+                  item.type === 'deleted' ? 'bg-red-50 border-l-4 border-red-500 dark:bg-red-900/20 dark:border-red-400' :
+                  item.type === 'modified' ? 'bg-red-50 border-l-4 border-red-500 dark:bg-red-900/20 dark:border-red-400' :
+                  'bg-white hover:bg-gray-50 dark:bg-gray-900 dark:hover:bg-gray-800'
+                } border-r border-gray-200 dark:border-gray-700`}>
+                  <div className="text-xs text-gray-500 dark:text-gray-400 w-8 text-right flex-shrink-0">
+                    {item.leftLine?.oldLineNumber || item.leftLine?.lineNumber || ''}
+                  </div>
+                  <div className="w-4 flex-shrink-0 text-center">
+                    {item.type === 'deleted' && <span className="text-red-600 dark:text-red-400 font-bold">-</span>}
+                    {item.type === 'modified' && <span className="text-red-600 dark:text-red-400 font-bold">-</span>}
+                    {item.type === 'unchanged' && <span className="text-gray-400 dark:text-gray-500"> </span>}
+                  </div>
+                  <div className="flex-1 min-w-0 break-all text-red-800 dark:text-red-200">
+                    {item.type === 'modified' && item.originalLine?.segments ? (
+                      <Tooltip
+                        content={
+                          <div className="space-y-2">
+                            <div className="text-red-300 text-xs font-semibold">原始代码:</div>
+                            <div className="bg-red-900/30 p-2 rounded font-mono text-xs break-all">
+                              {item.originalLine.segments.filter(s => s.type === 'deleted' || s.type === 'unchanged').map(s => s.content).join('')}
+                            </div>
+                            <div className="text-green-300 text-xs font-semibold">修改后:</div>
+                            <div className="bg-green-900/30 p-2 rounded font-mono text-xs break-all">
+                              {item.originalLine.segments.filter(s => s.type === 'added' || s.type === 'unchanged').map(s => s.content).join('')}
+                            </div>
+                          </div>
+                        }
+                        position="top"
+                      >
+                        <span className="cursor-help">{item.leftLine?.content || ' '}</span>
+                      </Tooltip>
+                    ) : (
+                      item.leftLine?.content || ' '
+                    )}
+                  </div>
+                </div>
+                
+                {/* 右侧（添加） */}
+                <div className={`px-4 py-1 flex items-start gap-2 ${
+                  item.type === 'added' ? 'bg-green-50 border-l-4 border-green-500 dark:bg-green-900/20 dark:border-green-400' :
+                  item.type === 'modified' ? 'bg-green-50 border-l-4 border-green-500 dark:bg-green-900/20 dark:border-green-400' :
+                  'bg-white hover:bg-gray-50 dark:bg-gray-900 dark:hover:bg-gray-800'
+                }`}>
+                  <div className="text-xs text-gray-500 dark:text-gray-400 w-8 text-right flex-shrink-0">
+                    {item.rightLine?.lineNumber || ''}
+                  </div>
+                  <div className="w-4 flex-shrink-0 text-center">
+                    {item.type === 'added' && <span className="text-green-600 dark:text-green-400 font-bold">+</span>}
+                    {item.type === 'modified' && <span className="text-green-600 dark:text-green-400 font-bold">+</span>}
+                    {item.type === 'unchanged' && <span className="text-gray-400 dark:text-gray-500"> </span>}
+                  </div>
+                  <div className="flex-1 min-w-0 break-all text-green-800 dark:text-green-200">
+                    {item.type === 'modified' && item.originalLine?.segments ? (
+                      <Tooltip
+                        content={
+                          <div className="space-y-2">
+                            <div className="text-red-300 text-xs font-semibold">原始代码:</div>
+                            <div className="bg-red-900/30 p-2 rounded font-mono text-xs break-all">
+                              {item.originalLine.segments.filter(s => s.type === 'deleted' || s.type === 'unchanged').map(s => s.content).join('')}
+                            </div>
+                            <div className="text-green-300 text-xs font-semibold">修改后:</div>
+                            <div className="bg-green-900/30 p-2 rounded font-mono text-xs break-all">
+                              {item.originalLine.segments.filter(s => s.type === 'added' || s.type === 'unchanged').map(s => s.content).join('')}
+                            </div>
+                          </div>
+                        }
+                        position="top"
+                      >
+                        <span className="cursor-help">{item.rightLine?.content || ' '}</span>
+                      </Tooltip>
+                    ) : (
+                      item.rightLine?.content || ' '
+                    )}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
 
 
   return (
@@ -626,6 +941,28 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
             <Copy className="h-4 w-4" />
             复制
           </Button>
+          
+          {/* 视图模式切换 */}
+          <div className="flex items-center border border-gray-200 dark:border-gray-700 rounded-md overflow-hidden">
+            <Button
+              variant={viewMode === 'unified' ? 'default' : 'ghost'}
+              size="sm"
+              onClick={() => setViewMode('unified')}
+              className="rounded-none border-0 h-8 px-3"
+              title="统一视图"
+            >
+              <FileText className="h-4 w-4" />
+            </Button>
+            <Button
+              variant={viewMode === 'side-by-side' ? 'default' : 'ghost'}
+              size="sm"
+              onClick={() => setViewMode('side-by-side')}
+              className="rounded-none border-0 h-8 px-3"
+              title="并排视图"
+            >
+              <Sidebar className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
         
         {/* 更改导航控件 */}
@@ -711,7 +1048,7 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
               没有差异内容
             </div>
           ) : (
-            renderFullFileView()
+            viewMode === 'side-by-side' ? renderSideBySideView() : renderUnifiedView()
           )}
         </div>
       )}

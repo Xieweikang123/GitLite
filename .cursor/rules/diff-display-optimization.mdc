@@ -1,0 +1,42 @@
+---
+description: Git diff display and visualization best practices
+---
+
+# Git Diff Display Optimization
+
+## Character-Level Diff Display
+
+When displaying character-level differences in code, follow these patterns from [VSCodeDiff.tsx](mdc:src/components/VSCodeDiff.tsx):
+
+### 1. Visual Improvements
+- Use softer color schemes for added/deleted content to reduce visual noise
+- For added content: `bg-green-100 text-green-900 dark:bg-green-900/20 dark:text-green-200`
+- For deleted content: `bg-red-100 text-red-900 dark:bg-red-900/20 dark:text-red-200`
+- Use moderate font weight (`fontWeight: '500'`) instead of bold for better readability
+
+### 2. Whitespace Handling
+- Display whitespace characters as-is, don't replace with dots or symbols
+- Use dashed borders and background colors to highlight whitespace changes
+- Provide tooltips showing actual whitespace content when needed
+
+### 3. View Modes
+- Implement both unified and side-by-side view modes
+- Unified view: traditional inline diff with character-level highlighting
+- Side-by-side view: left panel shows deleted content, right panel shows added content
+- Allow users to switch between modes with toggle buttons
+
+### 4. Tooltip Integration
+- Show original and modified code in tooltips for modified lines
+- Use consistent styling with red background for original, green for modified
+- Ensure tooltips are properly positioned and don't get clipped
+
+### 5. Navigation Features
+- Implement change navigation with previous/next buttons
+- Add slider for quick navigation between changes
+- Highlight current change block with ring styling
+- Auto-scroll to first change when diff loads
+
+### 6. Performance Considerations
+- Use proper React keys for diff segments to avoid unnecessary re-renders
+- Implement proper cleanup for event listeners and timeouts
+- Consider virtualization for large diffs with many changes

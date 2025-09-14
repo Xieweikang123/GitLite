@@ -859,19 +859,29 @@ async fn push_changes(repo_path: String) -> Result<String, String> {
     let cfg = repo.config().ok();
     let mut callbacks = git2::RemoteCallbacks::new();
     callbacks.credentials(move |url, username_from_url, allowed| {
+        log_message("DEBUG", &format!("push: credential callback | url={} username={:?} allowed={:?}", 
+            url.unwrap_or(""), username_from_url, allowed));
+        
         if allowed.contains(git2::CredentialType::DEFAULT) {
+            log_message("DEBUG", "push: trying default credentials");
             return git2::Cred::default();
         }
         if allowed.contains(git2::CredentialType::SSH_KEY) {
+            log_message("DEBUG", "push: trying SSH key from agent");
             return git2::Cred::ssh_key_from_agent(username_from_url.unwrap_or("git"));
         }
         if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+            log_message("DEBUG", "push: trying credential helper");
             if let Some(cfg) = cfg.as_ref() {
                 if let Ok(cred) = git2::Cred::credential_helper(cfg, url, username_from_url) {
+                    log_message("DEBUG", "push: credential helper success");
                     return Ok(cred);
+                } else {
+                    log_message("WARN", "push: credential helper failed");
                 }
             }
         }
+        log_message("ERROR", "push: no authentication method available");
         Err(git2::Error::from_str("No authentication method available"))
     });
 
@@ -1238,19 +1248,36 @@ async fn push_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
     let cfg = repo.config().ok();
     let mut callbacks = git2::RemoteCallbacks::new();
     callbacks.credentials(move |url, username_from_url, allowed| {
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "DEBUG".to_string(), format!("认证回调: URL={} 用户名={:?} 允许类型={:?}", 
+            url.unwrap_or(""), username_from_url, allowed)));
+        
         if allowed.contains(git2::CredentialType::DEFAULT) {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "DEBUG".to_string(), "尝试默认认证".to_string()));
             return git2::Cred::default();
         }
         if allowed.contains(git2::CredentialType::SSH_KEY) {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "DEBUG".to_string(), "尝试SSH密钥认证".to_string()));
             return git2::Cred::ssh_key_from_agent(username_from_url.unwrap_or("git"));
         }
         if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "DEBUG".to_string(), "尝试凭据助手认证".to_string()));
             if let Some(cfg) = cfg.as_ref() {
                 if let Ok(cred) = git2::Cred::credential_helper(cfg, url, username_from_url) {
+                    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                    logs.push((timestamp, "DEBUG".to_string(), "凭据助手认证成功".to_string()));
                     return Ok(cred);
+                } else {
+                    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                    logs.push((timestamp, "WARN".to_string(), "凭据助手认证失败".to_string()));
                 }
             }
         }
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "ERROR".to_string(), "没有可用的认证方法".to_string()));
         Err(git2::Error::from_str("No authentication method available"))
     });
 
@@ -1302,6 +1329,119 @@ async fn push_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
             return Err(format!("Failed to push: {}", e));
         }
     }
+}
+
+// Git诊断功能
+#[tauri::command]
+async fn git_diagnostics(repo_path: String) -> Result<Vec<(String, String, String)>, String> {
+    let mut logs = Vec::new();
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    
+    logs.push((timestamp, "INFO".to_string(), "开始Git诊断...".to_string()));
+    
+    // 检查仓库状态
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "检查仓库状态...".to_string()));
+    
+    let repo = match Repository::open(&repo_path) {
+        Ok(r) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "SUCCESS".to_string(), "仓库打开成功".to_string()));
+            r
+        },
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("仓库打开失败: {}", e)));
+            return Err(format!("Failed to open repository: {}", e));
+        }
+    };
+    
+    // 检查远程仓库
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "检查远程仓库配置...".to_string()));
+    
+    match repo.find_remote("origin") {
+        Ok(remote) => {
+            let url = remote.url().unwrap_or("未设置");
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "SUCCESS".to_string(), format!("远程仓库URL: {}", url)));
+        },
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("未找到远程仓库 origin: {}", e)));
+        }
+    }
+    
+    // 检查Git配置
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "检查Git配置...".to_string()));
+    
+    if let Ok(config) = repo.config() {
+        // 检查用户配置
+        if let Ok(name) = config.get_string("user.name") {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "SUCCESS".to_string(), format!("用户名: {}", name)));
+        } else {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "WARN".to_string(), "未设置用户名".to_string()));
+        }
+        
+        if let Ok(email) = config.get_string("user.email") {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "SUCCESS".to_string(), format!("邮箱: {}", email)));
+        } else {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "WARN".to_string(), "未设置邮箱".to_string()));
+        }
+        
+        // 检查凭据配置
+        if let Ok(helper) = config.get_string("credential.helper") {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "SUCCESS".to_string(), format!("凭据助手: {}", helper)));
+        } else {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "WARN".to_string(), "未配置凭据助手".to_string()));
+        }
+    } else {
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "ERROR".to_string(), "无法读取Git配置".to_string()));
+    }
+    
+    // 检查当前分支
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "检查当前分支...".to_string()));
+    
+    match repo.head() {
+        Ok(head) => {
+            let branch_name = head.shorthand().unwrap_or("未知");
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "SUCCESS".to_string(), format!("当前分支: {}", branch_name)));
+            
+            // 检查上游分支
+            if let Ok(branch) = repo.find_branch(branch_name, git2::BranchType::Local) {
+                match branch.upstream() {
+                    Ok(upstream) => {
+                        let upstream_name = upstream.name().unwrap_or("未知");
+                        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                        logs.push((timestamp, "SUCCESS".to_string(), format!("上游分支: {}", upstream_name)));
+                    },
+                    Err(_) => {
+                        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                        logs.push((timestamp, "WARN".to_string(), "未设置上游分支".to_string()));
+                    }
+                }
+            }
+        },
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("获取HEAD失败: {}", e)));
+        }
+    }
+    
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "SUCCESS".to_string(), "Git诊断完成".to_string()));
+    
+    Ok(logs)
 }
 
 // 拉取更改 - 带日志流
@@ -1886,6 +2026,9 @@ fn main() {
             push_changes,
             pull_changes,
             fetch_changes_with_logs,
+            push_changes_with_logs,
+            pull_changes_with_logs,
+            git_diagnostics,
             get_log_file_path,
             open_log_dir,
             open_external_url,

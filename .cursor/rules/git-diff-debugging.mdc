@@ -1,6 +1,5 @@
 ---
 description: Git diff debugging and parsing best practices
-globs: *.ts,*.tsx,*.rs
 ---
 
 # Git Diff Debugging and Parsing Best Practices
