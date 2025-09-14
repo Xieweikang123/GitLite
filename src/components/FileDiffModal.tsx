@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { Button } from './ui/button'
-import { Copy } from 'lucide-react'
 import { VSCodeDiff } from './VSCodeDiff'
 
 interface FileDiffModalProps {

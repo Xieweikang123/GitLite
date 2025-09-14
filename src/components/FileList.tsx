@@ -1,9 +1,7 @@
-import React from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
-import { Button } from './ui/button'
 import { FileChange } from '../types/git'
-import { FileText, Plus, Minus, Edit, Trash2, GitBranch } from 'lucide-react'
+import { FileText, Plus, Edit, Trash2, GitBranch } from 'lucide-react'
 
 interface FileListProps {
   files: FileChange[]
@@ -12,7 +10,7 @@ interface FileListProps {
   loading?: boolean
 }
 
-export function FileList({ files, selectedFile, onFileSelect, loading }: FileListProps) {
+export function FileList({ files, selectedFile, onFileSelect }: FileListProps) {
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'added':

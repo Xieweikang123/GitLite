@@ -535,7 +535,7 @@ export function WorkspaceStatus({ repoInfo, onRefresh }: WorkspaceStatusProps) {
           {stashList.length > 0 && (
             <div className="space-y-2">
               <div className="text-sm font-medium text-muted-foreground">贮藏列表</div>
-              {stashList.map((stash, index) => (
+              {stashList.map((stash) => (
                 <div key={stash.id} className="flex items-start gap-2 p-2 border rounded">
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium">{stash.message}</div>
