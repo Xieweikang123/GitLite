@@ -1,11 +1,13 @@
 import { Button } from './ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger } from './ui/select'
-import { FolderOpen, GitBranch, ExternalLink, Moon, Sun } from 'lucide-react'
+import { FolderOpen, GitBranch, ExternalLink, Moon, Sun, GitPullRequest, Download } from 'lucide-react'
 
 interface TopToolbarProps {
   onOpenRepository: () => void
   onBranchSelect: (branchName: string) => void
   onOpenRemoteRepository?: () => void
+  onPullChanges?: () => void
+  onFetchChanges?: () => void
   loading: boolean
   repoInfo: any
   isDark: boolean
@@ -16,6 +18,8 @@ export function TopToolbar({
   onOpenRepository,
   onBranchSelect,
   onOpenRemoteRepository,
+  onPullChanges,
+  onFetchChanges,
   loading,
   repoInfo,
   isDark,
@@ -83,6 +87,31 @@ export function TopToolbar({
             <Moon className="h-4 w-4" />
           )}
         </Button>
+        
+        {repoInfo && onFetchChanges && (
+          <Button
+            onClick={onFetchChanges}
+            disabled={loading}
+            variant="outline"
+            className="flex items-center gap-2"
+            title="获取远程仓库的最新信息（不合并）"
+          >
+            <Download className="h-4 w-4" />
+            获取
+          </Button>
+        )}
+        
+        {repoInfo && typeof repoInfo.behind === 'number' && repoInfo.behind > 0 && onPullChanges && (
+          <Button
+            onClick={onPullChanges}
+            disabled={loading}
+            variant="outline"
+            className="flex items-center gap-2"
+          >
+            <GitPullRequest className="h-4 w-4" />
+            拉取 ({repoInfo.behind})
+          </Button>
+        )}
         
         {repoInfo?.remote_url && onOpenRemoteRepository && (
           <Button

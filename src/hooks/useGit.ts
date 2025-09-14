@@ -219,6 +219,66 @@ export function useGit() {
     }
   }, [repoInfo])
 
+  const pullChanges = useCallback(async () => {
+    if (!repoInfo) throw new Error('No repository open')
+    
+    try {
+      const result = await invoke('pull_changes', {
+        repoPath: repoInfo.path,
+      })
+      
+      // 拉取成功后，重新获取仓库信息以更新状态
+      const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
+        path: repoInfo.path,
+      })
+      setRepoInfo(updatedRepoInfo)
+      
+      return result
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : '拉取失败')
+    }
+  }, [repoInfo])
+
+  const fetchChanges = useCallback(async () => {
+    if (!repoInfo) throw new Error('No repository open')
+    
+    try {
+      const result = await invoke('fetch_changes', {
+        repoPath: repoInfo.path,
+      })
+      
+      // 获取成功后，重新获取仓库信息以更新状态
+      const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
+        path: repoInfo.path,
+      })
+      setRepoInfo(updatedRepoInfo)
+      
+      return result
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : '获取失败')
+    }
+  }, [repoInfo])
+
+  const fetchChangesWithLogs = useCallback(async () => {
+    if (!repoInfo) throw new Error('No repository open')
+    
+    try {
+      const logs: Array<[string, string, string]> = await invoke('fetch_changes_with_logs', {
+        repoPath: repoInfo.path,
+      })
+      
+      // 获取成功后，重新获取仓库信息以更新状态
+      const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
+        path: repoInfo.path,
+      })
+      setRepoInfo(updatedRepoInfo)
+      
+      return logs
+    } catch (err) {
+      throw new Error(err instanceof Error ? err.message : '获取失败')
+    }
+  }, [repoInfo])
+
   return {
     repoInfo,
     loading,
@@ -238,5 +298,8 @@ export function useGit() {
     unstageFile,
     commitChanges,
     pushChanges,
+    pullChanges,
+    fetchChanges,
+    fetchChangesWithLogs,
   }
 }

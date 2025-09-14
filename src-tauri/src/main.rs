@@ -701,7 +701,6 @@ async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, Stri
     }
     
     // 使用 index 到 workdir 的差异更可靠地获取"未暂存"
-    log_message("DEBUG", &format!("workspace_status: starting index->workdir diff | staged_count={} unstaged_count={}", staged_files.len(), unstaged_files.len()));
     let index = repo.index().map_err(|e| format!("Failed to get index: {}", e))?;
     let mut diff_opts = git2::DiffOptions::new();
     diff_opts.include_untracked(true).recurse_untracked_dirs(true);
@@ -718,7 +717,6 @@ async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, Stri
                 .map(|p| p.to_string_lossy().replace('\\', "/"))
                 .unwrap_or_default();
             let delta_status = format!("{:?}", delta.status());
-            log_message("DEBUG", &format!("workspace_status: delta[{}] {} | path={}", diff_count, delta_status, file_path));
             // 注意：同一文件可以同时有暂存和未暂存的修改，所以不跳过
             // 识别类型
             let status = match delta.status() {
@@ -729,7 +727,6 @@ async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, Stri
                 git2::Delta::Untracked => {
                     if !untracked_files.contains(&file_path) {
                         untracked_files.push(file_path.clone());
-                        log_message("DEBUG", &format!("workspace_status: added untracked | path={}", file_path));
                     }
                     return true;
                 },
@@ -742,7 +739,6 @@ async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, Stri
                     additions: 1,
                     deletions: 0,
                 });
-                log_message("DEBUG", &format!("workspace_status: added unstaged | path={} status={}", file_path, status));
             }
             true
         },
@@ -750,7 +746,6 @@ async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, Stri
         None,
         None,
     ).map_err(|e| format!("Failed to iterate index->workdir diff: {}", e))?;
-    log_message("DEBUG", &format!("workspace_status: completed | total_deltas={} final_unstaged={} final_untracked={}", diff_count, unstaged_files.len(), untracked_files.len()));
     
     Ok(WorkspaceStatus {
         staged_files,
@@ -902,6 +897,278 @@ async fn push_changes(repo_path: String) -> Result<String, String> {
 
     log_message("INFO", &format!("push: success | branch={} refspec={}", branch_name, refspec));
     Ok(format!("Successfully pushed to origin/{}", branch_name))
+}
+
+// 拉取更改
+#[tauri::command]
+async fn pull_changes(repo_path: String) -> Result<String, String> {
+    log_message("INFO", &format!("pull: attempt start | path={}", repo_path));
+    let repo = match Repository::open(&repo_path) {
+        Ok(r) => r,
+        Err(e) => {
+            log_message("ERROR", &format!("pull: open repository failed: {} | path={}", e, repo_path));
+            return Err(format!("Failed to open repository: {}", e));
+        }
+    };
+
+    let head = match repo.head() {
+        Ok(h) => h,
+        Err(e) => {
+            log_message("ERROR", &format!("pull: get HEAD failed: {}", e));
+            return Err(format!("Failed to get HEAD: {}", e));
+        }
+    };
+    let branch_name = head.shorthand().unwrap_or("main");
+
+    let mut remote = match repo.find_remote("origin") {
+        Ok(r) => r,
+        Err(e) => {
+            log_message("ERROR", &format!("pull: find remote 'origin' failed: {}", e));
+            return Err(format!("Failed to find remote 'origin': {}", e));
+        }
+    };
+
+    // 认证与 Fetch 选项
+    let cfg = repo.config().ok();
+    let mut callbacks = git2::RemoteCallbacks::new();
+    callbacks.credentials(move |url, username_from_url, allowed| {
+        if allowed.contains(git2::CredentialType::DEFAULT) {
+            return git2::Cred::default();
+        }
+        if allowed.contains(git2::CredentialType::SSH_KEY) {
+            return git2::Cred::ssh_key_from_agent(username_from_url.unwrap_or("git"));
+        }
+        if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+            if let Some(cfg) = cfg.as_ref() {
+                if let Ok(cred) = git2::Cred::credential_helper(cfg, url, username_from_url) {
+                    return Ok(cred);
+                }
+            }
+        }
+        Err(git2::Error::from_str("No authentication method available"))
+    });
+
+    let mut fetch_opts = git2::FetchOptions::new();
+    fetch_opts.remote_callbacks(callbacks);
+
+    // 首先执行 fetch
+    let refspec = format!("refs/heads/{}:refs/remotes/origin/{}", branch_name, branch_name);
+    if let Err(e) = remote.fetch(&[&refspec], Some(&mut fetch_opts), None) {
+        let url = remote.url().unwrap_or("");
+        log_message("ERROR", &format!("pull: git fetch failed: {} | url={} refspec={} branch={}", e, url, refspec, branch_name));
+        let log_path = get_config_dir().join("logs").join("gitlite.log");
+        return Err(format!("Failed to fetch: {} (see log: {})", e, log_path.display()));
+    }
+
+    // 获取远程分支引用
+    let remote_branch_ref = format!("refs/remotes/origin/{}", branch_name);
+    let remote_branch_oid = match repo.refname_to_id(&remote_branch_ref) {
+        Ok(oid) => oid,
+        Err(e) => {
+            log_message("ERROR", &format!("pull: get remote branch OID failed: {} | ref={}", e, remote_branch_ref));
+            return Err(format!("Failed to get remote branch reference: {}", e));
+        }
+    };
+
+    // 获取本地HEAD的OID
+    let local_head_oid = match repo.refname_to_id("HEAD") {
+        Ok(oid) => oid,
+        Err(e) => {
+            log_message("ERROR", &format!("pull: get local HEAD OID failed: {}", e));
+            return Err(format!("Failed to get local HEAD reference: {}", e));
+        }
+    };
+
+    // 检查是否需要合并
+    if remote_branch_oid == local_head_oid {
+        log_message("INFO", &format!("pull: already up to date | branch={}", branch_name));
+        return Ok("Already up to date".to_string());
+    }
+
+    // 检查工作区是否有未提交的更改
+    let mut index = match repo.index() {
+        Ok(i) => i,
+        Err(e) => {
+            log_message("ERROR", &format!("pull: get index failed: {}", e));
+            return Err(format!("Failed to get index: {}", e));
+        }
+    };
+
+    // 检查是否有未暂存的更改
+    let diff_count = repo.diff_index_to_workdir(Some(&index), None)
+        .map_err(|e| format!("Failed to create diff: {}", e))?
+        .stats()
+        .map_err(|e| format!("Failed to get diff stats: {}", e))?
+        .files_changed();
+
+    if diff_count > 0 {
+        log_message("WARN", &format!("pull: uncommitted changes detected | files_changed={}", diff_count));
+        return Err("Cannot pull: You have uncommitted changes. Please commit or stash them first.".to_string());
+    }
+
+    // 执行合并
+    let remote_commit = match repo.find_commit(remote_branch_oid) {
+        Ok(c) => c,
+        Err(e) => {
+            log_message("ERROR", &format!("pull: find remote commit failed: {}", e));
+            return Err(format!("Failed to find remote commit: {}", e));
+        }
+    };
+
+    let local_commit = match repo.find_commit(local_head_oid) {
+        Ok(c) => c,
+        Err(e) => {
+            log_message("ERROR", &format!("pull: find local commit failed: {}", e));
+            return Err(format!("Failed to find local commit: {}", e));
+        }
+    };
+
+    // 检查是否是快进合并
+    let is_ff = match repo.merge_base(local_head_oid, remote_branch_oid) {
+        Ok(base) => base == local_head_oid,
+        Err(_) => false,
+    };
+
+    if is_ff {
+        // 快进合并
+        let mut reference = match repo.find_reference("HEAD") {
+            Ok(r) => r,
+            Err(e) => {
+                log_message("ERROR", &format!("pull: find HEAD reference failed: {}", e));
+                return Err(format!("Failed to find HEAD reference: {}", e));
+            }
+        };
+
+        if let Err(e) = reference.set_target(remote_branch_oid, "Fast-forward merge") {
+            log_message("ERROR", &format!("pull: fast-forward failed: {}", e));
+            return Err(format!("Failed to fast-forward: {}", e));
+        }
+
+        log_message("INFO", &format!("pull: fast-forward success | branch={}", branch_name));
+        Ok("Successfully pulled (fast-forward)".to_string())
+    } else {
+        // 需要创建合并提交
+        let mut merge_index = match repo.merge_commits(&local_commit, &remote_commit, None) {
+            Ok(index) => index,
+            Err(e) => {
+                log_message("ERROR", &format!("pull: merge commits failed: {}", e));
+                return Err(format!("Failed to merge: {}", e));
+            }
+        };
+
+        // 将合并结果写入工作区
+        let merge_tree = repo.find_tree(merge_index.write_tree().map_err(|e| format!("Failed to write merge tree: {}", e))?)
+            .map_err(|e| format!("Failed to find merge tree: {}", e))?;
+
+        // 创建合并提交
+        let signature = git2::Signature::now("GitLite User", "gitlite@example.com")
+            .map_err(|e| format!("Failed to create signature: {}", e))?;
+
+        let merge_commit_id = repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            &format!("Merge branch 'origin/{}'", branch_name),
+            &merge_tree,
+            &[&local_commit, &remote_commit],
+        ).map_err(|e| format!("Failed to create merge commit: {}", e))?;
+
+        log_message("INFO", &format!("pull: merge success | branch={} merge_commit={}", branch_name, merge_commit_id));
+        Ok(format!("Successfully pulled and merged (commit: {})", merge_commit_id))
+    }
+}
+
+// 获取远程更改（不合并）- 带日志流
+#[tauri::command]
+async fn fetch_changes_with_logs(repo_path: String) -> Result<Vec<(String, String, String)>, String> {
+    let mut logs = Vec::new();
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    
+    logs.push((timestamp, "INFO".to_string(), format!("fetch: attempt start | path={}", repo_path)));
+    
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "正在打开仓库...".to_string()));
+    
+    let repo = match Repository::open(&repo_path) {
+        Ok(r) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "INFO".to_string(), "仓库打开成功".to_string()));
+            r
+        },
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("打开仓库失败: {}", e)));
+            return Err(format!("Failed to open repository: {}", e));
+        }
+    };
+
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "正在查找远程仓库 origin...".to_string()));
+
+    let mut remote = match repo.find_remote("origin") {
+        Ok(r) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "INFO".to_string(), "找到远程仓库 origin".to_string()));
+            r
+        },
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("未找到远程仓库 origin: {}", e)));
+            return Err(format!("Failed to find remote 'origin': {}", e));
+        }
+    };
+
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "正在设置认证...".to_string()));
+
+    // 认证与 Fetch 选项
+    let cfg = repo.config().ok();
+    let mut callbacks = git2::RemoteCallbacks::new();
+    callbacks.credentials(move |url, username_from_url, allowed| {
+        if allowed.contains(git2::CredentialType::DEFAULT) {
+            return git2::Cred::default();
+        }
+        if allowed.contains(git2::CredentialType::SSH_KEY) {
+            return git2::Cred::ssh_key_from_agent(username_from_url.unwrap_or("git"));
+        }
+        if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+            if let Some(cfg) = cfg.as_ref() {
+                if let Ok(cred) = git2::Cred::credential_helper(cfg, url, username_from_url) {
+                    return Ok(cred);
+                }
+            }
+        }
+        Err(git2::Error::from_str("No authentication method available"))
+    });
+
+    let mut fetch_opts = git2::FetchOptions::new();
+    fetch_opts.remote_callbacks(callbacks);
+
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "开始获取远程更改...".to_string()));
+
+    // 执行 fetch 操作
+    match remote.fetch::<&str>(&[], Some(&mut fetch_opts), None) {
+        Ok(_) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "INFO".to_string(), "获取成功！".to_string()));
+            
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "SUCCESS".to_string(), "操作完成 - 已获取远程仓库最新信息".to_string()));
+            
+            Ok(logs)
+        },
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("获取失败: {}", e)));
+            
+            let url = remote.url().unwrap_or("");
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("远程仓库URL: {}", url)));
+            
+            return Err(format!("Failed to fetch: {}", e));
+        }
+    }
 }
 
 // 获取已暂存文件的差异
@@ -1190,6 +1457,8 @@ fn main() {
             unstage_file,
             commit_changes,
             push_changes,
+            pull_changes,
+            fetch_changes_with_logs,
             get_log_file_path,
             open_log_dir,
             open_external_url,

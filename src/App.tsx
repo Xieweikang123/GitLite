@@ -7,6 +7,7 @@ import { WorkspaceStatus } from './components/WorkspaceStatus'
 import { CommitList } from './components/CommitList'
 import { DiffViewer } from './components/DiffViewer'
 import { FileList } from './components/FileList'
+import { LogModal } from './components/LogModal'
 import { CommitInfo, FileChange } from './types/git'
 import { invoke } from '@tauri-apps/api/tauri'
 
@@ -24,7 +25,9 @@ function App() {
     getFileDiff, 
     getCommitFiles, 
     getSingleFileDiff,
-    getCommitsPaginated
+    getCommitsPaginated,
+    pullChanges,
+    fetchChangesWithLogs
   } = useGit()
   
   const { isDark, toggleDarkMode } = useDarkMode()
@@ -34,6 +37,12 @@ function App() {
   const [allCommits, setAllCommits] = useState<CommitInfo[]>([])
   const [loadingMore, setLoadingMore] = useState(false)
   const [hasMoreCommits, setHasMoreCommits] = useState(true)
+  
+  // 日志弹窗状态
+  const [logModalOpen, setLogModalOpen] = useState(false)
+  const [logModalTitle, setLogModalTitle] = useState('')
+  const [logs, setLogs] = useState<Array<{timestamp: string, level: 'INFO' | 'DEBUG' | 'WARN' | 'ERROR', message: string}>>([])
+  const [isOperationRunning, setIsOperationRunning] = useState(false)
 
   const handleCommitSelect = async (commit: CommitInfo) => {
     setSelectedCommit(commit)
@@ -114,6 +123,63 @@ function App() {
     }
   }
 
+  const handlePullChanges = async () => {
+    if (!repoInfo) return
+    
+    try {
+      const result = await pullChanges()
+      console.log('拉取成功:', result)
+      
+      // 拉取成功后重置状态
+      setSelectedCommit(null)
+      setCommitFiles([])
+      setSelectedFile(null)
+      setAllCommits([])
+      setHasMoreCommits(true)
+    } catch (error) {
+      console.error('拉取失败:', error)
+    }
+  }
+
+  const handleFetchChanges = async () => {
+    if (!repoInfo) return
+    
+    // 打开日志弹窗
+    setLogModalTitle('获取远程更改')
+    setLogs([])
+    setLogModalOpen(true)
+    setIsOperationRunning(true)
+    
+    try {
+      const logData: Array<[string, string, string]> = await fetchChangesWithLogs()
+      
+      // 转换日志格式
+      const formattedLogs = logData.map(([timestamp, level, message]) => ({
+        timestamp,
+        level: level as 'INFO' | 'DEBUG' | 'WARN' | 'ERROR',
+        message
+      }))
+      
+      setLogs(formattedLogs)
+      setIsOperationRunning(false)
+      
+      // 获取成功后重置状态（获取不会改变工作区，所以不需要重置文件状态）
+      setAllCommits([])
+      setHasMoreCommits(true)
+    } catch (error) {
+      console.error('获取失败:', error)
+      setIsOperationRunning(false)
+      
+      // 添加错误日志
+      const errorLog = {
+        timestamp: new Date().toLocaleTimeString(),
+        level: 'ERROR' as const,
+        message: `获取失败: ${error instanceof Error ? error.message : '未知错误'}`
+      }
+      setLogs(prev => [...prev, errorLog])
+    }
+  }
+
   // 当仓库信息更新时，重置提交列表
   React.useEffect(() => {
     if (repoInfo) {
@@ -143,6 +209,8 @@ function App() {
         onOpenRepository={openRepository}
         onBranchSelect={handleBranchSelect}
         onOpenRemoteRepository={handleOpenRemoteRepository}
+        onPullChanges={handlePullChanges}
+        onFetchChanges={handleFetchChanges}
         loading={loading}
         repoInfo={repoInfo}
         isDark={isDark}
@@ -213,6 +281,15 @@ function App() {
           </div>
         </div>
       </div>
+      
+      {/* 日志弹窗 */}
+      <LogModal
+        isOpen={logModalOpen}
+        onClose={() => setLogModalOpen(false)}
+        title={logModalTitle}
+        logs={logs}
+        isRunning={isOperationRunning}
+      />
     </div>
   )
 }
