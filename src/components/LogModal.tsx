@@ -5,7 +5,7 @@ import { Copy, Download } from 'lucide-react'
 
 interface LogEntry {
   timestamp: string
-  level: 'INFO' | 'DEBUG' | 'WARN' | 'ERROR'
+  level: 'INFO' | 'DEBUG' | 'WARN' | 'ERROR' | 'SUCCESS'
   message: string
 }
 
@@ -50,6 +50,7 @@ export function LogModal({ isOpen, onClose, title, logs, isRunning }: LogModalPr
       case 'WARN': return 'text-yellow-400'
       case 'INFO': return 'text-blue-400'
       case 'DEBUG': return 'text-gray-400'
+      case 'SUCCESS': return 'text-green-400'
       default: return 'text-green-400'
     }
   }

@@ -6,7 +6,7 @@ description: Tooltip implementation best practices for React components
 
 ## Key Requirements for Tooltip Components
 
-When implementing tooltips in this codebase, follow these patterns established in [VSCodeDiff.tsx](mdc:src/components/VSCodeDiff.tsx):
+When implementing tooltips in this codebase, follow these patterns established in [CodeDiff.tsx](mdc:src/components/CodeDiff.tsx):
 
 ### 1. Positioning and Visibility
 - Use React Portal with `createPortal(tooltip, document.body)` to avoid parent container clipping

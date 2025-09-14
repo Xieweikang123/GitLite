@@ -38,7 +38,7 @@ useEffect(() => {
 
 ### 3. Implementation Examples
 This pattern is used in:
-- [VSCodeDiff.tsx](mdc:src/components/VSCodeDiff.tsx) for tooltip scroll prevention
+- [CodeDiff.tsx](mdc:src/components/CodeDiff.tsx) for tooltip scroll prevention
 - [FileDiffModal.tsx](mdc:src/components/FileDiffModal.tsx) for modal scroll handling
 
 ### 4. Common Use Cases

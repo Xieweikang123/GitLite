@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Button } from './ui/button'
 import { CommitInfo } from '../types/git'
 import { Copy, FileText } from 'lucide-react'
-import { VSCodeDiff } from './VSCodeDiff'
+import { VSCodeDiff } from './CodeDiff'
 
 interface DiffViewerProps {
   commit: CommitInfo | null

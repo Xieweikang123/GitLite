@@ -1,7 +1,8 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useGit } from './hooks/useGit'
 import { useDarkMode } from './hooks/useDarkMode'
 import { invoke } from '@tauri-apps/api/tauri'
+import { listen } from '@tauri-apps/api/event'
 import { TopToolbar } from './components/TopToolbar'
 import { MenuToolbar } from './components/MenuToolbar'
 import { WorkspaceStatus } from './components/WorkspaceStatus'
@@ -27,7 +28,7 @@ function App() {
     getSingleFileDiff,
     getCommitsPaginated,
     fetchChangesWithLogs,
-    pushChangesWithLogs,
+    pushChangesWithRealtimeLogs,
     pullChangesWithLogs
   } = useGit()
   
@@ -42,7 +43,7 @@ function App() {
   // 日志弹窗状态
   const [logModalOpen, setLogModalOpen] = useState(false)
   const [logModalTitle, setLogModalTitle] = useState('')
-  const [logs, setLogs] = useState<Array<{timestamp: string, level: 'INFO' | 'DEBUG' | 'WARN' | 'ERROR', message: string}>>([])
+  const [logs, setLogs] = useState<Array<{timestamp: string, level: 'INFO' | 'DEBUG' | 'WARN' | 'ERROR' | 'SUCCESS', message: string}>>([])
   const [isOperationRunning, setIsOperationRunning] = useState(false)
 
   const handleCommitSelect = async (commit: CommitInfo) => {
@@ -254,13 +255,39 @@ function App() {
     }
   }
 
-  // 推送处理函数
-  const handlePushChanges = async () => {
-    await handleGitOperationWithLogs(
-      () => pushChangesWithLogs(),
-      '推送本地更改',
-      true
-    )
+
+  // 实时推送处理函数
+  const handlePushChangesRealtime = async () => {
+    if (!repoInfo) return
+    
+    // 打开日志弹窗
+    setLogModalTitle('推送本地更改 - 实时日志')
+    setLogs([])
+    setLogModalOpen(true)
+    setIsOperationRunning(true)
+    
+    try {
+      await pushChangesWithRealtimeLogs()
+      setIsOperationRunning(false)
+      
+      // 重置状态
+      setSelectedCommit(null)
+      setCommitFiles([])
+      setSelectedFile(null)
+      setAllCommits([])
+      setHasMoreCommits(true)
+    } catch (error) {
+      console.error('推送失败:', error)
+      setIsOperationRunning(false)
+      
+      // 添加错误日志
+      const errorLog = {
+        timestamp: new Date().toLocaleTimeString(),
+        level: 'ERROR' as const,
+        message: `推送失败: ${error instanceof Error ? error.message : '未知错误'}`
+      }
+      setLogs(prev => [...prev, errorLog])
+    }
   }
 
   // Git诊断处理函数
@@ -271,6 +298,23 @@ function App() {
       false
     )
   }
+
+  // 监听实时日志事件
+  useEffect(() => {
+    const unlisten = listen('push-log', (event) => {
+      const logData = event.payload as { timestamp: string, level: string, message: string }
+      const logEntry = {
+        timestamp: logData.timestamp,
+        level: logData.level as 'INFO' | 'DEBUG' | 'WARN' | 'ERROR' | 'SUCCESS',
+        message: logData.message
+      }
+      setLogs(prev => [...prev, logEntry])
+    })
+
+    return () => {
+      unlisten.then(fn => fn())
+    }
+  }, [])
 
   // 当仓库信息更新时，重置提交列表
   React.useEffect(() => {
@@ -322,7 +366,7 @@ function App() {
             <WorkspaceStatus
               repoInfo={repoInfo}
               onRefresh={handleRefresh}
-              onPushChanges={handlePushChanges}
+              onPushChanges={handlePushChangesRealtime}
               onGitDiagnostics={handleGitDiagnostics}
             />
           </div>

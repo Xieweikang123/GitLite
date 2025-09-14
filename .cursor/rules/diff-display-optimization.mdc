@@ -6,7 +6,7 @@ description: Git diff display and visualization best practices
 
 ## Character-Level Diff Display
 
-When displaying character-level differences in code, follow these patterns from [VSCodeDiff.tsx](mdc:src/components/VSCodeDiff.tsx):
+When displaying character-level differences in code, follow these patterns from [CodeDiff.tsx](mdc:src/components/CodeDiff.tsx):
 
 ### 1. Visual Improvements
 - Use softer color schemes for added/deleted content to reduce visual noise

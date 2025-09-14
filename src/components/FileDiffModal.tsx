@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { Button } from './ui/button'
-import { VSCodeDiff } from './VSCodeDiff'
+import { VSCodeDiff } from './CodeDiff'
 
 interface FileDiffModalProps {
   isOpen: boolean

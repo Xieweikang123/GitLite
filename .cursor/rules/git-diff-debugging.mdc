@@ -57,7 +57,7 @@ if (line.startsWith('+')) {
 
 ### Files Involved
 - Backend: [src-tauri/src/main.rs](mdc:src-tauri/src/main.rs) - `get_staged_file_diff`, `get_unstaged_file_diff`
-- Frontend: [src/components/VSCodeDiff.tsx](mdc:src/components/VSCodeDiff.tsx) - `parseDiffToFullFile`
+- Frontend: [src/components/CodeDiff.tsx](mdc:src/components/CodeDiff.tsx) - `parseDiffToFullFile`
 - Modal: [src/components/FileDiffModal.tsx](mdc:src/components/FileDiffModal.tsx) - Data fetching
 
 Remember: **The backend diff format is the foundation** - if it's wrong, the frontend will never work correctly!
