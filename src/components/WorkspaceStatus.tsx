@@ -491,13 +491,20 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
             >
               提交
             </Button>
-            <Button 
-              variant="outline"
-              onClick={onPushChanges || pushChanges}
-              disabled={loading}
-            >
-              推送
-            </Button>
+            <div className="relative">
+              <Button 
+                variant="outline"
+                onClick={onPushChanges || pushChanges}
+                disabled={loading || !repoInfo || repoInfo.ahead <= 0}
+              >
+                推送
+              </Button>
+              {repoInfo && repoInfo.ahead > 0 && (
+                <span className="absolute -top-2 -right-2 bg-blue-600 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center font-medium">
+                  {repoInfo.ahead}
+                </span>
+              )}
+            </div>
             <Button 
               variant="outline"
               onClick={onGitDiagnostics}

@@ -860,7 +860,7 @@ async fn push_changes(repo_path: String) -> Result<String, String> {
     let mut callbacks = git2::RemoteCallbacks::new();
     callbacks.credentials(move |url, username_from_url, allowed| {
         log_message("DEBUG", &format!("push: credential callback | url={} username={:?} allowed={:?}", 
-            url.unwrap_or(""), username_from_url, allowed));
+            url, username_from_url, allowed));
         
         if allowed.contains(git2::CredentialType::DEFAULT) {
             log_message("DEBUG", "push: trying default credentials");
@@ -1248,36 +1248,19 @@ async fn push_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
     let cfg = repo.config().ok();
     let mut callbacks = git2::RemoteCallbacks::new();
     callbacks.credentials(move |url, username_from_url, allowed| {
-        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push((timestamp, "DEBUG".to_string(), format!("认证回调: URL={} 用户名={:?} 允许类型={:?}", 
-            url.unwrap_or(""), username_from_url, allowed)));
-        
         if allowed.contains(git2::CredentialType::DEFAULT) {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "DEBUG".to_string(), "尝试默认认证".to_string()));
             return git2::Cred::default();
         }
         if allowed.contains(git2::CredentialType::SSH_KEY) {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "DEBUG".to_string(), "尝试SSH密钥认证".to_string()));
             return git2::Cred::ssh_key_from_agent(username_from_url.unwrap_or("git"));
         }
         if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "DEBUG".to_string(), "尝试凭据助手认证".to_string()));
             if let Some(cfg) = cfg.as_ref() {
                 if let Ok(cred) = git2::Cred::credential_helper(cfg, url, username_from_url) {
-                    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                    logs.push((timestamp, "DEBUG".to_string(), "凭据助手认证成功".to_string()));
                     return Ok(cred);
-                } else {
-                    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                    logs.push((timestamp, "WARN".to_string(), "凭据助手认证失败".to_string()));
                 }
             }
         }
-        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push((timestamp, "ERROR".to_string(), "没有可用的认证方法".to_string()));
         Err(git2::Error::from_str("No authentication method available"))
     });
 
@@ -1421,7 +1404,7 @@ async fn git_diagnostics(repo_path: String) -> Result<Vec<(String, String, Strin
             if let Ok(branch) = repo.find_branch(branch_name, git2::BranchType::Local) {
                 match branch.upstream() {
                     Ok(upstream) => {
-                        let upstream_name = upstream.name().unwrap_or("未知");
+                        let upstream_name = upstream.name().unwrap_or(Some("未知")).unwrap_or("未知");
                         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
                         logs.push((timestamp, "SUCCESS".to_string(), format!("上游分支: {}", upstream_name)));
                     },
