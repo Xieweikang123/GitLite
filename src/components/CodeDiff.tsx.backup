@@ -2,7 +2,6 @@ import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { Button } from './ui/button'
 import { Copy, ChevronDown, ChevronRight, ChevronUp, ChevronDown as ChevronDownIcon, Navigation, Sidebar, FileText } from 'lucide-react'
-import SimpleSyntaxHighlighter from './SimpleSyntaxHighlighter'
 
 interface FileLine {
   lineNumber: number
@@ -22,46 +21,6 @@ interface VSCodeDiffProps {
   diff: string
   filePath?: string
   repoPath?: string
-}
-
-// 根据文件路径获取语言类型
-const getLanguageFromPath = (path?: string): string => {
-  if (!path) return 'text'
-  
-  const ext = path.split('.').pop()?.toLowerCase()
-  const languageMap: { [key: string]: string } = {
-    'rs': 'rust',
-    'ts': 'typescript',
-    'tsx': 'typescript',
-    'js': 'javascript',
-    'jsx': 'javascript',
-    'py': 'python',
-    'java': 'java',
-    'cpp': 'cpp',
-    'c': 'c',
-    'cs': 'csharp',
-    'go': 'go',
-    'php': 'php',
-    'rb': 'ruby',
-    'swift': 'swift',
-    'kt': 'kotlin',
-    'scala': 'scala',
-    'sh': 'bash',
-    'json': 'json',
-    'xml': 'xml',
-    'html': 'html',
-    'css': 'css',
-    'scss': 'scss',
-    'sass': 'scss',
-    'less': 'less',
-    'sql': 'sql',
-    'yaml': 'yaml',
-    'yml': 'yaml',
-    'md': 'markdown',
-    'txt': 'text',
-  }
-  
-  return languageMap[ext || ''] || 'text'
 }
 
 // 简单的Tooltip组件
@@ -732,7 +691,7 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
           </div>
           
           {/* Line Content */}
-          <div className="flex-1 min-w-0" style={{ whiteSpace: 'pre' }}>
+          <div className="flex-1 min-w-0 break-all">
             {line.type === 'modified' && line.segments ? (
               // 显示字符级别的差异 - 带Tooltip版本
               <Tooltip
@@ -803,13 +762,15 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
                 </div>
               </Tooltip>
             ) : (
-              // 普通行内容显示 - 使用语法高亮
-              <SimpleSyntaxHighlighter
-                code={line.content || ' '}
-                language={getLanguageFromPath(filePath)}
-                showLineNumbers={false}
-                className="inline-block"
-              />
+              <span
+                className="font-mono"
+                style={{
+                  // 为非分段内容也添加空白字符可视化
+                  fontFamily: 'monospace'
+                }}
+              >
+                {line.content || ' '}
+              </span>
             )}
           </div>
         </div>
@@ -886,49 +847,27 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
                     {item.type === 'modified' && <span className="text-red-600 dark:text-red-400 font-bold">-</span>}
                     {item.type === 'unchanged' && <span className="text-gray-400 dark:text-gray-500"> </span>}
                   </div>
-                  <div className="flex-1 min-w-0 text-red-800 dark:text-red-200" style={{ whiteSpace: 'pre' }}>
+                  <div className="flex-1 min-w-0 break-all text-red-800 dark:text-red-200">
                     {item.type === 'modified' && item.originalLine?.segments ? (
                       <Tooltip
                         content={
                           <div className="space-y-2">
                             <div className="text-red-300 text-xs font-semibold">原始代码:</div>
                             <div className="bg-red-900/30 p-2 rounded font-mono text-xs break-all">
-                              <SimpleSyntaxHighlighter
-                                code={item.originalLine.segments.filter(s => s.type === 'deleted' || s.type === 'unchanged').map(s => s.content).join('')}
-                                language={getLanguageFromPath(filePath)}
-                                showLineNumbers={false}
-                                className="inline-block"
-                              />
+                              {item.originalLine.segments.filter(s => s.type === 'deleted' || s.type === 'unchanged').map(s => s.content).join('')}
                             </div>
                             <div className="text-green-300 text-xs font-semibold">修改后:</div>
                             <div className="bg-green-900/30 p-2 rounded font-mono text-xs break-all">
-                              <SimpleSyntaxHighlighter
-                                code={item.originalLine.segments.filter(s => s.type === 'added' || s.type === 'unchanged').map(s => s.content).join('')}
-                                language={getLanguageFromPath(filePath)}
-                                showLineNumbers={false}
-                                className="inline-block"
-                              />
+                              {item.originalLine.segments.filter(s => s.type === 'added' || s.type === 'unchanged').map(s => s.content).join('')}
                             </div>
                           </div>
                         }
                         position="top"
                       >
-                        <span className="cursor-help">
-                          <SimpleSyntaxHighlighter
-                            code={item.leftLine?.content || ' '}
-                            language={getLanguageFromPath(filePath)}
-                            showLineNumbers={false}
-                            className="inline-block"
-                          />
-                        </span>
+                        <span className="cursor-help">{item.leftLine?.content || ' '}</span>
                       </Tooltip>
                     ) : (
-                      <SimpleSyntaxHighlighter
-                        code={item.leftLine?.content || ' '}
-                        language={getLanguageFromPath(filePath)}
-                        showLineNumbers={false}
-                        className="inline-block"
-                      />
+                      item.leftLine?.content || ' '
                     )}
                   </div>
                 </div>
@@ -947,49 +886,27 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
                     {item.type === 'modified' && <span className="text-green-600 dark:text-green-400 font-bold">+</span>}
                     {item.type === 'unchanged' && <span className="text-gray-400 dark:text-gray-500"> </span>}
                   </div>
-                  <div className="flex-1 min-w-0 text-green-800 dark:text-green-200" style={{ whiteSpace: 'pre' }}>
+                  <div className="flex-1 min-w-0 break-all text-green-800 dark:text-green-200">
                     {item.type === 'modified' && item.originalLine?.segments ? (
                       <Tooltip
                         content={
                           <div className="space-y-2">
                             <div className="text-red-300 text-xs font-semibold">原始代码:</div>
                             <div className="bg-red-900/30 p-2 rounded font-mono text-xs break-all">
-                              <SimpleSyntaxHighlighter
-                                code={item.originalLine.segments.filter(s => s.type === 'deleted' || s.type === 'unchanged').map(s => s.content).join('')}
-                                language={getLanguageFromPath(filePath)}
-                                showLineNumbers={false}
-                                className="inline-block"
-                              />
+                              {item.originalLine.segments.filter(s => s.type === 'deleted' || s.type === 'unchanged').map(s => s.content).join('')}
                             </div>
                             <div className="text-green-300 text-xs font-semibold">修改后:</div>
                             <div className="bg-green-900/30 p-2 rounded font-mono text-xs break-all">
-                              <SimpleSyntaxHighlighter
-                                code={item.originalLine.segments.filter(s => s.type === 'added' || s.type === 'unchanged').map(s => s.content).join('')}
-                                language={getLanguageFromPath(filePath)}
-                                showLineNumbers={false}
-                                className="inline-block"
-                              />
+                              {item.originalLine.segments.filter(s => s.type === 'added' || s.type === 'unchanged').map(s => s.content).join('')}
                             </div>
                           </div>
                         }
                         position="top"
                       >
-                        <span className="cursor-help">
-                          <SimpleSyntaxHighlighter
-                            code={item.rightLine?.content || ' '}
-                            language={getLanguageFromPath(filePath)}
-                            showLineNumbers={false}
-                            className="inline-block"
-                          />
-                        </span>
+                        <span className="cursor-help">{item.rightLine?.content || ' '}</span>
                       </Tooltip>
                     ) : (
-                      <SimpleSyntaxHighlighter
-                        code={item.rightLine?.content || ' '}
-                        language={getLanguageFromPath(filePath)}
-                        showLineNumbers={false}
-                        className="inline-block"
-                      />
+                      item.rightLine?.content || ' '
                     )}
                   </div>
                 </div>

@@ -2149,43 +2149,79 @@ async fn apply_stash(repo_path: String, stash_id: String) -> Result<String, Stri
     let mut repo = Repository::open(&repo_path)
         .map_err(|e| format!("Failed to open repository: {}", e))?;
 
-    // 查找贮藏的索引
+    // 查找贮藏的索引 - 改进匹配逻辑
     let mut stash_index = None;
-    repo.stash_foreach(|index, _message, oid| {
-        if oid.to_string() == stash_id {
+    let mut found_stash_info = None;
+    
+    repo.stash_foreach(|index, message, oid| {
+        let oid_str = oid.to_string();
+        // 支持完整SHA1 hash匹配和短hash匹配
+        if oid_str == stash_id || oid_str.starts_with(&stash_id) {
             stash_index = Some(index);
+            found_stash_info = Some((oid_str, message.to_string()));
             false // 停止遍历
         } else {
             true // 继续遍历
         }
     }).map_err(|e| format!("Failed to find stash: {}", e))?;
 
-    let index = stash_index.ok_or("Stash not found")?;
+    let index = match stash_index {
+        Some(idx) => idx,
+        None => {
+            // 提供更详细的错误信息
+            let mut available_stashes = Vec::new();
+            repo.stash_foreach(|_index, message, oid| {
+                available_stashes.push(format!("{}: {}", oid.to_string(), message.to_string()));
+                true
+            }).ok(); // 忽略错误，只是为了收集信息
+            
+            return Err(format!(
+                "Stash not found: {}. Available stashes: [{}]", 
+                stash_id, 
+                available_stashes.join(", ")
+            ));
+        }
+    };
 
     // 创建贮藏应用选项
     let mut options = git2::StashApplyOptions::new();
     options.reinstantiate_index();
     
     match repo.stash_apply(index, Some(&mut options)) {
-        Ok(_) => Ok(format!("Successfully applied stash: {}", stash_id)),
+        Ok(_) => {
+            let stash_info = found_stash_info.unwrap_or((stash_id, "unknown".to_string()));
+            Ok(format!("Successfully applied stash: {} ({})", stash_info.0, stash_info.1))
+        },
         Err(e) => {
             let error_msg = e.message();
+            let stash_info = found_stash_info.unwrap_or((stash_id, "unknown".to_string()));
+            
+            // 记录详细错误信息
+            eprintln!("Stash apply error for {}: {}", stash_info.0, error_msg);
             
             // 检查是否是重复应用的错误
             if error_msg.contains("already applied") || error_msg.contains("nothing to commit") {
-                Ok(format!("Stash {} has already been applied or there are no changes to apply", stash_id))
+                Ok(format!("Stash {} ({}) has already been applied or there are no changes to apply", 
+                          stash_info.0, stash_info.1))
             } else if error_msg.contains("conflict") {
-                Err(format!("Failed to apply stash due to conflicts: {}. Please resolve conflicts manually.", error_msg))
+                Err(format!("Failed to apply stash {} ({}): Conflicts detected. Error: {}. Please resolve conflicts manually.", 
+                           stash_info.0, stash_info.1, error_msg))
             } else {
                 // 尝试不使用选项
                 match repo.stash_apply(index, None) {
-                    Ok(_) => Ok(format!("Successfully applied stash: {}", stash_id)),
+                    Ok(_) => {
+                        Ok(format!("Successfully applied stash: {} ({})", stash_info.0, stash_info.1))
+                    },
                     Err(e2) => {
                         let error_msg2 = e2.message();
+                        eprintln!("Second stash apply attempt failed for {}: {}", stash_info.0, error_msg2);
+                        
                         if error_msg2.contains("already applied") || error_msg2.contains("nothing to commit") {
-                            Ok(format!("Stash {} has already been applied or there are no changes to apply", stash_id))
+                            Ok(format!("Stash {} ({}) has already been applied or there are no changes to apply", 
+                                      stash_info.0, stash_info.1))
                         } else {
-                            Err(format!("Failed to apply stash: {}. This may be because the stash has already been applied or there are conflicts.", error_msg2))
+                            Err(format!("Failed to apply stash {} ({}): {}. This may be because the stash has already been applied, there are conflicts, or the working directory is in an unexpected state.", 
+                                       stash_info.0, stash_info.1, error_msg2))
                         }
                     }
                 }

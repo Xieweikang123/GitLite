@@ -103,3 +103,191 @@
     scrollbar-color: hsl(var(--muted-foreground) / 0.4) transparent;
   }
 }
+
+/* 语法高亮样式 */
+@layer components {
+  .syntax-highlighter {
+    @apply relative;
+  }
+
+  /* 基础 Prism.js 样式 */
+  .token.comment,
+  .token.prolog,
+  .token.doctype,
+  .token.cdata {
+    color: #6a9955;
+  }
+
+  .token.punctuation {
+    color: #d4d4d4;
+  }
+
+  .token.property,
+  .token.tag,
+  .token.boolean,
+  .token.number,
+  .token.constant,
+  .token.symbol,
+  .token.deleted {
+    color: #569cd6;
+  }
+
+  .token.selector,
+  .token.attr-name,
+  .token.string,
+  .token.char,
+  .token.builtin,
+  .token.inserted {
+    color: #ce9178;
+  }
+
+  .token.operator,
+  .token.entity,
+  .token.url,
+  .language-css .token.string,
+  .style .token.string {
+    color: #d4d4d4;
+  }
+
+  .token.atrule,
+  .token.attr-value,
+  .token.keyword {
+    color: #569cd6;
+  }
+
+  .token.function,
+  .token.class-name {
+    color: #dcdcaa;
+  }
+
+  .token.regex,
+  .token.important,
+  .token.variable {
+    color: #d16969;
+  }
+
+  /* CSS 特定样式 */
+  .token.at-rule {
+    color: #569cd6;
+  }
+
+  .token.selector {
+    color: #dcdcaa;
+  }
+
+  .token.property {
+    color: #9cdcfe;
+  }
+
+  .token.function {
+    color: #dcdcaa;
+  }
+
+  .token.number {
+    color: #b5cea8;
+  }
+
+  .token.unit {
+    color: #b5cea8;
+  }
+
+  .token.hexcode {
+    color: #b5cea8;
+  }
+
+  .syntax-highlighter pre {
+    @apply m-0 p-4 overflow-auto bg-transparent;
+    font-family: 'Fira Code', 'Monaco', 'Consolas', 'Ubuntu Mono', monospace;
+    font-size: 0.875rem;
+    line-height: 1.5;
+  }
+
+  .syntax-highlighter code {
+    @apply text-foreground;
+    font-family: inherit;
+  }
+
+  /* 行号样式 */
+  .syntax-highlighter .line-numbers {
+    @apply relative;
+  }
+
+  .syntax-highlighter .line-numbers::before {
+    content: '';
+    @apply absolute left-0 top-0 bottom-0 w-12 bg-gray-100 dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700;
+  }
+
+  /* Prism.js 主题覆盖 */
+  .syntax-highlighter .token.comment,
+  .syntax-highlighter .token.prolog,
+  .syntax-highlighter .token.doctype,
+  .syntax-highlighter .token.cdata {
+    @apply text-gray-500 dark:text-gray-400;
+  }
+
+  .syntax-highlighter .token.punctuation {
+    @apply text-gray-600 dark:text-gray-300;
+  }
+
+  .syntax-highlighter .token.property,
+  .syntax-highlighter .token.tag,
+  .syntax-highlighter .token.boolean,
+  .syntax-highlighter .token.number,
+  .syntax-highlighter .token.constant,
+  .syntax-highlighter .token.symbol,
+  .syntax-highlighter .token.deleted {
+    @apply text-blue-600 dark:text-blue-400;
+  }
+
+  .syntax-highlighter .token.selector,
+  .syntax-highlighter .token.attr-name,
+  .syntax-highlighter .token.string,
+  .syntax-highlighter .token.char,
+  .syntax-highlighter .token.builtin,
+  .syntax-highlighter .token.inserted {
+    @apply text-green-600 dark:text-green-400;
+  }
+
+  .syntax-highlighter .token.operator,
+  .syntax-highlighter .token.entity,
+  .syntax-highlighter .token.url,
+  .syntax-highlighter .language-css .token.string,
+  .syntax-highlighter .style .token.string {
+    @apply text-orange-600 dark:text-orange-400;
+  }
+
+  .syntax-highlighter .token.atrule,
+  .syntax-highlighter .token.attr-value,
+  .syntax-highlighter .token.keyword {
+    @apply text-purple-600 dark:text-purple-400;
+  }
+
+  .syntax-highlighter .token.function,
+  .syntax-highlighter .token.class-name {
+    @apply text-yellow-600 dark:text-yellow-400;
+  }
+
+  .syntax-highlighter .token.regex,
+  .syntax-highlighter .token.important,
+  .syntax-highlighter .token.variable {
+    @apply text-red-600 dark:text-red-400;
+  }
+
+  /* Rust 特定语法高亮 */
+  .syntax-highlighter .token.lifetime {
+    @apply text-cyan-600 dark:text-cyan-400;
+  }
+
+  .syntax-highlighter .token.macro {
+    @apply text-pink-600 dark:text-pink-400;
+  }
+
+  /* 代码查看器样式 */
+  .code-viewer {
+    @apply relative bg-white dark:bg-gray-900;
+  }
+
+  .code-viewer pre {
+    @apply m-0;
+  }
+}

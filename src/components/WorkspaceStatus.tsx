@@ -124,6 +124,10 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
       setLoading(true)
       setError(null)
       
+      // 记录操作开始
+      console.log(`开始应用贮藏: ${stashId}`)
+      console.log(`仓库路径: ${repoInfo.path}`)
+      
       const { invoke } = await import('@tauri-apps/api/tauri')
       const result = await invoke('apply_stash', {
         repoPath: repoInfo.path,
@@ -138,6 +142,14 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : '应用贮藏失败'
       
+      // 记录详细错误信息
+      console.error('贮藏应用失败:', {
+        stashId,
+        repoPath: repoInfo?.path,
+        error: err,
+        errorMessage
+      })
+      
       // 检查是否是重复应用的错误
       if (errorMessage.includes('already been applied') || errorMessage.includes('no changes to apply')) {
         // 这实际上是一个成功的情况，只是贮藏已经被应用过了
@@ -146,9 +158,11 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
         await fetchStashList()
         return // 不显示错误，直接返回
       } else if (errorMessage.includes('conflicts')) {
-        setError('应用贮藏时发生冲突，请手动解决冲突后重试。')
+        setError(`应用贮藏时发生冲突: ${errorMessage}`)
+      } else if (errorMessage.includes('Stash not found')) {
+        setError(`贮藏未找到: ${errorMessage}`)
       } else {
-        setError(errorMessage)
+        setError(`应用贮藏失败: ${errorMessage}`)
       }
     } finally {
       setLoading(false)
