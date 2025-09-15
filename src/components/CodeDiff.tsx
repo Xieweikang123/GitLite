@@ -227,6 +227,10 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
   const [visibleRange, setVisibleRange] = useState({ start: 0, end: 100 })
   const [itemHeight] = useState(24) // 每行的高度（像素）
   const [containerHeight, setContainerHeight] = useState(600) // 容器高度
+  const [showThumbnail, setShowThumbnail] = useState(true) // 是否显示缩略图
+  
+  // 添加加载状态，避免闪烁
+  const [isLoading, setIsLoading] = useState(false)
 
   // 虚拟滚动处理
   const updateVisibleRange = useCallback(() => {
@@ -304,6 +308,8 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
 
   useEffect(() => {
     if (diff) {
+      setIsLoading(true) // 开始加载
+      
       const startTime = performance.now()
       console.log('Raw diff content:', diff)
       console.log('Diff length:', diff.length)
@@ -328,7 +334,6 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
       
       // 为更改行添加索引
       const linesWithChangeIndex = addChangeIndices(parsedLines)
-      setFileLines(linesWithChangeIndex)
       
       // 计算更改块数量
       const uniqueChangeIndices = new Set(
@@ -336,23 +341,38 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
           .filter(line => line.changeIndex !== undefined)
           .map(line => line.changeIndex)
       )
-      setChangeCount(uniqueChangeIndices.size)
-      setCurrentChangeIndex(0)
+      const newChangeCount = uniqueChangeIndices.size
       
       console.log('Final fileLines set:', linesWithChangeIndex.length)
       
+      // 批量更新状态，避免多次渲染
+      const updateStates = (finalLines: FileLine[]) => {
+        setFileLines(finalLines)
+        setChangeCount(newChangeCount)
+        setCurrentChangeIndex(0)
+        setIsLoading(false) // 结束加载
+        
+        // 延迟滚动，确保DOM已更新
+        setTimeout(() => scrollToFirstChange(finalLines), 50)
+      }
+      
       // 启用文件内容补全，显示完整文件
       if (filePath && repoPath) {
-        fillUnchangedLines(linesWithChangeIndex, filePath, repoPath)
+        fillUnchangedLines(linesWithChangeIndex, filePath, repoPath).then((finalLines) => {
+          updateStates(finalLines)
+        }).catch(() => {
+          updateStates(linesWithChangeIndex)
+        })
       } else {
-        // 如果没有文件路径，直接滚动到第一个更改
-        scrollToFirstChange(linesWithChangeIndex)
+        // 如果没有文件路径，直接更新状态
+        updateStates(linesWithChangeIndex)
       }
     } else {
       console.log('No diff provided')
       setFileLines([])
       setChangeCount(0)
       setCurrentChangeIndex(0)
+      setIsLoading(false)
     }
   }, [diff]) // 只依赖diff，避免无限重新渲染
 
@@ -384,7 +404,7 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
     }
   }
 
-  const fillUnchangedLines = async (lines: FileLine[], filePath: string, repoPath: string) => {
+  const fillUnchangedLines = async (lines: FileLine[], filePath: string, repoPath: string): Promise<FileLine[]> => {
     try {
       const startTime = performance.now()
       const { invoke } = await import('@tauri-apps/api/tauri')
@@ -408,7 +428,7 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
       console.log('🔍 diffLinesMap 内容:', Array.from(diffLinesMap.entries()).slice(0, 5))
       
       // 创建完整的文件行数组
-      const fullFileLines: FileLine[] = []
+      const fullFileLines: FileLine[] = [] 
       
       // 为每一行创建FileLine对象 - O(n)复杂度
       for (let i = 0; i < fileContentLines.length; i++) {
@@ -443,14 +463,13 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
       
       // 重新为完整文件行添加更改索引
       const fullFileLinesWithIndex = addChangeIndices(fullFileLines)
-      setFileLines(fullFileLinesWithIndex)
       
-      // 在文件内容加载完成后，滚动到第一个更改
-      scrollToFirstChange(fullFileLinesWithIndex)
+      // 返回处理后的行数据，而不是直接设置状态
+      return fullFileLinesWithIndex
     } catch (err) {
       console.error('Failed to read file content:', err)
-      // 如果读取失败，保持原有内容
-      scrollToFirstChange(lines)
+      // 如果读取失败，返回原始行数据
+      return lines
     }
   }
 
@@ -530,18 +549,7 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
         setVisibleRange({ start, end })
       }, 100)
       
-      // 高亮显示当前更改块的所有行（延迟执行以确保DOM已更新）
-      setTimeout(() => {
-        changeLines.forEach(changeLine => {
-          const element = scrollContainerRef.current?.querySelector(`[data-line-number="${changeLine.lineNumber}"]`)
-          if (element) {
-            element.classList.add('ring-2', 'ring-blue-500', 'ring-opacity-50')
-            setTimeout(() => {
-              element.classList.remove('ring-2', 'ring-blue-500', 'ring-opacity-50')
-            }, 2000)
-          }
-        })
-      }, 200)
+      // 移除临时高亮效果，保持简洁的界面
     }
   }
 
@@ -793,8 +801,232 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
     }
   }
 
-  const renderUnifiedView = () => {
+  // 缩略图组件 - 使用稳定的渲染逻辑避免闪烁
+  const ThumbnailScrollbar = () => {
+    // 使用稳定的状态，避免重新挂载
+    const [currentScrollTop, setCurrentScrollTop] = useState(0)
     
+    // 监听滚动位置变化
+    useEffect(() => {
+      const scrollContainer = scrollContainerRef.current
+      if (!scrollContainer) return
+
+      const handleScroll = () => {
+        setCurrentScrollTop(scrollContainer.scrollTop)
+      }
+
+      scrollContainer.addEventListener('scroll', handleScroll)
+      return () => scrollContainer.removeEventListener('scroll', handleScroll)
+    }, [])
+
+    // 如果没有数据或隐藏缩略图，返回占位元素而不是null
+    if (fileLines.length === 0) {
+      return (
+        <div className="absolute right-0 top-0 w-16 h-full bg-gray-100 dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700" />
+      )
+    }
+
+    const thumbnailHeight = Math.min(containerHeight, 300) // 缩略图最大高度
+    const thumbnailScale = thumbnailHeight / (fileLines.length * itemHeight)
+    const thumbnailItemHeight = Math.max(1, itemHeight * thumbnailScale) // 最小1px高度
+
+    // 计算可见区域在缩略图中的位置
+    const visibleStart = (currentScrollTop / itemHeight) * thumbnailItemHeight
+    const visibleHeight = (containerHeight / itemHeight) * thumbnailItemHeight
+
+    // 处理缩略图点击和拖拽
+    const handleThumbnailClick = (event: React.MouseEvent) => {
+      if (!scrollContainerRef.current) return
+      
+      const rect = event.currentTarget.getBoundingClientRect()
+      const clickY = event.clientY - rect.top
+      const clickRatio = clickY / rect.height
+      const targetScrollTop = clickRatio * (fileLines.length * itemHeight)
+      
+      // 立即更新滚动位置状态，避免蓝色指示器延迟
+      setCurrentScrollTop(targetScrollTop)
+      
+      scrollContainerRef.current.scrollTo({
+        top: targetScrollTop,
+        behavior: 'smooth'
+      })
+    }
+
+    // 处理缩略图拖拽
+    const handleThumbnailMouseDown = (event: React.MouseEvent) => {
+      if (!scrollContainerRef.current) return
+      
+      const rect = event.currentTarget.getBoundingClientRect()
+      const startY = event.clientY - rect.top
+      const startScrollTop = scrollContainerRef.current.scrollTop
+      
+      const handleMouseMove = (e: MouseEvent) => {
+        const currentY = e.clientY - rect.top
+        const deltaY = currentY - startY
+        const deltaRatio = deltaY / rect.height
+        const deltaScrollTop = deltaRatio * (fileLines.length * itemHeight)
+        const newScrollTop = Math.max(0, Math.min(startScrollTop + deltaScrollTop, (fileLines.length - 1) * itemHeight))
+        
+        // 立即更新滚动位置状态
+        setCurrentScrollTop(newScrollTop)
+        scrollContainerRef.current!.scrollTop = newScrollTop
+      }
+      
+      const handleMouseUp = () => {
+        document.removeEventListener('mousemove', handleMouseMove)
+        document.removeEventListener('mouseup', handleMouseUp)
+      }
+      
+      document.addEventListener('mousemove', handleMouseMove)
+      document.addEventListener('mouseup', handleMouseUp)
+    }
+
+    // 统一的渲染逻辑：始终渲染所有行，但通过透明度区分
+    const renderThumbnailLines = () => {
+      return fileLines.map((line, index) => {
+        const isChanged = line.type === 'added' || line.type === 'deleted' || line.type === 'modified'
+        
+        return (
+          <div
+            key={index}
+            className={`absolute w-full ${
+              line.type === 'added' ? 'bg-green-300 dark:bg-green-600' :
+              line.type === 'deleted' ? 'bg-red-300 dark:bg-red-600' :
+              line.type === 'modified' ? 'bg-orange-300 dark:bg-orange-600' :
+              'bg-gray-200 dark:bg-gray-700'
+            } ${line.changeIndex === currentChangeIndex ? 'ring-1 ring-blue-400' : ''}`}
+            style={{
+              top: `${index * thumbnailItemHeight}px`,
+              height: `${thumbnailItemHeight}px`,
+              opacity: isChanged ? 1 : 0.3
+            }}
+            title={`行 ${line.lineNumber}: ${line.type === 'added' ? '添加' : line.type === 'deleted' ? '删除' : line.type === 'modified' ? '修改' : '未修改'}`}
+          />
+        )
+      })
+    }
+
+    return (
+      <div 
+        className={`absolute right-0 top-0 w-16 h-full bg-gray-100 dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700 overflow-hidden select-none transition-opacity duration-200 ${
+          showThumbnail ? 'opacity-100 cursor-pointer' : 'opacity-0 pointer-events-none'
+        }`}
+        onClick={showThumbnail ? handleThumbnailClick : undefined}
+        onMouseDown={showThumbnail ? handleThumbnailMouseDown : undefined}
+        title={showThumbnail ? "点击或拖拽跳转到对应位置" : undefined}
+      >
+        {/* 缩略图内容 */}
+        <div className="relative w-full" style={{ height: `${fileLines.length * thumbnailItemHeight}px` }}>
+          {renderThumbnailLines()}
+          
+          {/* 可见区域指示器 */}
+          <div
+            className="absolute w-full bg-blue-400 bg-opacity-60 border border-blue-500 shadow-sm"
+            style={{
+              top: `${visibleStart}px`,
+              height: `${Math.max(visibleHeight, 4)}px`, // 最小4px高度
+              minHeight: '4px'
+            }}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  const renderUnifiedView = () => {
+    // 统一的渲染逻辑，避免闪烁
+    const renderLine = (line: FileLine, index: number) => (
+      <div 
+        key={index}
+        data-line-number={line.lineNumber}
+        className={`px-4 py-1 flex items-start gap-4 transition-all duration-200 ${
+          line.type === 'added' ? 'bg-green-50 border-l-4 border-green-500 dark:bg-green-900/20 dark:border-green-400' :
+          line.type === 'deleted' ? 'bg-red-50 border-l-4 border-red-500 dark:bg-red-900/20 dark:border-red-400' :
+          line.type === 'modified' ? 'bg-orange-50 border-l-4 border-orange-500 dark:bg-orange-900/20 dark:border-orange-400' :
+          'bg-white hover:bg-gray-50 dark:bg-gray-900 dark:hover:bg-gray-800'
+        }`}
+        style={{ height: itemHeight }}
+      >
+        {/* Line Number */}
+        <div className="text-xs text-gray-500 dark:text-gray-400 w-12 text-right flex-shrink-0">
+          {line.lineNumber}
+        </div>
+        
+        {/* Line Icon */}
+        <div className="w-4 flex-shrink-0 text-center">
+          {line.type === 'added' && <span className="text-green-600 dark:text-green-400 font-bold">+</span>}
+          {line.type === 'deleted' && <span className="text-red-600 dark:text-red-400 font-bold">-</span>}
+          {line.type === 'modified' && <span className="text-orange-600 dark:text-orange-400 font-bold">~</span>}
+          {line.type === 'unchanged' && <span className="text-gray-400 dark:text-gray-500"> </span>}
+        </div>
+        
+        {/* Line Content */}
+        <div className="flex-1 min-w-0" style={{ whiteSpace: 'pre' }}>
+          {line.segments ? (
+            // 显示字符级别的差异
+            <div className="inline">
+              {line.segments.map((segment, segmentIndex) => {
+                let segmentClass = '';
+                let segmentStyle: React.CSSProperties = {};
+                
+                if (segment.type === 'added') {
+                  // 新增内容：使用更柔和的绿色背景
+                  segmentClass = 'bg-green-100 text-green-900 dark:bg-green-900/20 dark:text-green-200';
+                  segmentStyle = { 
+                    padding: '0 2px',
+                    borderRadius: '3px',
+                    fontWeight: '500'
+                  };
+                } else if (segment.type === 'deleted') {
+                  // 删除内容：使用更柔和的红色背景
+                  segmentClass = 'bg-red-100 text-red-900 dark:bg-red-900/20 dark:text-red-200';
+                  segmentStyle = { 
+                    padding: '0 2px',
+                    borderRadius: '3px',
+                    fontWeight: '500'
+                  };
+                } else {
+                  // 未更改内容：保持原样
+                  segmentClass = 'text-foreground';
+                  segmentStyle = {};
+                }
+                
+                // 特殊处理空白字符
+                const isWhitespace = /^[\s]+$/.test(segment.content);
+                if (isWhitespace) {
+                  segmentStyle = {
+                    ...segmentStyle,
+                    border: '1px dashed rgba(156, 163, 175, 0.5)',
+                    backgroundColor: 'rgba(156, 163, 175, 0.1)',
+                    borderRadius: '2px',
+                    padding: '0 1px'
+                  };
+                }
+                
+                return (
+                  <span
+                    key={segmentIndex}
+                    className={segmentClass}
+                    style={segmentStyle}
+                    title={isWhitespace ? `空白字符: "${segment.content}"` : undefined}
+                  >
+                    {segment.content}
+                  </span>
+                );
+              })}
+            </div>
+          ) : (
+            // 普通行内容显示 - 使用语法高亮
+            <SimpleSyntaxHighlighter
+              code={line.content || ' '}
+              language={getLanguageFromPath(filePath)}
+              className="inline-block"
+            />
+          )}
+        </div>
+      </div>
+    )
+
     // 对于大文件使用虚拟滚动
     if (fileLines.length > 1000) {
       const visibleLines = fileLines.slice(visibleRange.start, visibleRange.end)
@@ -806,30 +1038,7 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
           <div style={{ transform: `translateY(${offsetY}px)` }}>
             {visibleLines.map((line, index) => {
               const actualIndex = visibleRange.start + index
-              const isCurrentChange = line.changeIndex === currentChangeIndex
-              return (
-                <div 
-                  key={actualIndex}
-                  data-line-number={line.lineNumber}
-                  className={`px-4 py-1 flex items-start gap-4 transition-all duration-200 ${
-                    line.type === 'added' ? 'bg-green-50 border-l-4 border-green-500 dark:bg-green-900/20 dark:border-green-400' :
-                    line.type === 'deleted' ? 'bg-red-50 border-l-4 border-red-500 dark:bg-red-900/20 dark:border-red-400' :
-                    line.type === 'modified' ? 'bg-orange-50 border-l-4 border-orange-500 dark:bg-orange-900/20 dark:border-orange-400' :
-                    'bg-white hover:bg-gray-50 dark:bg-gray-900 dark:hover:bg-gray-800'
-                  } ${isCurrentChange ? 'ring-2 ring-blue-500' : ''}`}
-                  style={{ height: itemHeight }}
-                >
-                  <div className="flex-shrink-0 w-16 text-right text-gray-500 select-none">
-                    {line.lineNumber}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <SimpleSyntaxHighlighter
-                      code={line.content}
-                      language="rust"
-                    />
-                  </div>
-                </div>
-              )
+              return renderLine(line, actualIndex)
             })}
           </div>
         </div>
@@ -839,102 +1048,8 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
     // 对于小文件使用普通渲染
     return (
       <div className="font-mono text-sm">
-        {fileLines.map((line, index) => {
-        const isCurrentChange = line.changeIndex === currentChangeIndex
-        return (
-          <div 
-            key={index}
-            data-line-number={line.lineNumber}
-            className={`px-4 py-1 flex items-start gap-4 transition-all duration-200 ${
-              line.type === 'added' ? 'bg-green-50 border-l-4 border-green-500 dark:bg-green-900/20 dark:border-green-400' :
-              line.type === 'deleted' ? 'bg-red-50 border-l-4 border-red-500 dark:bg-red-900/20 dark:border-red-400' :
-              line.type === 'modified' ? 'bg-orange-50 border-l-4 border-orange-500 dark:bg-orange-900/20 dark:border-orange-400' :
-              'bg-white hover:bg-gray-50 dark:bg-gray-900 dark:hover:bg-gray-800'
-            } ${
-              isCurrentChange ? 'ring-2 ring-blue-500 ring-opacity-50 bg-blue-50 dark:bg-blue-900/20' : ''
-            }`}
-          >
-          {/* Line Number */}
-          <div className="text-xs text-gray-500 dark:text-gray-400 w-12 text-right flex-shrink-0">
-            {line.lineNumber}
-          </div>
-          
-          {/* Line Icon */}
-          <div className="w-4 flex-shrink-0 text-center">
-            {line.type === 'added' && <span className="text-green-600 dark:text-green-400 font-bold">+</span>}
-            {line.type === 'deleted' && <span className="text-red-600 dark:text-red-400 font-bold">-</span>}
-            {line.type === 'modified' && <span className="text-orange-600 dark:text-orange-400 font-bold">~</span>}
-            {line.type === 'unchanged' && <span className="text-gray-400 dark:text-gray-500"> </span>}
-          </div>
-          
-          {/* Line Content */}
-          <div className="flex-1 min-w-0" style={{ whiteSpace: 'pre' }}>
-            {line.segments ? (
-              // 显示字符级别的差异
-              <div className="inline">
-                {line.segments.map((segment, segmentIndex) => {
-                  let segmentClass = '';
-                  let segmentStyle: React.CSSProperties = {};
-                  
-                  if (segment.type === 'added') {
-                    // 新增内容：使用更柔和的绿色背景
-                    segmentClass = 'bg-green-100 text-green-900 dark:bg-green-900/20 dark:text-green-200';
-                    segmentStyle = { 
-                      padding: '0 2px',
-                      borderRadius: '3px',
-                      fontWeight: '500'
-                    };
-                  } else if (segment.type === 'deleted') {
-                    // 删除内容：使用更柔和的红色背景
-                    segmentClass = 'bg-red-100 text-red-900 dark:bg-red-900/20 dark:text-red-200';
-                    segmentStyle = { 
-                      padding: '0 2px',
-                      borderRadius: '3px',
-                      fontWeight: '500'
-                    };
-                  } else {
-                    // 未更改内容：保持原样
-                    segmentClass = 'text-foreground';
-                    segmentStyle = {};
-                  }
-                  
-                  // 特殊处理空白字符
-                  const isWhitespace = /^[\s]+$/.test(segment.content);
-                  if (isWhitespace) {
-                    segmentStyle = {
-                      ...segmentStyle,
-                      border: '1px dashed rgba(156, 163, 175, 0.5)',
-                      backgroundColor: 'rgba(156, 163, 175, 0.1)',
-                      borderRadius: '2px',
-                      padding: '0 1px'
-                    };
-                  }
-                  
-                  return (
-                    <span
-                      key={segmentIndex}
-                      className={segmentClass}
-                      style={segmentStyle}
-                      title={isWhitespace ? `空白字符: "${segment.content}"` : undefined}
-                    >
-                      {segment.content}
-                    </span>
-                  );
-                })}
-              </div>
-            ) : (
-              // 普通行内容显示 - 使用语法高亮
-              <SimpleSyntaxHighlighter
-                code={line.content || ' '}
-                language={getLanguageFromPath(filePath)}
-                className="inline-block"
-              />
-            )}
-          </div>
-        </div>
-        )
-      })}
-    </div>
+        {fileLines.map((line, index) => renderLine(line, index))}
+      </div>
     )
   }
 
@@ -988,10 +1103,8 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
           
           {/* 内容行 */}
           {sideBySideData.map((item, index) => {
-            const isCurrentChange = item.leftLine?.changeIndex === currentChangeIndex || item.rightLine?.changeIndex === currentChangeIndex
-            
             return (
-              <div key={index} className={`contents ${isCurrentChange ? 'ring-2 ring-blue-500 ring-opacity-50' : ''}`}>
+              <div key={index} className="contents">
                 {/* 左侧（删除） */}
                 <div className={`px-4 py-1 flex items-start gap-2 ${
                   item.type === 'deleted' ? 'bg-red-50 border-l-4 border-red-500 dark:bg-red-900/20 dark:border-red-400' :
@@ -1154,6 +1267,17 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
             🐛 调试
           </Button>
           
+          {/* 缩略图切换按钮 */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowThumbnail(!showThumbnail)}
+            className="flex items-center gap-2 text-xs"
+            title={showThumbnail ? "隐藏缩略图" : "显示缩略图"}
+          >
+            {showThumbnail ? "📊" : "📈"}
+          </Button>
+          
           {/* 视图模式切换 */}
           <div className="flex items-center border border-gray-200 dark:border-gray-700 rounded-md overflow-hidden">
             <Button
@@ -1254,14 +1378,30 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
       </div>
       
       {isExpanded && (
-        <div ref={scrollContainerRef} className="max-h-96 overflow-y-auto">
-          {fileLines.length === 0 ? (
-            <div className="p-4 text-center text-muted-foreground">
-              没有差异内容
-            </div>
-          ) : (
-            viewMode === 'side-by-side' ? renderSideBySideView() : renderUnifiedView()
-          )}
+        <div className="relative max-h-96 overflow-hidden">
+          <div 
+            ref={scrollContainerRef} 
+            className={`overflow-y-auto ${showThumbnail ? 'pr-16' : ''}`}
+            style={{ height: '384px' }}
+          >
+            {isLoading ? (
+              <div className="p-4 text-center text-muted-foreground">
+                <div className="flex items-center justify-center gap-2">
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
+                  正在加载差异内容...
+                </div>
+              </div>
+            ) : fileLines.length === 0 ? (
+              <div className="p-4 text-center text-muted-foreground">
+                没有差异内容
+              </div>
+            ) : (
+              viewMode === 'side-by-side' ? renderSideBySideView() : renderUnifiedView()
+            )}
+          </div>
+          
+          {/* 缩略图滚动条 */}
+          <ThumbnailScrollbar />
         </div>
       )}
     </div>

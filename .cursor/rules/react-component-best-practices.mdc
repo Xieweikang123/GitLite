@@ -1,0 +1,171 @@
+---
+description: React component development best practices for GitLite project
+globs: *.tsx,*.ts
+---
+
+# React Component Best Practices
+
+## Performance & Rendering
+
+### Prevent Flicker and Multiple Re-renders
+- **Batch state updates** to avoid multiple re-renders
+- **Use stable component structure** - avoid conditional mounting/unmounting
+- **Unified rendering logic** for different conditions
+- **Loading states** during async operations
+
+```typescript
+// ✅ Good: Batch updates
+const updateStates = (data) => {
+  setFileLines(data)
+  setChangeCount(count)
+  setCurrentChangeIndex(0)
+  setIsLoading(false)
+}
+
+// ✅ Good: Stable component with opacity transitions
+<div className={`transition-opacity ${show ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+
+// ✅ Good: Unified rendering
+const renderItem = (item) => <div key={item.id}>{item.content}</div>
+return <div>{items.map(renderItem)}</div>
+```
+
+### Async State Management
+- **Return data from async functions** instead of setting state directly
+- **Handle state updates in callers** for better control
+- **Use loading indicators** for better UX
+
+```typescript
+// ✅ Good: Return data, handle state in caller
+const fetchData = async (): Promise<Data[]> => {
+  const result = await apiCall()
+  return result
+}
+
+// In component:
+fetchData().then((data) => {
+  updateStates(data) // Single batch update
+})
+```
+
+## Event Handling
+
+### Scroll Event Prevention
+Use native event listeners with capture mode to prevent event bubbling:
+
+```typescript
+useEffect(() => {
+  const element = elementRef.current
+  if (!element) return
+
+  const handleWheel = (e: WheelEvent) => {
+    e.stopPropagation()
+    e.preventDefault()
+  }
+
+  element.addEventListener('wheel', handleWheel, { passive: false, capture: true })
+  return () => element.removeEventListener('wheel', handleWheel, { capture: true })
+}, [dependency])
+```
+
+## Component Architecture
+
+### Tooltip Implementation
+- Use `createPortal` for proper z-index handling
+- Prevent scroll event bubbling
+- Implement proper show/hide with delays
+
+### Virtual Scrolling
+- Use for large datasets (>1000 items)
+- Implement proper visible range calculation
+- Maintain consistent item heights
+
+### State Management
+- Use `useState` for local component state
+- Use `useRef` for DOM references and mutable values
+- Use `useCallback` for expensive calculations
+- Use `useEffect` with proper dependencies
+
+## Git Diff Specific Patterns
+
+### Diff Parsing
+- Parse raw git diff into structured data
+- Handle different line types (added, deleted, unchanged, modified)
+- Support character-level diff detection
+- Implement proper line number mapping
+
+### View Modes
+- Unified view: single column with color coding
+- Side-by-side view: old vs new content
+- Consistent rendering logic across modes
+
+### Navigation
+- Change-based navigation with indices
+- Smooth scrolling to changes
+- Thumbnail scrollbar for large files
+
+## Error Handling
+
+### Async Operations
+```typescript
+try {
+  const result = await asyncOperation()
+  return result
+} catch (error) {
+  console.error('Operation failed:', error)
+  return fallbackData
+}
+```
+
+### Component Error Boundaries
+- Handle rendering errors gracefully
+- Provide fallback UI
+- Log errors for debugging
+
+## Accessibility
+
+- Use semantic HTML elements
+- Provide keyboard navigation
+- Include ARIA labels
+- Ensure color contrast
+- Support screen readers
+
+## Testing Considerations
+
+- Test with different data sizes
+- Test async operations
+- Test show/hide toggles
+- Use React DevTools Profiler
+- Check for console warnings
+
+## Code Organization
+
+### File Structure
+- Keep components focused and single-purpose
+- Extract reusable logic into custom hooks
+- Use TypeScript interfaces for props and data
+- Organize imports: React, third-party, local
+
+### Naming Conventions
+- Use descriptive component names
+- Use camelCase for functions and variables
+- Use PascalCase for components and types
+- Use kebab-case for CSS classes
+
+## Examples from Codebase
+
+### CodeDiff Component
+The [CodeDiff.tsx](mdc:src/components/CodeDiff.tsx) demonstrates:
+- Batch state updates
+- Stable component structure
+- Unified rendering logic
+- Async data flow
+- Loading states
+- Virtual scrolling
+- Event handling
+
+### Tooltip Component
+Shows proper portal usage and event handling patterns.
+
+### Scroll Handling
+Demonstrates event prevention and custom scroll control.
