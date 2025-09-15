@@ -49,6 +49,8 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
   const [stashMessage, setStashMessage] = useState('')
   // 旧的内联贮藏输入已移除
   const [stashDialogOpen, setStashDialogOpen] = useState(false)
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
 
   // 获取工作区状态
   const fetchWorkspaceStatus = async () => {
@@ -192,9 +194,6 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
   // 删除贮藏
   const deleteStash = async (stashId: string) => {
     if (!repoInfo) return
-    // 确认删除
-    const confirmed = window.confirm('确定要删除该贮藏吗？此操作不可撤销。')
-    if (!confirmed) return
     
     try {
       setLoading(true)
@@ -207,11 +206,18 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
       })
       
       await fetchStashList()
+      setConfirmDeleteOpen(false)
+      setPendingDeleteId(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : '删除贮藏失败')
     } finally {
       setLoading(false)
     }
+  }
+
+  const askDeleteStash = (stashId: string) => {
+    setPendingDeleteId(stashId)
+    setConfirmDeleteOpen(true)
   }
 
   // 自动刷新定时器与倒计时
@@ -602,7 +608,7 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
                         <ArchiveRestore className="h-3 w-3" />
                         应用
                       </Button>
-                      <Button size="sm" variant="outline" onClick={() => deleteStash(stash.id)} disabled={loading} className="flex items-center gap-1 text-destructive hover:text-destructive">
+                      <Button size="sm" variant="outline" onClick={() => askDeleteStash(stash.id)} disabled={loading} className="flex items-center gap-1 text-destructive hover:text-destructive">
                         <Trash2 className="h-3 w-3" />
                         删除
                       </Button>
@@ -613,6 +619,24 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
             ) : (
               <div className="text-center py-6 text-sm text-muted-foreground">暂无贮藏</div>
             )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* 删除确认弹窗 */}
+      <Dialog open={confirmDeleteOpen} onOpenChange={setConfirmDeleteOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>确认删除</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="text-sm text-muted-foreground">确定要删除该贮藏吗？此操作不可撤销。</div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => setConfirmDeleteOpen(false)}>取消</Button>
+              <Button size="sm" className="text-white" onClick={() => pendingDeleteId && deleteStash(pendingDeleteId)}>
+                确认删除
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
