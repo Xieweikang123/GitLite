@@ -149,7 +149,6 @@ const EnhancedCodeDiff: React.FC<EnhancedCodeDiffProps> = ({
               <SyntaxHighlighter
                 code={line.content}
                 language={language || getLanguageFromPath(filePath)}
-                showLineNumbers={false}
                 className="inline-block"
               />
             </div>
@@ -203,7 +202,6 @@ const EnhancedCodeDiff: React.FC<EnhancedCodeDiffProps> = ({
                     <SyntaxHighlighter
                       code={leftLine.content}
                       language={language || getLanguageFromPath(filePath)}
-                      showLineNumbers={false}
                       className="inline-block"
                     />
                   </div>
@@ -221,7 +219,6 @@ const EnhancedCodeDiff: React.FC<EnhancedCodeDiffProps> = ({
                     <SyntaxHighlighter
                       code={rightLine.content}
                       language={language || getLanguageFromPath(filePath)}
-                      showLineNumbers={false}
                       className="inline-block"
                     />
                   </div>

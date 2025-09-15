@@ -99,18 +99,30 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
       setLoading(true)
       setError(null)
       
+      console.log(`开始创建贮藏: ${stashMessage.trim()}`)
+      console.log(`仓库路径: ${repoInfo.path}`)
+      
       const { invoke } = await import('@tauri-apps/api/tauri')
-      await invoke('create_stash', {
+      const result = await invoke('create_stash', {
         repoPath: repoInfo.path,
         message: stashMessage.trim(),
       })
+      
+      console.log('贮藏创建成功:', result)
       
       setStashMessage('')
       setShowStashInput(false)
       await fetchWorkspaceStatus()
       await fetchStashList()
     } catch (err) {
-      setError(err instanceof Error ? err.message : '创建贮藏失败')
+      const errorMessage = err instanceof Error ? err.message : '创建贮藏失败'
+      console.error('贮藏创建失败:', {
+        message: stashMessage.trim(),
+        repoPath: repoInfo?.path,
+        error: err,
+        errorMessage
+      })
+      setError(`创建贮藏失败: ${errorMessage}`)
     } finally {
       setLoading(false)
     }

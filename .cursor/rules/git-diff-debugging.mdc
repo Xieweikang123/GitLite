@@ -1,63 +1,91 @@
 ---
 description: Git diff debugging and parsing best practices
+globs: src/components/CodeDiff.tsx,src/components/FileDiffModal.tsx,src/components/DiffViewer.tsx
 ---
 
 # Git Diff Debugging and Parsing Best Practices
 
-## Key Lesson: Always Check Backend Diff Format
+## Common Issues and Solutions
 
-When implementing Git diff viewers, the most common issue is **missing diff line prefixes** in the backend output.
+### Issue: Missing Deleted Lines in Diff Rendering
 
-### The Problem
-- Frontend expects standard Git diff format with `+`, `-`, and ` ` (space) prefixes
-- Backend was only outputting `line.content()` without prefixes
-- This caused all lines to be parsed as `unchanged` instead of `added`/`deleted`
+**Symptoms:**
+- Diff viewer shows only added lines but missing deleted lines
+- First line shows only insertion without deletion
+- `fileLines` array contains only `type: 'added'` for modified lines
 
-### The Solution
-In Rust backend using `git2` crate, always include line prefixes:
+**Root Cause:**
+The `fillUnchangedLines` function in [CodeDiff.tsx](mdc:src/components/CodeDiff.tsx) uses a `Map<number, FileLine>` which overwrites multiple diff lines for the same line number. When a line has both deletion and addition, the addition overwrites the deletion.
 
-```rust
-// ❌ WRONG - Missing prefixes
-diff_text.push_str(&format!("{}\n", std::str::from_utf8(line.content()).unwrap_or("")));
-
-// ✅ CORRECT - Include prefixes
-let prefix = match line.origin() {
-    '+' => "+",
-    '-' => "-", 
-    ' ' => " ",
-    _ => "",
-};
-diff_text.push_str(&format!("{}{}\n", prefix, std::str::from_utf8(line.content()).unwrap_or("")));
-```
-
-### Debugging Strategy
-1. **Check raw diff content first** - Use `console.log('Raw diff content:', diff)` to verify backend output
-2. **Verify line prefixes** - Ensure `+`, `-`, and ` ` prefixes are present
-3. **Test parsing logic** - Add detailed logging in `parseDiffToFullFile` function
-4. **Check line.origin()** - In Rust, use `line.origin()` to get the correct prefix character
-
-### Frontend Parsing Logic
-When parsing Git diffs in React/TypeScript:
-
+**Solution:**
 ```typescript
-// Always check line prefixes
-if (line.startsWith('+')) {
-  // Handle added lines
-} else if (line.startsWith('-')) {
-  // Handle deleted lines  
-} else if (line.startsWith(' ')) {
-  // Handle unchanged lines
-}
+// ❌ Wrong: Overwrites multiple diff lines
+const diffLinesMap = new Map<number, FileLine>()
+lines.forEach(line => {
+  diffLinesMap.set(line.lineNumber, line) // This overwrites!
+})
+
+// ✅ Correct: Supports multiple diff lines per line number
+const diffLinesMap = new Map<number, FileLine[]>()
+lines.forEach(line => {
+  if (!diffLinesMap.has(line.lineNumber)) {
+    diffLinesMap.set(line.lineNumber, [])
+  }
+  diffLinesMap.get(line.lineNumber)!.push(line)
+})
 ```
 
-### Common Issues
-- **Infinite re-renders**: Use proper `useEffect` dependencies
-- **Missing file content**: Implement `fillUnchangedLines` to show complete file
-- **Incorrect line numbers**: Handle hunk headers properly with `@@ -old,count +new,count @@`
+### Debugging Tools
 
-### Files Involved
-- Backend: [src-tauri/src/main.rs](mdc:src-tauri/src/main.rs) - `get_staged_file_diff`, `get_unstaged_file_diff`
-- Frontend: [src/components/CodeDiff.tsx](mdc:src/components/CodeDiff.tsx) - `parseDiffToFullFile`
-- Modal: [src/components/FileDiffModal.tsx](mdc:src/components/FileDiffModal.tsx) - Data fetching
+**Debug Button Implementation:**
+```typescript
+<Button
+  variant="outline"
+  size="sm"
+  onClick={() => {
+    console.log('=== 调试信息 ===')
+    console.log('原始diff数据:', diff)
+    console.log('当前fileLines:', fileLines)
+    console.log('文件路径:', filePath)
+    console.log('仓库路径:', repoPath)
+  }}
+>
+  🐛 调试
+</Button>
+```
 
-Remember: **The backend diff format is the foundation** - if it's wrong, the frontend will never work correctly!
+**Key Debug Logs to Add:**
+- `console.log('🔍 diffLinesMap 内容:', Array.from(diffLinesMap.entries()).slice(0, 5))`
+- `console.log('🔍 fillUnchangedLines 后第一行结果:', firstLines)`
+- `console.log('第一行处理结果:', firstLines)`
+
+### Data Flow Understanding
+
+1. **Raw Diff Data** → `parseDiffToFullFile()` → Basic FileLine[]
+2. **Basic FileLine[]** → `detectWhitespaceChanges()` → Enhanced FileLine[] with segments
+3. **Enhanced FileLine[]** → `fillUnchangedLines()` → Complete FileLine[] with all file content
+4. **Complete FileLine[]** → `addChangeIndices()` → Final FileLine[] with change indices
+5. **Final FileLine[]** → `renderUnifiedView()` → UI Rendering
+
+### Critical Checkpoints
+
+**Always verify at each step:**
+- Raw diff contains both `+` and `-` lines
+- `parseDiffToFullFile` correctly identifies both added and deleted lines
+- `fillUnchangedLines` preserves all diff lines without overwriting
+- Final `fileLines` array contains both deletion and addition for modified lines
+
+### Performance Considerations
+
+- Use `Map<number, FileLine[]>` for O(1) lookup with multiple entries
+- Add debug logs only in development builds
+- Consider virtual scrolling for large files (>1000 lines)
+- Cache file content to avoid repeated Tauri API calls
+
+### Testing Strategy
+
+1. Test with simple one-line modifications first
+2. Test with multi-line changes
+3. Test with whitespace-only changes
+4. Test with large files
+5. Verify both unified and side-by-side view modes

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { Button } from './ui/button'
 import { Copy, ChevronDown, ChevronRight, ChevronUp, ChevronDown as ChevronDownIcon, Navigation, Sidebar, FileText } from 'lucide-react'
@@ -222,8 +222,24 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
   const [changeCount, setChangeCount] = useState(0)
   const [viewMode, setViewMode] = useState<'unified' | 'side-by-side'>('unified')
   const scrollContainerRef = useRef<HTMLDivElement>(null)
+  
+  // 虚拟滚动相关状态
+  const [visibleRange, setVisibleRange] = useState({ start: 0, end: 100 })
+  const [itemHeight] = useState(24) // 每行的高度（像素）
+  const [containerHeight, setContainerHeight] = useState(600) // 容器高度
 
-  // 防止滚动事件冒泡到主界面
+  // 虚拟滚动处理
+  const updateVisibleRange = useCallback(() => {
+    if (!scrollContainerRef.current) return
+    
+    const scrollTop = scrollContainerRef.current.scrollTop
+    const start = Math.floor(scrollTop / itemHeight)
+    const end = Math.min(start + Math.ceil(containerHeight / itemHeight) + 10, fileLines.length) // 额外渲染10行作为缓冲
+    
+    setVisibleRange({ start, end })
+  }, [itemHeight, containerHeight, fileLines.length])
+
+  // 防止滚动事件冒泡到主界面，并处理虚拟滚动
   useEffect(() => {
     const scrollContainer = scrollContainerRef.current
     if (!scrollContainer) return
@@ -236,13 +252,42 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
       // 手动控制滚动
       const scrollAmount = e.deltaY
       scrollContainer.scrollTop += scrollAmount
+      
+      // 更新可见范围
+      updateVisibleRange()
+    }
+
+    const handleScroll = () => {
+      updateVisibleRange()
     }
 
     // 添加滚动事件监听器，使用捕获阶段确保优先级
     scrollContainer.addEventListener('wheel', handleWheel, { passive: false, capture: true })
+    scrollContainer.addEventListener('scroll', handleScroll, { passive: true })
+
+    // 初始化可见范围
+    updateVisibleRange()
 
     return () => {
       scrollContainer.removeEventListener('wheel', handleWheel, { capture: true })
+      scrollContainer.removeEventListener('scroll', handleScroll)
+    }
+  }, [updateVisibleRange])
+
+  // 检测容器高度变化
+  useEffect(() => {
+    const updateContainerHeight = () => {
+      if (scrollContainerRef.current) {
+        const height = scrollContainerRef.current.clientHeight
+        setContainerHeight(height)
+      }
+    }
+
+    updateContainerHeight()
+    window.addEventListener('resize', updateContainerHeight)
+    
+    return () => {
+      window.removeEventListener('resize', updateContainerHeight)
     }
   }, [])
 
@@ -259,9 +304,27 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
 
   useEffect(() => {
     if (diff) {
+      const startTime = performance.now()
       console.log('Raw diff content:', diff)
+      console.log('Diff length:', diff.length)
+      console.log('First 500 chars:', diff.substring(0, 500))
+      
       const parsedLines = parseDiffToFullFile(diff)
-      console.log('Parsed lines:', parsedLines)
+      const parseTime = performance.now() - startTime
+      console.log(`Parsed lines: ${parsedLines.length} (took ${parseTime.toFixed(2)}ms)`)
+      
+      // 检查解析结果
+      const addedLines = parsedLines.filter(line => line.type === 'added')
+      const deletedLines = parsedLines.filter(line => line.type === 'deleted')
+      const unchangedLines = parsedLines.filter(line => line.type === 'unchanged')
+      console.log(`Added lines: ${addedLines.length}, Deleted lines: ${deletedLines.length}, Unchanged lines: ${unchangedLines.length}`)
+      
+      if (addedLines.length > 0) {
+        console.log('First added line:', addedLines[0])
+      }
+      if (deletedLines.length > 0) {
+        console.log('First deleted line:', deletedLines[0])
+      }
       
       // 为更改行添加索引
       const linesWithChangeIndex = addChangeIndices(parsedLines)
@@ -276,6 +339,8 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
       setChangeCount(uniqueChangeIndices.size)
       setCurrentChangeIndex(0)
       
+      console.log('Final fileLines set:', linesWithChangeIndex.length)
+      
       // 启用文件内容补全，显示完整文件
       if (filePath && repoPath) {
         fillUnchangedLines(linesWithChangeIndex, filePath, repoPath)
@@ -283,6 +348,11 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
         // 如果没有文件路径，直接滚动到第一个更改
         scrollToFirstChange(linesWithChangeIndex)
       }
+    } else {
+      console.log('No diff provided')
+      setFileLines([])
+      setChangeCount(0)
+      setCurrentChangeIndex(0)
     }
   }, [diff]) // 只依赖diff，避免无限重新渲染
 
@@ -295,22 +365,28 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
     if (firstChangeLine && scrollContainerRef.current) {
       // 使用 setTimeout 确保 DOM 已经更新
       setTimeout(() => {
-        const element = scrollContainerRef.current?.querySelector(
-          `[data-line-number="${firstChangeLine.lineNumber}"]`
-        ) as HTMLElement
+        const targetLineIndex = firstChangeLine.lineNumber - 1 // 转换为0基索引
+        const targetScrollTop = targetLineIndex * itemHeight
         
-        if (element) {
-          element.scrollIntoView({ 
-            behavior: 'smooth', 
-            block: 'center' 
-          })
-        }
+        // 平滑滚动到目标位置
+        scrollContainerRef.current?.scrollTo({
+          top: targetScrollTop,
+          behavior: 'smooth'
+        })
+        
+        // 更新可见范围以确保目标行被渲染
+        setTimeout(() => {
+          const start = Math.max(0, targetLineIndex - 10)
+          const end = Math.min(lines.length, targetLineIndex + 30)
+          setVisibleRange({ start, end })
+        }, 100)
       }, 100)
     }
   }
 
   const fillUnchangedLines = async (lines: FileLine[], filePath: string, repoPath: string) => {
     try {
+      const startTime = performance.now()
       const { invoke } = await import('@tauri-apps/api/tauri')
       const fileContent = await invoke('get_file_content', {
         repoPath,
@@ -318,22 +394,35 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
       }) as string
       
       const fileContentLines = fileContent.split('\n')
-      console.log('File content lines:', fileContentLines.length)
+      console.log(`File content lines: ${fileContentLines.length}`)
+      
+      // 创建diff行的映射表，支持同一行号的多个diff行
+      const diffLinesMap = new Map<number, FileLine[]>()
+      lines.forEach(line => {
+        if (!diffLinesMap.has(line.lineNumber)) {
+          diffLinesMap.set(line.lineNumber, [])
+        }
+        diffLinesMap.get(line.lineNumber)!.push(line)
+      })
+      
+      console.log('🔍 diffLinesMap 内容:', Array.from(diffLinesMap.entries()).slice(0, 5))
       
       // 创建完整的文件行数组
       const fullFileLines: FileLine[] = []
       
-      // 为每一行创建FileLine对象
+      // 为每一行创建FileLine对象 - O(n)复杂度
       for (let i = 0; i < fileContentLines.length; i++) {
         const lineNumber = i + 1
         const content = fileContentLines[i]
         
-        // 查找这一行是否在diff中
-        const diffLine = lines.find(l => l.lineNumber === lineNumber)
+        // 使用Map查找，O(1)复杂度
+        const diffLines = diffLinesMap.get(lineNumber)
         
-        if (diffLine) {
-          // 如果在diff中，使用diff中的信息（包括type）
-          fullFileLines.push(diffLine)
+        if (diffLines && diffLines.length > 0) {
+          // 如果在diff中，添加所有相关的diff行
+          diffLines.forEach(diffLine => {
+            fullFileLines.push(diffLine)
+          })
         } else {
           // 如果不在diff中，说明是未修改的行
           fullFileLines.push({
@@ -345,7 +434,13 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
         }
       }
       
-      console.log('Full file lines:', fullFileLines)
+      const processingTime = performance.now() - startTime
+      console.log(`Full file lines: ${fullFileLines.length} (processing took ${processingTime.toFixed(2)}ms)`)
+      
+      // 检查第一行的处理结果
+      const firstLines = fullFileLines.filter(line => line.lineNumber === 1)
+      console.log('🔍 fillUnchangedLines 后第一行结果:', firstLines)
+      
       // 重新为完整文件行添加更改索引
       const fullFileLinesWithIndex = addChangeIndices(fullFileLines)
       setFileLines(fullFileLinesWithIndex)
@@ -391,6 +486,7 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
   const goToNextChange = () => {
     if (currentChangeIndex < changeCount - 1) {
       const newIndex = currentChangeIndex + 1
+      console.log(`Navigating to next change: ${newIndex + 1}/${changeCount}`)
       setCurrentChangeIndex(newIndex)
       scrollToChange(newIndex)
     }
@@ -400,6 +496,7 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
   const goToPreviousChange = () => {
     if (currentChangeIndex > 0) {
       const newIndex = currentChangeIndex - 1
+      console.log(`Navigating to previous change: ${newIndex + 1}/${changeCount}`)
       setCurrentChangeIndex(newIndex)
       scrollToChange(newIndex)
     }
@@ -408,16 +505,33 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
   // 滚动到指定的更改位置
   const scrollToChange = (changeIndex: number) => {
     const changeLines = fileLines.filter(line => line.changeIndex === changeIndex)
+    console.log(`scrollToChange: changeIndex=${changeIndex}, found ${changeLines.length} lines`)
+    
     if (changeLines.length > 0 && scrollContainerRef.current) {
       // 滚动到更改块的第一行
       const firstChangeLine = changeLines[0]
-      const lineElement = scrollContainerRef.current.querySelector(`[data-line-number="${firstChangeLine.lineNumber}"]`)
-      if (lineElement) {
-        lineElement.scrollIntoView({ 
-          behavior: 'smooth', 
-          block: 'center' 
-        })
-        // 高亮显示当前更改块的所有行
+      const targetLineIndex = firstChangeLine.lineNumber - 1 // 转换为0基索引
+      
+      // 计算目标位置
+      const targetScrollTop = targetLineIndex * itemHeight
+      
+      console.log(`Scrolling to line ${firstChangeLine.lineNumber}, targetScrollTop=${targetScrollTop}`)
+      
+      // 平滑滚动到目标位置
+      scrollContainerRef.current.scrollTo({
+        top: targetScrollTop,
+        behavior: 'smooth'
+      })
+      
+      // 更新可见范围以确保目标行被渲染
+      setTimeout(() => {
+        const start = Math.max(0, targetLineIndex - 10) // 确保目标行前后有足够的缓冲
+        const end = Math.min(fileLines.length, targetLineIndex + 30)
+        setVisibleRange({ start, end })
+      }, 100)
+      
+      // 高亮显示当前更改块的所有行（延迟执行以确保DOM已更新）
+      setTimeout(() => {
         changeLines.forEach(changeLine => {
           const element = scrollContainerRef.current?.querySelector(`[data-line-number="${changeLine.lineNumber}"]`)
           if (element) {
@@ -427,7 +541,7 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
             }, 2000)
           }
         })
-      }
+      }, 200)
     }
   }
 
@@ -439,11 +553,9 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
     }
   }
 
+
   // 检测字符级别的差异
   const detectCharacterLevelDiff = (oldContent: string, newContent: string): DiffSegment[] => {
-    console.log('detectCharacterLevelDiff input:', { oldContent, newContent, oldLength: oldContent.length, newLength: newContent.length })
-    
-    // 简化算法：直接比较每个字符
     const segments: DiffSegment[] = []
     const maxLength = Math.max(oldContent.length, newContent.length)
     
@@ -500,11 +612,10 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
       }
     }
     
-    console.log('detectCharacterLevelDiff output:', mergedSegments)
     return mergedSegments
   }
 
-  // 检测空白字符的变化
+  // 检测相邻的删除和添加行，为它们添加字符级别差异
   const detectWhitespaceChanges = (lines: FileLine[]): FileLine[] => {
     const processedLines: FileLine[] = []
     
@@ -519,74 +630,27 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
             nextLine.type === 'added' &&
             currentLine.lineNumber === nextLine.lineNumber) {
           
-          // 检测是否是空白字符的变化
-          const oldContent = currentLine.content
-          const newContent = nextLine.content
+          console.log('🔍 发现相邻的删除和添加行，行号:', currentLine.lineNumber)
+          console.log('删除行内容:', currentLine.content)
+          console.log('添加行内容:', nextLine.content)
           
-          console.log('Checking deleted+added pair:', { 
-            oldContent, 
-            newContent, 
-            oldTrim: oldContent.trim(), 
-            newTrim: newContent.trim(),
-            trimEqual: oldContent.trim() === newContent.trim(),
-            contentNotEqual: oldContent !== newContent,
-            oldLength: oldContent.length,
-            newLength: newContent.length
+          // 为删除行添加字符级别差异
+          const segments = detectCharacterLevelDiff(currentLine.content, nextLine.content)
+          
+          processedLines.push({
+            ...currentLine,
+            segments: segments
           })
           
-          // 检查是否是同一行的修改（删除+添加）
-          if (oldContent !== newContent) {
-            // 这是同一行的修改，创建修改行
-            console.log('Detected line modification:', { oldContent, newContent })
-            const segments = detectCharacterLevelDiff(oldContent, newContent)
-            console.log('Generated segments:', segments)
-            
-            processedLines.push({
-              lineNumber: currentLine.lineNumber,
-              content: newContent,
-              type: 'modified',
-              oldLineNumber: currentLine.oldLineNumber,
-              segments: segments
-            })
-            
-            // 跳过下一行（添加行）
-            i++
-            continue
-          }
-        }
-      }
-      
-      // 检查当前行是否是未更改行，前后是否有删除和添加行
-      if (currentLine.type === 'unchanged') {
-        const prevLine = i > 0 ? lines[i - 1] : null
-        const nextLine = i < lines.length - 1 ? lines[i + 1] : null
-        
-        if (prevLine && nextLine && 
-            prevLine.type === 'deleted' && 
-            nextLine.type === 'added' &&
-            prevLine.lineNumber === currentLine.lineNumber &&
-            nextLine.lineNumber === currentLine.lineNumber) {
+          // 为添加行也添加字符级别差异
+          processedLines.push({
+            ...nextLine,
+            segments: segments
+          })
           
-          // 检测是否是空白字符的变化
-          const oldContent = prevLine.content
-          const newContent = nextLine.content
-          
-          if (oldContent !== newContent) {
-            // 这是同一行的修改，创建修改行
-            const segments = detectCharacterLevelDiff(oldContent, newContent)
-            
-            processedLines.push({
-              lineNumber: currentLine.lineNumber,
-              content: newContent,
-              type: 'modified',
-              oldLineNumber: currentLine.oldLineNumber,
-              segments: segments
-            })
-            
-            // 跳过下一行（添加行）
-            i++
-            continue
-          }
+          // 跳过下一行（添加行）
+          i++
+          continue
         }
       }
       
@@ -603,7 +667,10 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
     let oldLineNumber = 1
     let inHunk = false
 
-    console.log('Parsing diff lines:', lines)
+    console.log('=== 开始解析diff ===')
+    console.log('原始diff内容:', diffText)
+    console.log('分割后的行:', lines)
+    console.log('总行数:', lines.length)
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]
@@ -639,7 +706,7 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
         if (line.startsWith('+')) {
           // 新增的行
           const content = line.substring(1)
-          console.log('Found added line:', content, 'currentLineNumber:', currentLineNumber)
+          console.log('🟢 发现添加行:', content, 'currentLineNumber:', currentLineNumber)
           fileLines.push({
             lineNumber: currentLineNumber,
             content,
@@ -649,7 +716,7 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
         } else if (line.startsWith('-')) {
           // 删除的行
           const content = line.substring(1)
-          console.log('Found deleted line:', content, 'currentLineNumber:', currentLineNumber)
+          console.log('🔴 发现删除行:', content, 'currentLineNumber:', currentLineNumber, 'oldLineNumber:', oldLineNumber)
           fileLines.push({
             lineNumber: currentLineNumber,
             content,
@@ -684,11 +751,36 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
       }
     }
 
-    console.log('Final parsed lines:', fileLines)
+    console.log('=== 解析完成 ===')
+    console.log('最终解析的行数:', fileLines.length)
+    console.log('解析结果详情:', fileLines.map(line => ({
+      lineNumber: line.lineNumber,
+      type: line.type,
+      content: line.content.substring(0, 50) + (line.content.length > 50 ? '...' : ''),
+      oldLineNumber: line.oldLineNumber
+    })))
+    
+    // 统计各类型行数
+    const addedCount = fileLines.filter(l => l.type === 'added').length
+    const deletedCount = fileLines.filter(l => l.type === 'deleted').length
+    const unchangedCount = fileLines.filter(l => l.type === 'unchanged').length
+    console.log(`行数统计: 添加=${addedCount}, 删除=${deletedCount}, 未修改=${unchangedCount}`)
     
     // 后处理：检测空白字符的变化
     const processedLines = detectWhitespaceChanges(fileLines)
-    console.log('Processed lines after whitespace detection:', processedLines)
+    console.log('=== 空白字符处理后 ===')
+    console.log('处理后行数:', processedLines.length)
+    console.log('处理后详情:', processedLines.map(line => ({
+      lineNumber: line.lineNumber,
+      type: line.type,
+      content: line.content.substring(0, 50) + (line.content.length > 50 ? '...' : ''),
+      hasSegments: !!line.segments,
+      segmentsCount: line.segments?.length || 0
+    })))
+    
+    // 特别检查第一行的处理结果
+    const firstLines = processedLines.filter(line => line.lineNumber === 1)
+    console.log('第一行处理结果:', firstLines)
     
     return processedLines
   }
@@ -701,9 +793,53 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
     }
   }
 
-  const renderUnifiedView = () => (
-    <div className="font-mono text-sm">
-      {fileLines.map((line, index) => {
+  const renderUnifiedView = () => {
+    
+    // 对于大文件使用虚拟滚动
+    if (fileLines.length > 1000) {
+      const visibleLines = fileLines.slice(visibleRange.start, visibleRange.end)
+      const totalHeight = fileLines.length * itemHeight
+      const offsetY = visibleRange.start * itemHeight
+      
+      return (
+        <div className="font-mono text-sm relative" style={{ height: totalHeight }}>
+          <div style={{ transform: `translateY(${offsetY}px)` }}>
+            {visibleLines.map((line, index) => {
+              const actualIndex = visibleRange.start + index
+              const isCurrentChange = line.changeIndex === currentChangeIndex
+              return (
+                <div 
+                  key={actualIndex}
+                  data-line-number={line.lineNumber}
+                  className={`px-4 py-1 flex items-start gap-4 transition-all duration-200 ${
+                    line.type === 'added' ? 'bg-green-50 border-l-4 border-green-500 dark:bg-green-900/20 dark:border-green-400' :
+                    line.type === 'deleted' ? 'bg-red-50 border-l-4 border-red-500 dark:bg-red-900/20 dark:border-red-400' :
+                    line.type === 'modified' ? 'bg-orange-50 border-l-4 border-orange-500 dark:bg-orange-900/20 dark:border-orange-400' :
+                    'bg-white hover:bg-gray-50 dark:bg-gray-900 dark:hover:bg-gray-800'
+                  } ${isCurrentChange ? 'ring-2 ring-blue-500' : ''}`}
+                  style={{ height: itemHeight }}
+                >
+                  <div className="flex-shrink-0 w-16 text-right text-gray-500 select-none">
+                    {line.lineNumber}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <SimpleSyntaxHighlighter
+                      code={line.content}
+                      language="rust"
+                    />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )
+    }
+    
+    // 对于小文件使用普通渲染
+    return (
+      <div className="font-mono text-sm">
+        {fileLines.map((line, index) => {
         const isCurrentChange = line.changeIndex === currentChangeIndex
         return (
           <div 
@@ -733,81 +869,64 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
           
           {/* Line Content */}
           <div className="flex-1 min-w-0" style={{ whiteSpace: 'pre' }}>
-            {line.type === 'modified' && line.segments ? (
-              // 显示字符级别的差异 - 带Tooltip版本
-              <Tooltip
-                content={
-                  <div className="space-y-2">
-                    <div className="text-red-300 text-xs font-semibold">原始代码:</div>
-                    <div className="bg-red-900/30 p-2 rounded font-mono text-xs break-all">
-                      {line.segments.filter(s => s.type === 'deleted' || s.type === 'unchanged').map(s => s.content).join('')}
-                    </div>
-                    <div className="text-green-300 text-xs font-semibold">修改后:</div>
-                    <div className="bg-green-900/30 p-2 rounded font-mono text-xs break-all">
-                      {line.segments.filter(s => s.type === 'added' || s.type === 'unchanged').map(s => s.content).join('')}
-                    </div>
-                  </div>
-                }
-                position="top"
-              >
-                <div className="inline cursor-help">
-                  {line.segments.map((segment, segmentIndex) => {
-                    let segmentClass = '';
-                    let segmentStyle: React.CSSProperties = {};
-                    
-                    if (segment.type === 'added') {
-                      // 新增内容：使用更柔和的绿色背景
-                      segmentClass = 'bg-green-100 text-green-900 dark:bg-green-900/20 dark:text-green-200';
-                      segmentStyle = { 
-                        padding: '0 2px',
-                        borderRadius: '3px',
-                        fontWeight: '500'
-                      };
-                    } else if (segment.type === 'deleted') {
-                      // 删除内容：使用更柔和的红色背景
-                      segmentClass = 'bg-red-100 text-red-900 dark:bg-red-900/20 dark:text-red-200';
-                      segmentStyle = { 
-                        padding: '0 2px',
-                        borderRadius: '3px',
-                        fontWeight: '500'
-                      };
-                    } else {
-                      // 未更改内容：保持原样
-                      segmentClass = 'text-foreground';
-                      segmentStyle = {};
-                    }
-                    
-                    // 特殊处理空白字符
-                    const isWhitespace = /^[\s]+$/.test(segment.content);
-                    if (isWhitespace) {
-                      segmentStyle = {
-                        ...segmentStyle,
-                        border: '1px dashed rgba(156, 163, 175, 0.5)',
-                        backgroundColor: 'rgba(156, 163, 175, 0.1)',
-                        borderRadius: '2px',
-                        padding: '0 1px'
-                      };
-                    }
-                    
-                    return (
-                      <span
-                        key={segmentIndex}
-                        className={segmentClass}
-                        style={segmentStyle}
-                        title={isWhitespace ? `空白字符: "${segment.content}"` : undefined}
-                      >
-                        {segment.content}
-                      </span>
-                    );
-                  })}
-                </div>
-              </Tooltip>
+            {line.segments ? (
+              // 显示字符级别的差异
+              <div className="inline">
+                {line.segments.map((segment, segmentIndex) => {
+                  let segmentClass = '';
+                  let segmentStyle: React.CSSProperties = {};
+                  
+                  if (segment.type === 'added') {
+                    // 新增内容：使用更柔和的绿色背景
+                    segmentClass = 'bg-green-100 text-green-900 dark:bg-green-900/20 dark:text-green-200';
+                    segmentStyle = { 
+                      padding: '0 2px',
+                      borderRadius: '3px',
+                      fontWeight: '500'
+                    };
+                  } else if (segment.type === 'deleted') {
+                    // 删除内容：使用更柔和的红色背景
+                    segmentClass = 'bg-red-100 text-red-900 dark:bg-red-900/20 dark:text-red-200';
+                    segmentStyle = { 
+                      padding: '0 2px',
+                      borderRadius: '3px',
+                      fontWeight: '500'
+                    };
+                  } else {
+                    // 未更改内容：保持原样
+                    segmentClass = 'text-foreground';
+                    segmentStyle = {};
+                  }
+                  
+                  // 特殊处理空白字符
+                  const isWhitespace = /^[\s]+$/.test(segment.content);
+                  if (isWhitespace) {
+                    segmentStyle = {
+                      ...segmentStyle,
+                      border: '1px dashed rgba(156, 163, 175, 0.5)',
+                      backgroundColor: 'rgba(156, 163, 175, 0.1)',
+                      borderRadius: '2px',
+                      padding: '0 1px'
+                    };
+                  }
+                  
+                  return (
+                    <span
+                      key={segmentIndex}
+                      className={segmentClass}
+                      style={segmentStyle}
+                      title={isWhitespace ? `空白字符: "${segment.content}"` : undefined}
+                    >
+                      {segment.content}
+                    </span>
+                  );
+                })}
+              </div>
             ) : (
               // 普通行内容显示 - 使用语法高亮
               <SimpleSyntaxHighlighter
                 code={line.content || ' '}
                 language={getLanguageFromPath(filePath)}
-                showLineNumbers={false}
                 className="inline-block"
               />
             )}
@@ -816,7 +935,8 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
         )
       })}
     </div>
-  )
+    )
+  }
 
   const renderSideBySideView = () => {
     // 分离不同类型的行
@@ -896,7 +1016,6 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
                               <SimpleSyntaxHighlighter
                                 code={item.originalLine.segments.filter(s => s.type === 'deleted' || s.type === 'unchanged').map(s => s.content).join('')}
                                 language={getLanguageFromPath(filePath)}
-                                showLineNumbers={false}
                                 className="inline-block"
                               />
                             </div>
@@ -905,7 +1024,6 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
                               <SimpleSyntaxHighlighter
                                 code={item.originalLine.segments.filter(s => s.type === 'added' || s.type === 'unchanged').map(s => s.content).join('')}
                                 language={getLanguageFromPath(filePath)}
-                                showLineNumbers={false}
                                 className="inline-block"
                               />
                             </div>
@@ -917,7 +1035,6 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
                           <SimpleSyntaxHighlighter
                             code={item.leftLine?.content || ' '}
                             language={getLanguageFromPath(filePath)}
-                            showLineNumbers={false}
                             className="inline-block"
                           />
                         </span>
@@ -926,7 +1043,6 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
                       <SimpleSyntaxHighlighter
                         code={item.leftLine?.content || ' '}
                         language={getLanguageFromPath(filePath)}
-                        showLineNumbers={false}
                         className="inline-block"
                       />
                     )}
@@ -957,7 +1073,6 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
                               <SimpleSyntaxHighlighter
                                 code={item.originalLine.segments.filter(s => s.type === 'deleted' || s.type === 'unchanged').map(s => s.content).join('')}
                                 language={getLanguageFromPath(filePath)}
-                                showLineNumbers={false}
                                 className="inline-block"
                               />
                             </div>
@@ -966,7 +1081,6 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
                               <SimpleSyntaxHighlighter
                                 code={item.originalLine.segments.filter(s => s.type === 'added' || s.type === 'unchanged').map(s => s.content).join('')}
                                 language={getLanguageFromPath(filePath)}
-                                showLineNumbers={false}
                                 className="inline-block"
                               />
                             </div>
@@ -978,7 +1092,6 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
                           <SimpleSyntaxHighlighter
                             code={item.rightLine?.content || ' '}
                             language={getLanguageFromPath(filePath)}
-                            showLineNumbers={false}
                             className="inline-block"
                           />
                         </span>
@@ -987,7 +1100,6 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
                       <SimpleSyntaxHighlighter
                         code={item.rightLine?.content || ' '}
                         language={getLanguageFromPath(filePath)}
-                        showLineNumbers={false}
                         className="inline-block"
                       />
                     )}
@@ -1023,6 +1135,23 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
           >
             <Copy className="h-4 w-4" />
             复制
+          </Button>
+          
+          {/* 调试按钮 */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              console.log('=== 调试信息 ===')
+              console.log('原始diff数据:', diff)
+              console.log('当前fileLines:', fileLines)
+              console.log('文件路径:', filePath)
+              console.log('仓库路径:', repoPath)
+              console.log('当前视图模式:', viewMode)
+            }}
+            className="flex items-center gap-2 text-xs"
+          >
+            🐛 调试
           </Button>
           
           {/* 视图模式切换 */}

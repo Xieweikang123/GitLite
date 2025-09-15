@@ -1,42 +1,165 @@
 ---
 description: Git diff display and visualization best practices
+globs: src/components/CodeDiff.tsx,src/components/EnhancedCodeDiff.tsx,src/components/VisualDiff.tsx
 ---
 
-# Git Diff Display Optimization
+# Git Diff Display and Visualization Best Practices
 
-## Character-Level Diff Display
+## Rendering Architecture
 
-When displaying character-level differences in code, follow these patterns from [CodeDiff.tsx](mdc:src/components/CodeDiff.tsx):
+### Core Components
+- [CodeDiff.tsx](mdc:src/components/CodeDiff.tsx) - Main diff viewer with unified/side-by-side views
+- [EnhancedCodeDiff.tsx](mdc:src/components/EnhancedCodeDiff.tsx) - Alternative diff implementation
+- [VisualDiff.tsx](mdc:src/components/VisualDiff.tsx) - Visual diff representation
 
-### 1. Visual Improvements
-- Use softer color schemes for added/deleted content to reduce visual noise
-- For added content: `bg-green-100 text-green-900 dark:bg-green-900/20 dark:text-green-200`
-- For deleted content: `bg-red-100 text-red-900 dark:bg-red-900/20 dark:text-red-200`
-- Use moderate font weight (`fontWeight: '500'`) instead of bold for better readability
+### View Modes
+```typescript
+type ViewMode = 'unified' | 'side-by-side'
+```
 
-### 2. Whitespace Handling
-- Display whitespace characters as-is, don't replace with dots or symbols
-- Use dashed borders and background colors to highlight whitespace changes
-- Provide tooltips showing actual whitespace content when needed
+**Unified View:**
+- Shows all changes in a single column
+- Uses color coding: green (added), red (deleted), orange (modified)
+- Supports character-level diff highlighting
+- Best for: Single file changes, detailed analysis
 
-### 3. View Modes
-- Implement both unified and side-by-side view modes
-- Unified view: traditional inline diff with character-level highlighting
-- Side-by-side view: left panel shows deleted content, right panel shows added content
-- Allow users to switch between modes with toggle buttons
+**Side-by-Side View:**
+- Shows old content on left, new content on right
+- Uses grid layout with synchronized scrolling
+- Includes tooltips for detailed comparison
+- Best for: Large changes, structural modifications
 
-### 4. Tooltip Integration
-- Show original and modified code in tooltips for modified lines
-- Use consistent styling with red background for original, green for modified
-- Ensure tooltips are properly positioned and don't get clipped
+## Performance Optimizations
 
-### 5. Navigation Features
-- Implement change navigation with previous/next buttons
-- Add slider for quick navigation between changes
-- Highlight current change block with ring styling
-- Auto-scroll to first change when diff loads
+### Virtual Scrolling
+```typescript
+// For files > 1000 lines
+if (fileLines.length > 1000) {
+  const visibleLines = fileLines.slice(visibleRange.start, visibleRange.end)
+  const totalHeight = fileLines.length * itemHeight
+  const offsetY = visibleRange.start * itemHeight
+}
+```
 
-### 6. Performance Considerations
-- Use proper React keys for diff segments to avoid unnecessary re-renders
-- Implement proper cleanup for event listeners and timeouts
-- Consider virtualization for large diffs with many changes
+### Scroll Event Handling
+```typescript
+// Prevent scroll event bubbling to main interface
+useEffect(() => {
+  const element = elementRef.current
+  if (!element) return
+
+  const handleWheel = (e: WheelEvent) => {
+    e.stopPropagation()
+    e.preventDefault()
+  }
+
+  element.addEventListener('wheel', handleWheel, { passive: false, capture: true })
+  return () => element.removeEventListener('wheel', handleWheel, { capture: true })
+}, [dependency])
+```
+
+## Character-Level Diff Detection
+
+### Implementation
+```typescript
+const detectCharacterLevelDiff = (oldContent: string, newContent: string): DiffSegment[] => {
+  const segments: DiffSegment[] = []
+  const maxLength = Math.max(oldContent.length, newContent.length)
+  
+  for (let i = 0; i < maxLength; i++) {
+    const oldChar = i < oldContent.length ? oldContent[i] : null
+    const newChar = i < newContent.length ? newContent[i] : null
+    
+    if (oldChar === null && newChar !== null) {
+      segments.push({ content: newChar, type: 'added' })
+    } else if (oldChar !== null && newChar === null) {
+      segments.push({ content: oldChar, type: 'deleted' })
+    } else if (oldChar === newChar) {
+      segments.push({ content: oldChar!, type: 'unchanged' })
+    } else {
+      segments.push({ content: oldChar!, type: 'deleted' })
+      segments.push({ content: newChar!, type: 'added' })
+    }
+  }
+  
+  return mergeAdjacentSegments(segments)
+}
+```
+
+### Visual Styling
+```typescript
+// Added content styling
+segmentClass = 'bg-green-100 text-green-900 dark:bg-green-900/20 dark:text-green-200'
+segmentStyle = { 
+  padding: '0 2px',
+  borderRadius: '3px',
+  fontWeight: '500'
+}
+
+// Deleted content styling  
+segmentClass = 'bg-red-100 text-red-900 dark:bg-red-900/20 dark:text-red-200'
+segmentStyle = { 
+  padding: '0 2px',
+  borderRadius: '3px',
+  fontWeight: '500'
+}
+
+// Whitespace highlighting
+if (isWhitespace) {
+  segmentStyle = {
+    border: '1px dashed rgba(156, 163, 175, 0.5)',
+    backgroundColor: 'rgba(156, 163, 175, 0.1)',
+    borderRadius: '2px',
+    padding: '0 1px'
+  }
+}
+```
+
+## Navigation Features
+
+### Change Navigation
+```typescript
+// Change counter and navigation
+const [currentChangeIndex, setCurrentChangeIndex] = useState(0)
+const [changeCount, setChangeCount] = useState(0)
+
+// Navigation controls
+<Button onClick={goToPreviousChange} disabled={currentChangeIndex === 0}>
+  <ChevronUp className="h-4 w-4" />
+</Button>
+<Button onClick={goToNextChange} disabled={currentChangeIndex === changeCount - 1}>
+  <ChevronDown className="h-4 w-4" />
+</Button>
+```
+
+### Auto-scroll to Changes
+```typescript
+const scrollToChange = (changeIndex: number) => {
+  const changeLines = fileLines.filter(line => line.changeIndex === changeIndex)
+  if (changeLines.length > 0 && scrollContainerRef.current) {
+    const firstChangeLine = changeLines[0]
+    const targetLineIndex = firstChangeLine.lineNumber - 1
+    const targetScrollTop = targetLineIndex * itemHeight
+    
+    scrollContainerRef.current.scrollTo({
+      top: targetScrollTop,
+      behavior: 'smooth'
+    })
+  }
+}
+```
+
+## Accessibility Considerations
+
+- Use semantic HTML elements for diff content
+- Provide keyboard navigation support
+- Include ARIA labels for screen readers
+- Ensure sufficient color contrast for diff highlighting
+- Support high contrast mode
+
+## Responsive Design
+
+- Adapt layout for mobile devices
+- Use flexible grid system for side-by-side view
+- Implement touch-friendly navigation controls
+- Optimize font sizes for different screen sizes

@@ -2131,15 +2131,75 @@ async fn get_stash_list(repo_path: String) -> Result<Vec<StashInfo>, String> {
 // 创建贮藏
 #[tauri::command]
 async fn create_stash(repo_path: String, message: String) -> Result<String, String> {
+    log_message("INFO", &format!("create_stash: attempt start | path={} message={}", repo_path, message));
+    
     let mut repo = Repository::open(&repo_path)
-        .map_err(|e| format!("Failed to open repository: {}", e))?;
+        .map_err(|e| {
+            let error_msg = format!("Failed to open repository: {}", e);
+            log_message("ERROR", &format!("create_stash: {}", error_msg));
+            error_msg
+        })?;
 
-    let signature = repo.signature()
-        .map_err(|e| format!("Failed to get signature: {}", e))?;
+    // 尝试从仓库获取签名，如果失败则使用默认签名
+    let signature = match repo.signature() {
+        Ok(sig) => {
+            log_message("DEBUG", &format!("create_stash: using repo signature | name={} email={}", 
+                sig.name().unwrap_or("unknown"), 
+                sig.email().unwrap_or("unknown")));
+            sig
+        },
+        Err(e) => {
+            log_message("WARN", &format!("create_stash: failed to get repo signature: {}, using default", e));
+            git2::Signature::now("GitLite User", "gitlite@example.com")
+                .map_err(|e| {
+                    let error_msg = format!("Failed to create default signature: {}", e);
+                    log_message("ERROR", &format!("create_stash: {}", error_msg));
+                    error_msg
+                })?
+        }
+    };
+
+    log_message("DEBUG", &format!("create_stash: signature obtained | name={} email={}", 
+        signature.name().unwrap_or("unknown"), 
+        signature.email().unwrap_or("unknown")));
+
+    // 检查工作区是否有更改
+    let has_changes = {
+        let statuses = repo.statuses(None)
+            .map_err(|e| {
+                let error_msg = format!("Failed to get status: {}", e);
+                log_message("ERROR", &format!("create_stash: {}", error_msg));
+                error_msg
+            })?;
+        
+        statuses.iter().any(|entry| {
+            let status = entry.status();
+            status.contains(git2::Status::WT_NEW) ||
+            status.contains(git2::Status::WT_MODIFIED) ||
+            status.contains(git2::Status::WT_DELETED) ||
+            status.contains(git2::Status::WT_TYPECHANGE) ||
+            status.contains(git2::Status::WT_RENAMED) ||
+            status.contains(git2::Status::INDEX_NEW) ||
+            status.contains(git2::Status::INDEX_MODIFIED) ||
+            status.contains(git2::Status::INDEX_DELETED)
+        })
+    };
+    
+    if !has_changes {
+        log_message("WARN", "create_stash: no changes to stash");
+        return Err("No changes to stash".to_string());
+    }
+    
+    log_message("DEBUG", "create_stash: changes detected, proceeding with stash");
 
     let stash_id = repo.stash_save(&signature, &message, None)
-        .map_err(|e| format!("Failed to create stash: {}", e))?;
+        .map_err(|e| {
+            let error_msg = format!("Failed to create stash: {}", e);
+            log_message("ERROR", &format!("create_stash: {}", error_msg));
+            error_msg
+        })?;
     
+    log_message("INFO", &format!("create_stash: success | stash_id={}", stash_id));
     Ok(format!("Successfully created stash: {}", stash_id))
 }
 

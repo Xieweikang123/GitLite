@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import CodeViewer from './CodeViewer';
 import EnhancedCodeDiff from './EnhancedCodeDiff';
 import { Button } from './ui/button';
-import { Code, GitBranch, FileText } from 'lucide-react';
+import { Code, GitBranch } from 'lucide-react';
 
 const SyntaxHighlightDemo: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'viewer' | 'diff'>('viewer');

@@ -12,14 +12,12 @@ interface SimpleSyntaxHighlighterProps {
   code: string;
   language: string;
   className?: string;
-  showLineNumbers?: boolean;
 }
 
 const SimpleSyntaxHighlighter: React.FC<SimpleSyntaxHighlighterProps> = ({
   code,
   language,
   className = '',
-  showLineNumbers = false,
 }) => {
   const codeRef = useRef<HTMLElement>(null);
 
