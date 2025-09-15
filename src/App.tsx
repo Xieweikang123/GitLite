@@ -5,9 +5,9 @@ import { invoke } from '@tauri-apps/api/tauri'
 import { listen } from '@tauri-apps/api/event'
 import { TopToolbar } from './components/TopToolbar'
 import { MenuToolbar } from './components/MenuToolbar'
-import { WorkspaceStatus } from './components/WorkspaceStatus'
+import { OperationsPanel } from './components/OperationsPanel'
 import { CommitList } from './components/CommitList'
-import { DiffViewer } from './components/DiffViewer'
+// DiffViewer 暂时移除
 import { FileList } from './components/FileList'
 import { LogModal } from './components/LogModal'
 import { ProxyConfigModal } from './components/ProxyConfigModal'
@@ -24,9 +24,7 @@ function App() {
     openRepository, 
     openRepositoryByPath,
     checkoutBranch, 
-    getFileDiff, 
     getCommitFiles, 
-    getSingleFileDiff,
     getCommitsPaginated,
     fetchChangesWithLogs,
     pushChangesWithRealtimeLogs,
@@ -365,10 +363,10 @@ function App() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-[450px_400px_1fr] gap-6">
-          {/* 左侧：工作区状态 */}
-          <div>
-            <WorkspaceStatus
+        <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr_420px] gap-6">
+          {/* 左侧：操作区（提交、暂存、未跟踪） */}
+          <div className="min-w-0">
+            <OperationsPanel
               repoInfo={repoInfo}
               onRefresh={handleRefresh}
               onPushChanges={handlePushChangesRealtime}
@@ -376,17 +374,8 @@ function App() {
             />
           </div>
 
-          {/* 中间：文件变更和提交列表 */}
+          {/* 中间：仅提交历史（核心） */}
           <div className="space-y-6">
-            {selectedCommit && (
-              <FileList
-                files={commitFiles}
-                selectedFile={selectedFile}
-                onFileSelect={handleFileSelect}
-                loading={loading}
-              />
-            )}
-            
             {repoInfo ? (
               <CommitList
                 commits={allCommits}
@@ -405,20 +394,18 @@ function App() {
             )}
           </div>
 
-          {/* 右侧：差异查看器 */}
+          {/* 右侧：文件变更列表（替代原 Diff 区域） */}
           <div>
-            {repoInfo ? (
-              <DiffViewer
-                commit={selectedCommit}
+            {selectedCommit ? (
+              <FileList
+                files={commitFiles}
                 selectedFile={selectedFile}
-                onGetDiff={getFileDiff}
-                onGetSingleFileDiff={getSingleFileDiff}
+                onFileSelect={handleFileSelect}
+                loading={loading}
               />
             ) : (
               <div className="text-center py-12">
-                <p className="text-muted-foreground">
-                  请先选择一个 Git 仓库
-                </p>
+                <p className="text-muted-foreground">选择一个提交以查看文件变更</p>
               </div>
             )}
           </div>
