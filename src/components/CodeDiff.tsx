@@ -562,66 +562,6 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
   }
 
 
-  // 检测字符级别的差异
-  const detectCharacterLevelDiff = (oldContent: string, newContent: string): DiffSegment[] => {
-    const segments: DiffSegment[] = []
-    const maxLength = Math.max(oldContent.length, newContent.length)
-    
-    for (let i = 0; i < maxLength; i++) {
-      const oldChar = i < oldContent.length ? oldContent[i] : null
-      const newChar = i < newContent.length ? newContent[i] : null
-      
-      if (oldChar === null && newChar !== null) {
-        // 只有新字符
-        segments.push({
-          content: newChar,
-          type: 'added'
-        })
-      } else if (oldChar !== null && newChar === null) {
-        // 只有旧字符
-        segments.push({
-          content: oldChar,
-          type: 'deleted'
-        })
-      } else if (oldChar === newChar) {
-        // 相同字符
-        segments.push({
-          content: oldChar!,
-          type: 'unchanged'
-        })
-      } else {
-        // 不同字符
-        segments.push({
-          content: oldChar!,
-          type: 'deleted'
-        })
-        segments.push({
-          content: newChar!,
-          type: 'added'
-        })
-      }
-    }
-    
-    // 合并相邻的相同类型分段
-    const mergedSegments: DiffSegment[] = []
-    for (let i = 0; i < segments.length; i++) {
-      const current = segments[i]
-      
-      if (mergedSegments.length === 0) {
-        mergedSegments.push(current)
-      } else {
-        const last = mergedSegments[mergedSegments.length - 1]
-        if (last.type === current.type) {
-          // 合并相同类型的分段
-          last.content += current.content
-        } else {
-          mergedSegments.push(current)
-        }
-      }
-    }
-    
-    return mergedSegments
-  }
 
   // 检测相邻的删除和添加行，为它们添加字符级别差异
   const detectWhitespaceChanges = (lines: FileLine[]): FileLine[] => {
@@ -642,19 +582,10 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
           console.log('删除行内容:', currentLine.content)
           console.log('添加行内容:', nextLine.content)
           
-          // 为删除行添加字符级别差异
-          const segments = detectCharacterLevelDiff(currentLine.content, nextLine.content)
-          
-          processedLines.push({
-            ...currentLine,
-            segments: segments
-          })
-          
-          // 为添加行也添加字符级别差异
-          processedLines.push({
-            ...nextLine,
-            segments: segments
-          })
+          // 既然已经显示了两行（删除行和添加行），就不再添加字符级别的差异高亮
+          // 直接添加删除行和添加行，保持简洁的显示
+          processedLines.push(currentLine)
+          processedLines.push(nextLine)
           
           // 跳过下一行（添加行）
           i++
@@ -805,6 +736,8 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
   const ThumbnailScrollbar = () => {
     // 使用稳定的状态，避免重新挂载
     const [currentScrollTop, setCurrentScrollTop] = useState(0)
+    const [isDragging, setIsDragging] = useState(false)
+    const [dragScrollTop, setDragScrollTop] = useState(0)
     
     // 监听滚动位置变化
     useEffect(() => {
@@ -812,12 +745,32 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
       if (!scrollContainer) return
 
       const handleScroll = () => {
-        setCurrentScrollTop(scrollContainer.scrollTop)
+        if (!isDragging) {
+          setCurrentScrollTop(scrollContainer.scrollTop)
+        }
       }
 
       scrollContainer.addEventListener('scroll', handleScroll)
       return () => scrollContainer.removeEventListener('scroll', handleScroll)
-    }, [])
+    }, [isDragging])
+    
+    // 防止拖拽结束后被滚动事件重置
+    useEffect(() => {
+      if (!isDragging && dragScrollTop > 0) {
+        console.log('拖拽结束后同步状态:', { dragScrollTop, currentScrollTop })
+        setCurrentScrollTop(dragScrollTop)
+        
+        // 强制同步滚动容器的位置
+        if (scrollContainerRef.current) {
+          scrollContainerRef.current.scrollTop = dragScrollTop
+        }
+      }
+    }, [isDragging, dragScrollTop])
+    
+    // 调试：打印状态变化
+    useEffect(() => {
+      console.log('缩略图状态变化:', { isDragging, currentScrollTop, dragScrollTop })
+    }, [isDragging, currentScrollTop, dragScrollTop])
 
     // 如果没有数据或隐藏缩略图，返回占位元素而不是null
     if (fileLines.length === 0) {
@@ -831,8 +784,20 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
     const thumbnailItemHeight = Math.max(1, itemHeight * thumbnailScale) // 最小1px高度
 
     // 计算可见区域在缩略图中的位置
-    const visibleStart = (currentScrollTop / itemHeight) * thumbnailItemHeight
+    const effectiveScrollTop = isDragging ? dragScrollTop : currentScrollTop
+    const visibleStart = (effectiveScrollTop / itemHeight) * thumbnailItemHeight
     const visibleHeight = (containerHeight / itemHeight) * thumbnailItemHeight
+    
+    // 调试：打印位置计算
+    console.log('蓝色指示器位置计算:', {
+      isDragging,
+      effectiveScrollTop,
+      visibleStart,
+      visibleHeight,
+      itemHeight,
+      thumbnailItemHeight,
+      containerHeight
+    })
 
     // 处理缩略图点击和拖拽
     const handleThumbnailClick = (event: React.MouseEvent) => {
@@ -857,22 +822,38 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
       if (!scrollContainerRef.current) return
       
       const rect = event.currentTarget.getBoundingClientRect()
-      const startY = event.clientY - rect.top
-      const startScrollTop = scrollContainerRef.current.scrollTop
+      setIsDragging(true)
+      
+      let finalScrollTop = 0 // 保存最终滚动位置
       
       const handleMouseMove = (e: MouseEvent) => {
         const currentY = e.clientY - rect.top
-        const deltaY = currentY - startY
-        const deltaRatio = deltaY / rect.height
-        const deltaScrollTop = deltaRatio * (fileLines.length * itemHeight)
-        const newScrollTop = Math.max(0, Math.min(startScrollTop + deltaScrollTop, (fileLines.length - 1) * itemHeight))
+        const clickRatio = currentY / rect.height
+        const targetScrollTop = clickRatio * (fileLines.length * itemHeight)
+        const newScrollTop = Math.max(0, Math.min(targetScrollTop, (fileLines.length - 1) * itemHeight))
         
-        // 立即更新滚动位置状态
-        setCurrentScrollTop(newScrollTop)
+        // 保存最终滚动位置
+        finalScrollTop = newScrollTop
+        
+        // 实时更新拖拽位置状态，用于蓝色指示器跟随
+        setDragScrollTop(newScrollTop)
         scrollContainerRef.current!.scrollTop = newScrollTop
+        
+        console.log('拖拽中:', { currentY, clickRatio, targetScrollTop, newScrollTop })
       }
       
       const handleMouseUp = () => {
+        console.log('拖拽结束，最终位置:', finalScrollTop)
+        
+        // 先设置最终位置，再结束拖拽状态
+        setDragScrollTop(finalScrollTop)
+        setCurrentScrollTop(finalScrollTop)
+        
+        // 延迟结束拖拽状态，确保状态更新完成
+        setTimeout(() => {
+          setIsDragging(false)
+        }, 10)
+        
         document.removeEventListener('mousemove', handleMouseMove)
         document.removeEventListener('mouseup', handleMouseUp)
       }

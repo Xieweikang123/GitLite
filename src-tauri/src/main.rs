@@ -7,8 +7,7 @@ use std::path::Path;
 use std::fs;
 use anyhow::Result; 
 use std::io::Write;
-use std::str::FromStr;
-use tauri::Manager;
+use tauri::{Manager, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem, CustomMenuItem, GlobalWindowEvent};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CommitInfo {
@@ -537,7 +536,7 @@ fn get_repository_info(repo: &Repository, path: &str) -> Result<RepoInfo> {
     let mut ahead: u32 = 0;
     let mut behind: u32 = 0;
     // 通过分支名找到本地与上游引用
-    if let Ok(mut branch) = repo.find_branch(&current_branch, git2::BranchType::Local) {
+    if let Ok(branch) = repo.find_branch(&current_branch, git2::BranchType::Local) {
         // 本地提交
         let local_oid_opt = branch.get().target();
         // 上游跟踪分支（origin/<branch>）
@@ -938,7 +937,7 @@ async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, Stri
                 .or_else(|| delta.old_file().path())
                 .map(|p| p.to_string_lossy().replace('\\', "/"))
                 .unwrap_or_default();
-            let delta_status = format!("{:?}", delta.status());
+            let _delta_status = format!("{:?}", delta.status());
             // 注意：同一文件可以同时有暂存和未暂存的修改，所以不跳过
             // 识别类型
             let status = match delta.status() {
@@ -1218,7 +1217,7 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
     }
 
     // 检查工作区是否有未提交的更改
-    let mut index = match repo.index() {
+    let index = match repo.index() {
         Ok(i) => i,
         Err(e) => {
             log_message("ERROR", &format!("pull: get index failed: {}", e));
@@ -2604,8 +2603,73 @@ async fn delete_stash(repo_path: String, stash_id: String) -> Result<String, Str
     Ok(format!("Successfully deleted stash: {}", stash_id))
 }
 
+// 创建系统托盘菜单
+fn create_system_tray() -> SystemTray {
+    let show = CustomMenuItem::new("show".to_string(), "显示窗口");
+    let quit = CustomMenuItem::new("quit".to_string(), "退出");
+    let tray_menu = SystemTrayMenu::new()
+        .add_item(show)
+        .add_native_item(SystemTrayMenuItem::Separator)
+        .add_item(quit);
+    
+    SystemTray::new().with_menu(tray_menu)
+}
+
+// 处理系统托盘事件
+fn handle_system_tray_event(app: &tauri::AppHandle, event: SystemTrayEvent) {
+    match event {
+        SystemTrayEvent::LeftClick {
+            position: _,
+            size: _,
+            ..
+        } => {
+            // 左键点击显示/隐藏窗口
+            if let Some(window) = app.get_window("main") {
+                if window.is_visible().unwrap_or(false) {
+                    let _ = window.hide();
+                } else {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        }
+        SystemTrayEvent::MenuItemClick { id, .. } => {
+            match id.as_str() {
+                "show" => {
+                    if let Some(window) = app.get_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+                "quit" => {
+                    std::process::exit(0);
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+// 处理窗口事件
+fn handle_window_event(event: &GlobalWindowEvent) {
+    match event.event() {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
+            // 阻止默认的关闭行为，改为隐藏到托盘
+            api.prevent_close();
+            let _ = event.window().hide();
+        }
+        _ => {}
+    }
+}
+
 fn main() {
     tauri::Builder::default()
+        .system_tray(create_system_tray())
+        .on_system_tray_event(handle_system_tray_event)
+        .on_window_event(|event| {
+            handle_window_event(&event);
+        })
         .invoke_handler(tauri::generate_handler![
             open_repository,
             get_commits_paginated,
