@@ -1,5 +1,5 @@
 import { Button } from './ui/button'
-import { Clock, GitBranch, FileText, Settings, FolderOpen } from 'lucide-react'
+import { Clock, GitBranch, FileText, Settings, FolderOpen, Network } from 'lucide-react'
 import { RecentRepo } from '../types/git'
 
 interface MenuToolbarProps {
@@ -10,6 +10,7 @@ interface MenuToolbarProps {
   onToggleAutoOpen: (enabled: boolean) => void
   loading: boolean
   repoInfo: any
+  onOpenProxyConfig?: () => void
 }
 
 export function MenuToolbar({
@@ -19,7 +20,8 @@ export function MenuToolbar({
   autoOpenEnabled,
   onToggleAutoOpen,
   loading,
-  repoInfo
+  repoInfo,
+  onOpenProxyConfig
 }: MenuToolbarProps) {
   return (
     <div className="flex items-center justify-between bg-muted/30 border-b px-4 py-2 text-sm">
@@ -100,6 +102,18 @@ export function MenuToolbar({
           <FileText className="h-3 w-3 mr-1" />
           日志
         </Button>
+
+        {onOpenProxyConfig && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onOpenProxyConfig}
+            className="h-6 px-2 text-xs"
+          >
+            <Network className="h-3 w-3 mr-1" />
+            代理
+          </Button>
+        )}
 
         <div className="flex items-center gap-1">
           <Settings className="h-3 w-3 text-muted-foreground" />

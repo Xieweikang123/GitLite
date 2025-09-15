@@ -10,6 +10,7 @@ import { CommitList } from './components/CommitList'
 import { DiffViewer } from './components/DiffViewer'
 import { FileList } from './components/FileList'
 import { LogModal } from './components/LogModal'
+import { ProxyConfigModal } from './components/ProxyConfigModal'
 import { CommitInfo, FileChange } from './types/git'
 
 function App() {
@@ -45,6 +46,9 @@ function App() {
   const [logModalTitle, setLogModalTitle] = useState('')
   const [logs, setLogs] = useState<Array<{timestamp: string, level: 'INFO' | 'DEBUG' | 'WARN' | 'ERROR' | 'SUCCESS', message: string}>>([])
   const [isOperationRunning, setIsOperationRunning] = useState(false)
+  
+  // 代理配置弹窗状态
+  const [proxyConfigOpen, setProxyConfigOpen] = useState(false)
 
   const handleCommitSelect = async (commit: CommitInfo) => {
     setSelectedCommit(commit)
@@ -338,6 +342,7 @@ function App() {
         onToggleAutoOpen={setAutoOpenEnabled}
         loading={loading}
         repoInfo={repoInfo}
+        onOpenProxyConfig={() => setProxyConfigOpen(true)}
       />
       
       {/* 顶部工具栏 */}
@@ -427,6 +432,12 @@ function App() {
         title={logModalTitle}
         logs={logs}
         isRunning={isOperationRunning}
+      />
+      
+      {/* 代理配置弹窗 */}
+      <ProxyConfigModal
+        isOpen={proxyConfigOpen}
+        onClose={() => setProxyConfigOpen(false)}
       />
     </div>
   )

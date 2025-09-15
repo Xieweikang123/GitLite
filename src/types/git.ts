@@ -41,3 +41,12 @@ export interface RepoInfo {
   behind: number // 本地比远端落后（待拉取）
   remote_url?: string // 远程仓库URL
 }
+
+export interface ProxyConfig {
+  enabled: boolean
+  host: string
+  port: number
+  username?: string
+  password?: string
+  protocol: string // "http", "https", "socks5"
+}

@@ -63,6 +63,16 @@ pub struct RecentRepo {
     pub last_opened: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProxyConfig {
+    pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub protocol: String, // "http", "https", "socks5"
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RepoInfo {
     pub path: String,
@@ -167,6 +177,217 @@ fn get_config_dir() -> std::path::PathBuf {
     let mut config_dir = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
     config_dir.push("GitLite");
     config_dir
+}
+
+// 获取代理配置
+#[tauri::command]
+async fn get_proxy_config() -> Result<(ProxyConfig, bool), String> {
+    let config_dir = get_config_dir();
+    let config_file = config_dir.join("proxy_config.json");
+    
+    // 1. 优先从本地配置文件读取（用户明确保存的配置）
+    if config_file.exists() {
+        let content = fs::read_to_string(&config_file)
+            .map_err(|e| format!("Failed to read proxy config file: {}", e))?;
+        
+        let config: ProxyConfig = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse proxy config file: {}", e))?;
+        
+        return Ok((config, false)); // 不是从Git配置读取的
+    }
+    
+    // 2. 如果本地没有配置，尝试从Git全局配置读取
+    if let Ok(Some(git_config)) = get_git_proxy_config() {
+        return Ok((git_config, true)); // 是从Git配置读取的
+    }
+    
+    // 3. 返回默认配置
+    Ok((ProxyConfig {
+        enabled: false,
+        host: "127.0.0.1".to_string(),
+        port: 7890,
+        username: None,
+        password: None,
+        protocol: "http".to_string(),
+    }, false)) // 默认配置，不是从Git读取的
+}
+
+// 从Git全局配置读取代理设置
+fn get_git_proxy_config() -> Result<Option<ProxyConfig>, String> {
+    // 尝试读取HTTP代理
+    let http_proxy = match std::process::Command::new("git")
+        .args(&["config", "--global", "--get", "http.proxy"])
+        .output()
+    {
+        Ok(output) => {
+            if output.status.success() {
+                let proxy_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !proxy_str.is_empty() {
+                    Some(proxy_str)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        },
+        Err(_) => None,
+    };
+    
+    // 尝试读取HTTPS代理
+    let https_proxy = match std::process::Command::new("git")
+        .args(&["config", "--global", "--get", "https.proxy"])
+        .output()
+    {
+        Ok(output) => {
+            if output.status.success() {
+                let proxy_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !proxy_str.is_empty() {
+                    Some(proxy_str)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        },
+        Err(_) => None,
+    };
+    
+    // 优先使用HTTPS代理，如果没有则使用HTTP代理
+    let proxy_url = https_proxy.or(http_proxy);
+    
+    if let Some(url) = proxy_url {
+        // 解析代理URL
+        match parse_proxy_url(&url) {
+            Ok(config) => {
+                log_message("INFO", &format!("Found Git proxy configuration: {}", url));
+                Ok(Some(config))
+            },
+            Err(e) => {
+                log_message("WARN", &format!("Failed to parse Git proxy URL '{}': {}", url, e));
+                Ok(None)
+            }
+        }
+    } else {
+        Ok(None)
+    }
+}
+
+// 解析代理URL
+fn parse_proxy_url(url: &str) -> Result<ProxyConfig, String> {
+    // 确定协议
+    let (protocol, url_without_protocol) = if url.starts_with("socks5://") {
+        ("socks5", &url[9..])
+    } else if url.starts_with("https://") {
+        ("https", &url[8..])
+    } else if url.starts_with("http://") {
+        ("http", &url[7..])
+    } else {
+        ("http", url)
+    };
+    
+    // 检查是否包含认证信息
+    let (host_port, username, password) = if let Some(at_pos) = url_without_protocol.find('@') {
+        let auth_part = &url_without_protocol[..at_pos];
+        let host_part = &url_without_protocol[at_pos + 1..];
+        
+        let (user, pass) = if let Some(colon_pos) = auth_part.find(':') {
+            (
+                Some(auth_part[..colon_pos].to_string()),
+                Some(auth_part[colon_pos + 1..].to_string())
+            )
+        } else {
+            (Some(auth_part.to_string()), None)
+        };
+        
+        (host_part, user, pass)
+    } else {
+        (url_without_protocol, None, None)
+    };
+    
+    // 解析主机和端口
+    let (host, port) = if let Some(colon_pos) = host_port.find(':') {
+        let host = host_port[..colon_pos].to_string();
+        let port_str = &host_port[colon_pos + 1..];
+        let port = port_str.parse::<u16>()
+            .map_err(|_| format!("Invalid port number: {}", port_str))?;
+        (host, port)
+    } else {
+        // 默认端口
+        (host_port.to_string(), 8080)
+    };
+    
+    Ok(ProxyConfig {
+        enabled: true,
+        host,
+        port,
+        username,
+        password,
+        protocol: protocol.to_string(),
+    })
+}
+
+// 保存代理配置
+#[tauri::command]
+async fn save_proxy_config(config: ProxyConfig) -> Result<(), String> {
+    let config_dir = get_config_dir();
+    fs::create_dir_all(&config_dir)
+        .map_err(|e| format!("Failed to create config directory: {}", e))?;
+    
+    let config_file = config_dir.join("proxy_config.json");
+    
+    let content = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("Failed to serialize proxy config: {}", e))?;
+    
+    fs::write(&config_file, content)
+        .map_err(|e| format!("Failed to write proxy config file: {}", e))?;
+    
+    Ok(())
+}
+
+// 设置代理环境变量
+fn set_proxy_environment(proxy_config: &ProxyConfig) -> Result<(), String> {
+    if !proxy_config.enabled {
+        return Ok(());
+    }
+    
+    let proxy_url = if let (Some(username), Some(password)) = (&proxy_config.username, &proxy_config.password) {
+        format!("{}://{}:{}@{}:{}", 
+                proxy_config.protocol, username, password, 
+                proxy_config.host, proxy_config.port)
+    } else {
+        format!("{}://{}:{}", 
+                proxy_config.protocol, proxy_config.host, proxy_config.port)
+    };
+    
+    // 设置环境变量
+    std::env::set_var("http_proxy", &proxy_url);
+    std::env::set_var("https_proxy", &proxy_url);
+    std::env::set_var("HTTP_PROXY", &proxy_url);
+    std::env::set_var("HTTPS_PROXY", &proxy_url);
+    
+    // 对于SOCKS5代理，还需要设置额外的环境变量
+    if proxy_config.protocol == "socks5" {
+        std::env::set_var("all_proxy", &proxy_url);
+        std::env::set_var("ALL_PROXY", &proxy_url);
+    }
+    
+    log_message("INFO", &format!("Set proxy environment variables: {}", proxy_url));
+    Ok(())
+}
+
+// 清除代理环境变量
+fn clear_proxy_environment() -> Result<(), String> {
+    std::env::remove_var("http_proxy");
+    std::env::remove_var("https_proxy");
+    std::env::remove_var("HTTP_PROXY");
+    std::env::remove_var("HTTPS_PROXY");
+    std::env::remove_var("all_proxy");
+    std::env::remove_var("ALL_PROXY");
+    
+    log_message("INFO", "Cleared proxy environment variables");
+    Ok(())
 }
 
 // 简单日志写入（追加到 GitLite/logs/gitlite.log）
@@ -1222,6 +1443,56 @@ async fn push_changes_with_realtime_logs(
         }
     };
 
+    // 应用代理配置
+    let _ = window.emit("push-log", serde_json::json!({
+        "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+        "level": "INFO",
+        "message": "正在应用代理配置..."
+    }));
+
+    let proxy_config = match get_proxy_config().await {
+        Ok((config, _is_from_git)) => {
+            if config.enabled {
+                let _ = window.emit("push-log", serde_json::json!({
+                    "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+                    "level": "INFO",
+                    "message": format!("使用代理: {}://{}:{}", config.protocol, config.host, config.port)
+                }));
+            } else {
+                let _ = window.emit("push-log", serde_json::json!({
+                    "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+                    "level": "INFO",
+                    "message": "未启用代理"
+                }));
+            }
+            config
+        },
+        Err(e) => {
+            let _ = window.emit("push-log", serde_json::json!({
+                "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+                "level": "WARN",
+                "message": format!("获取代理配置失败: {}", e)
+            }));
+            ProxyConfig {
+                enabled: false,
+                host: "127.0.0.1".to_string(),
+                port: 7890,
+                username: None,
+                password: None,
+                protocol: "http".to_string(),
+            }
+        }
+    };
+
+    // 设置代理环境变量
+    if let Err(e) = set_proxy_environment(&proxy_config) {
+        let _ = window.emit("push-log", serde_json::json!({
+            "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+            "level": "WARN",
+            "message": format!("设置代理环境变量失败: {}", e)
+        }));
+    }
+
     let _ = window.emit("push-log", serde_json::json!({
         "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
         "level": "INFO",
@@ -1361,6 +1632,15 @@ async fn push_changes_with_realtime_logs(
                 "message": format!("操作完成 - 已推送到 origin/{}", branch_name)
             }));
             
+            // 清除代理环境变量
+            if let Err(e) = clear_proxy_environment() {
+                let _ = window.emit("push-log", serde_json::json!({
+                    "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+                    "level": "WARN",
+                    "message": format!("清除代理环境变量失败: {}", e)
+                }));
+            }
+            
             Ok(format!("Successfully pushed to origin/{}", branch_name))
         },
         Err(e) => {
@@ -1403,6 +1683,15 @@ async fn push_changes_with_realtime_logs(
                 "level": "INFO",
                 "message": suggestion
             }));
+            
+            // 清除代理环境变量
+            if let Err(e) = clear_proxy_environment() {
+                let _ = window.emit("push-log", serde_json::json!({
+                    "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+                    "level": "WARN",
+                    "message": format!("清除代理环境变量失败: {}", e)
+                }));
+            }
             
             return Err(format!("Failed to push: {}", e));
         }
@@ -2347,7 +2636,9 @@ fn main() {
             get_stash_list,
             create_stash,
             apply_stash,
-            delete_stash
+            delete_stash,
+            get_proxy_config,
+            save_proxy_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
