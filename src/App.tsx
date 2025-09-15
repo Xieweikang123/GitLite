@@ -363,7 +363,7 @@ function App() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-[320px_minmax(600px,720px)_1fr] gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-[320px_minmax(500px,620px)_1fr] gap-6">
           {/* 左侧：操作区（提交、暂存、未跟踪） */}
           <div className="min-w-0">
             <OperationsPanel

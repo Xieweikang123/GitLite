@@ -60,6 +60,14 @@
 
 /* 自定义滚动条样式 */
 @layer utilities {
+  /* 多行省略工具 */
+  .line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
   /* Webkit 浏览器滚动条样式 */
   ::-webkit-scrollbar {
     width: 8px;

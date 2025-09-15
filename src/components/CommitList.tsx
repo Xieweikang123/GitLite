@@ -70,7 +70,7 @@ export function CommitList({
             >
               <div className="flex items-start justify-between">
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-foreground truncate">
+                  <p className="text-sm font-medium text-foreground line-clamp-2">
                     {commit.message}
                   </p>
                   <div className="flex items-center gap-2 mt-1">
