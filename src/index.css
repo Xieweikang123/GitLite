@@ -118,6 +118,7 @@
     will-change: transform;
     transition: none !important;
     pointer-events: none;
+    contain: layout style paint;
   }
   .syntax-highlighter {
     @apply relative;

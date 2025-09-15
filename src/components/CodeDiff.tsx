@@ -743,7 +743,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     const thumbnailInnerRef = useRef<HTMLDivElement>(null)
     const thumbnailContainerRef = useRef<HTMLDivElement>(null)
     // 仅使用 portal 指示框，避免受内部布局影响
-    const indicatorRef = useRef<HTMLDivElement>(null) // 保留但不渲染，避免大范围改动
     const indicatorPortalRef = useRef<HTMLDivElement>(null)
     const indicatorTranslateYRef = useRef<number>(0)
     // 移除未使用的 wantScrollTopRef
@@ -753,6 +752,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     const desiredRef = useRef<{ scrollTop: number | null }>({ scrollTop: null })
     const scheduledRef = useRef<number | null>(null)
     const debugPortalRef = useRef<HTMLDivElement | null>(null)
+    const lastValidRectRef = useRef<DOMRect | null>(null)
     
     // 单一写入者：在 rAF 中统一写入（top/left/width 和 CSS 变量）
     const requestWrite = () => {
@@ -762,7 +762,9 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     const flushWrites = () => {
       scheduledRef.current = null
       const indicator = indicatorElRef.current
-      const rect = containerRectRef.current
+      const rect = (containerRectRef.current && containerRectRef.current.height > 2 && containerRectRef.current.width > 0)
+        ? containerRectRef.current
+        : lastValidRectRef.current
       if (!indicator || !rect) {
         // 元素或测量尚未就绪，下一帧再尝试，避免丢写导致 css 变量缺失
         scheduledRef.current = requestAnimationFrame(flushWrites)
@@ -770,21 +772,48 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       }
       // 读取目标值
       const nextScrollTop = desiredRef.current.scrollTop
-      const thumbnailHeight = Math.min(containerHeight, 300)
-      const thumbnailScale = fileLines.length > 0 ? (thumbnailHeight / (fileLines.length * itemHeight)) : 0
-      const thumbnailItemHeight = Math.max(1, itemHeight * thumbnailScale)
-      const ty = nextScrollTop != null
-        ? Math.max(0, (nextScrollTop / itemHeight) * thumbnailItemHeight)
-        : (indicatorTranslateYRef.current ?? 0)
-      // 写入一次性样式
-      indicator.style.top = `${rect.top}px`
+      const thumbnailHeight = rect.height
+      const totalContentPx = Math.max(1, fileLines.length * itemHeight)
+      const viewportPx = scrollContainerRef.current?.clientHeight ?? containerHeight
+      const indicatorHeightPx = Math.min(
+        thumbnailHeight,
+        Math.max(4, Math.round((viewportPx / totalContentPx) * thumbnailHeight))
+      )
+      const trackHeight = Math.max(0, thumbnailHeight - indicatorHeightPx)
+      const usedScrollTop = nextScrollTop ?? (scrollContainerRef.current?.scrollTop ?? 0)
+      const scrollMax = Math.max(1, totalContentPx - viewportPx)
+      const p = Math.min(1, Math.max(0, usedScrollTop / scrollMax))
+      const ty = Math.round(trackHeight * p)
+      // 写入一次性样式（含视口夹取）
+      const viewportH = window.innerHeight || document.documentElement.clientHeight || 0
+      const topBase = Math.max(0, Math.min(rect.top, Math.max(0, viewportH - indicatorHeightPx)))
+      indicator.style.top = `${topBase}px`
       indicator.style.left = `${rect.left}px`
       indicator.style.width = `${rect.width}px`
-      indicator.style.setProperty('--indicator-ty', `${Math.round(ty)}px`)
-      indicator.style.setProperty('--indicator-h', `${Math.max(4, Math.round((containerHeight / itemHeight) * thumbnailItemHeight))}px`)
+      indicator.style.setProperty('--indicator-ty', `${ty}px`)
+      indicator.style.setProperty('--indicator-h', `${indicatorHeightPx}px`)
       // 强制确保 transform 使用 css 变量，防止被外部覆盖成 0px/none
       if (!indicator.style.transform || !indicator.style.transform.includes('var(--indicator-ty')) {
         indicator.style.transform = 'translate3d(0, var(--indicator-ty), 0)'
+      }
+      // 兜底：如果计算后的位置仍超出视口，强制单帧使用绝对 top
+      const tyNum = ty
+      const finalTop = topBase + tyNum
+      const outOfView = finalTop < 0 || finalTop > (viewportH - 1)
+      if (outOfView) {
+        indicator.style.transform = 'translate3d(0, 0, 0)'
+        indicator.style.top = `${Math.max(0, Math.min(finalTop, viewportH - indicatorHeightPx))}px`
+        // 下一帧恢复变量驱动
+        requestAnimationFrame(() => {
+          indicator.style.top = `${topBase}px`
+          indicator.style.transform = 'translate3d(0, var(--indicator-ty), 0)'
+        })
+      }
+      // 仅在显式隐藏或无数据时隐藏；避免测量抖动导致短暂消失
+      if (!showThumbnail || fileLines.length === 0) {
+        indicator.style.display = 'none'
+      } else {
+        indicator.style.display = 'block'
       }
       indicatorTranslateYRef.current = ty
       // 清空已消费的目标
@@ -823,8 +852,8 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       requestWrite()
     }
     
-    // 统一改为入队，让 rAF 写者设置 CSS 变量与定位
-    const updateIndicatorTop = (scrollTopValue: number) => {
+    // 入队一个目标 scrollTop，由 rAF 写者统一写入
+    const enqueueImmediate = (scrollTopValue: number) => {
       desiredRef.current.scrollTop = scrollTopValue
       requestWrite()
     }
@@ -869,7 +898,11 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       const el = thumbnailContainerRef.current
       if (!el) return
       const measure = () => {
-        containerRectRef.current = el.getBoundingClientRect()
+        const r = el.getBoundingClientRect()
+        containerRectRef.current = r
+        if (r.height > 2 && r.width > 0) {
+          lastValidRectRef.current = r
+        }
         requestWrite()
       }
       const ro = new ResizeObserver(measure)
@@ -921,6 +954,11 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         const next = scrollContainer.scrollTop
         enqueueScrollTop(next)
         setCurrentScrollTop(next)
+        // 同步缩略图容器的屏幕位置，防止 fixed 指示框与缩略图脱节
+        if (thumbnailContainerRef.current) {
+          containerRectRef.current = thumbnailContainerRef.current.getBoundingClientRect()
+          requestWrite()
+        }
         console.log('滚动同步(handleScroll):', { scrollTop: next })
       }
       scrollContainer.addEventListener('scroll', handleScroll, { capture: true, passive: true } as any)
@@ -961,38 +999,61 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     
 
     // 处理缩略图点击和拖拽
-    const handleThumbnailClick = (event: React.MouseEvent) => {
-      if (!scrollContainerRef.current) return
-      
-      const rect = (thumbnailInnerRef.current ?? event.currentTarget).getBoundingClientRect()
-      const clickY = Math.max(0, Math.min(event.clientY - rect.top, rect.height))
-      const clickRatio = rect.height > 0 ? (clickY / rect.height) : 0
-      const targetScrollTop = clickRatio * (fileLines.length * itemHeight)
-      
-      // 入队等待 rAF 写者统一写入
-      updateIndicatorTop(targetScrollTop)
-      setCurrentScrollTop(targetScrollTop)
-      scrollContainerRef.current.scrollTop = targetScrollTop
-    }
+    // 点击支持：在拖拽逻辑中按阈值判定为点击
 
     // 处理缩略图拖拽
     const handleThumbnailMouseDown = (event: React.MouseEvent) => {
       if (!scrollContainerRef.current) return
       
-      const rect = (thumbnailInnerRef.current ?? event.currentTarget).getBoundingClientRect()
+      const rect = (thumbnailContainerRef.current ?? (event.currentTarget as HTMLElement)).getBoundingClientRect()
       setIsDragging(true)
       
       let finalScrollTop = 0 // 保存最终滚动位置
+      const startY = event.clientY
+      let moved = false
+
+      // 计算点击位置对应的 scrollTop，并立即跳转（首帧即到位）
+      {
+        const thumbnailHeight = rect.height
+        const totalContentPx = Math.max(1, fileLines.length * itemHeight)
+        const viewportPx = scrollContainerRef.current?.clientHeight ?? containerHeight
+        const indicatorHeightPx = Math.min(
+          thumbnailHeight,
+          Math.max(4, Math.round((viewportPx / totalContentPx) * thumbnailHeight))
+        )
+        const trackHeight = Math.max(0, thumbnailHeight - indicatorHeightPx)
+        const clickY = Math.max(0, Math.min(startY - rect.top, thumbnailHeight))
+        // 比例映射：p = clickY / thumbnailHeight，ty = trackHeight * p
+        const p0 = thumbnailHeight > 0 ? Math.min(1, Math.max(0, clickY / thumbnailHeight)) : 0
+        const ty0 = trackHeight * p0
+        const scrollMax = Math.max(1, totalContentPx - viewportPx)
+        const jumpScrollTop = p0 * scrollMax
+        console.log('缩略图 mousedown 首跳', { startY, clickY, ty: ty0, p: p0, jumpScrollTop })
+        finalScrollTop = jumpScrollTop
+        setDragScrollTop(jumpScrollTop)
+        enqueueImmediate(jumpScrollTop)
+        scrollContainerRef.current.scrollTop = jumpScrollTop
+      }
       
       const handleMouseMove = (e: MouseEvent) => {
         e.preventDefault()
-        const currentY = Math.max(0, Math.min(e.clientY - rect.top, rect.height))
-        const clickRatio = rect.height > 0 ? (currentY / rect.height) : 0
-        const targetScrollTop = clickRatio * (fileLines.length * itemHeight)
-        const newScrollTop = Math.max(0, Math.min(targetScrollTop, (fileLines.length - 1) * itemHeight))
+        const thumbnailHeight = rect.height
+        const totalContentPx = Math.max(1, fileLines.length * itemHeight)
+        const indicatorHeightPx = Math.min(
+          thumbnailHeight,
+          Math.max(4, Math.round((containerHeight / totalContentPx) * thumbnailHeight))
+        )
+        const trackHeight = Math.max(0, thumbnailHeight - indicatorHeightPx)
+        const currentY = Math.max(0, Math.min(e.clientY - rect.top, thumbnailHeight))
+        const p = thumbnailHeight > 0 ? Math.min(1, Math.max(0, currentY / thumbnailHeight)) : 0
+        const ty = trackHeight * p
+        const viewportPx2 = scrollContainerRef.current?.clientHeight ?? containerHeight
+        const scrollMax = Math.max(1, totalContentPx - viewportPx2)
+        const newScrollTop = p * scrollMax
         
         // 保存最终滚动位置
         finalScrollTop = newScrollTop
+        if (Math.abs(e.clientY - startY) > 3) moved = true
         
         // 实时更新拖拽位置状态
         setDragScrollTop(newScrollTop)
@@ -1000,17 +1061,28 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         if (scrollContainerRef.current) {
           scrollContainerRef.current.scrollTop = newScrollTop
         }
-        console.log('拖拽中(handleMouseMove):', {
-          currentY,
-          clickRatio,
-          newScrollTop,
-          translateY: indicatorTranslateYRef.current
-        })
+        console.log('拖拽中(handleMouseMove):', { currentY, ty, p, newScrollTop, translateY: indicatorTranslateYRef.current })
       }
       
-      const handleMouseUp = () => {
+      const handleMouseUp = (e: MouseEvent) => {
         console.log('拖拽结束，最终位置:', finalScrollTop)
         
+        // 若无明显移动，当作点击：用起点计算一次
+        if (!moved) {
+          const thumbnailHeight = rect.height
+          const totalContentPx = Math.max(1, fileLines.length * itemHeight)
+          const indicatorHeightPx = Math.min(
+            thumbnailHeight,
+            Math.max(4, Math.round(((scrollContainerRef.current?.clientHeight ?? containerHeight) / totalContentPx) * thumbnailHeight))
+          )
+          const trackHeight = Math.max(0, thumbnailHeight - indicatorHeightPx)
+          const clickY = Math.max(0, Math.min(startY - rect.top, thumbnailHeight))
+          const p = thumbnailHeight > 0 ? Math.min(1, Math.max(0, clickY / thumbnailHeight)) : 0
+          const ty = trackHeight * p
+          const scrollMax = Math.max(1, totalContentPx - (scrollContainerRef.current?.clientHeight ?? containerHeight))
+          finalScrollTop = p * scrollMax
+        }
+
         // 先设置最终位置，再结束拖拽状态
         setDragScrollTop(finalScrollTop)
         setCurrentScrollTop(finalScrollTop)
@@ -1061,7 +1133,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         className={`absolute right-0 top-0 w-16 h-full bg-gray-100 dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700 overflow-hidden select-none transition-opacity duration-200 ${
           showThumbnail ? 'opacity-100 cursor-pointer' : 'opacity-0 pointer-events-none'
         }`}
-        onClick={showThumbnail ? handleThumbnailClick : undefined}
+        onClick={undefined}
         onMouseDown={showThumbnail ? handleThumbnailMouseDown : undefined}
         title={showThumbnail ? "点击或拖拽跳转到对应位置" : undefined}
       >

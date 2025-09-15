@@ -20,6 +20,10 @@ This rule documents the canonical pattern for stabilizing the thumbnail/minimap 
 - `requestAnimationFrame(flushWrites)` batches writes; if the element/rect is missing, reschedule next frame.
 - In `flushWrites`, compute `--indicator-ty` and `--indicator-h` and set them via `style.setProperty`.
 - Enforce `transform: translate3d(0, var(--indicator-ty), 0)` if not present.
+- Proportional mapping: `indicatorH = (containerH / contentH) * thumbnailH`; `ty = (thumbnailH - indicatorH) * clamp(scrollTop / (contentH - containerH), 0, 1)`.
+- Viewport clamping: clamp base `top` into `[0, window.innerHeight - indicatorH]`.
+- Single-frame hard fallback: if result would go out of viewport, temporarily set absolute `top` for one frame, then restore variable-driven transform next frame.
+- Rect fallback: cache last non-zero rect and reuse it when current rect is invalid to avoid flicker during layout jitter.
 
 2) Event Subscription
 - `scroll` handlers: `{ capture: true, passive: true }` and only enqueue values.
@@ -54,6 +58,7 @@ This rule documents the canonical pattern for stabilizing the thumbnail/minimap 
 - Log `[IndicatorDebug]` entries that include `scrollTop`, `desiredScrollTop`, `translateYRefPx`, `translateYCssVar`, and the container `rect`.
 - Warn on external transform overrides: `console.warn('[IndicatorDebug] overwritten transform:', ...)`.
 - Missing CSS variable should log `console.warn('[IndicatorDebug] missing --indicator-ty')`.
+- Log whether rect is from current or cached fallback to help debug layout jitter.
 
 ## References
 - Main implementation in [CodeDiff.tsx](mdc:src/components/CodeDiff.tsx)
