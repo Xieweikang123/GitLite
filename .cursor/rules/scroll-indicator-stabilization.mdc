@@ -1,0 +1,61 @@
+---
+globs: src/components/*.tsx
+description: Stabilize thumbnail scroll indicator using single-writer rAF, CSS variables, and portal management
+---
+# Scroll Indicator Stabilization Rule
+
+This rule documents the canonical pattern for stabilizing the thumbnail/minimap scroll indicator in GitLite.
+
+## Core Principles
+
+- Single writer: All DOM writes (top/left/width, CSS vars) happen in one rAF cycle.
+- Read-only observers: ResizeObserver/window scroll capture only measure and enqueue; they never write.
+- CSS variable driven transform: The indicator's translateY must be `translate3d(0, var(--indicator-ty), 0)`.
+- Dedicated portal element: The indicator DOM node is created and owned by the component, not React layout.
+
+## Required Implementation
+
+1) rAF Writer
+- Keep `desired.scrollTop` in a ref.
+- `requestAnimationFrame(flushWrites)` batches writes; if the element/rect is missing, reschedule next frame.
+- In `flushWrites`, compute `--indicator-ty` and `--indicator-h` and set them via `style.setProperty`.
+- Enforce `transform: translate3d(0, var(--indicator-ty), 0)` if not present.
+
+2) Event Subscription
+- `scroll` handlers: `{ capture: true, passive: true }` and only enqueue values.
+- `wheel` uses `passive: false` only when `preventDefault()` is required to block parent scrolling.
+- `ResizeObserver` updates the cached rect and requests a write.
+
+3) Portal Management
+- Create a DOM element using `document.createElement('div')` with class `gitlite-indicator` and append to `document.body`.
+- Store a ref to this element for writing; remove it manually on unmount.
+- Do not render the indicator via React portal to avoid remount-induced style resets.
+
+4) CSS Requirements
+- The indicator class must be defined in [src/index.css](mdc:src/index.css):
+
+```css
+.gitlite-indicator {
+  position: fixed;
+  z-index: 9999;
+  background: rgba(59,130,246,0.4);
+  border: 1px solid rgba(59,130,246,0.9);
+  min-height: 4px;
+  height: var(--indicator-h, 4px);
+  transform: translate3d(0, var(--indicator-ty, 0px), 0);
+  will-change: transform;
+  transition: none !important;
+  pointer-events: none;
+}
+```
+
+## Diagnostics
+
+- Log `[IndicatorDebug]` entries that include `scrollTop`, `desiredScrollTop`, `translateYRefPx`, `translateYCssVar`, and the container `rect`.
+- Warn on external transform overrides: `console.warn('[IndicatorDebug] overwritten transform:', ...)`.
+- Missing CSS variable should log `console.warn('[IndicatorDebug] missing --indicator-ty')`.
+
+## References
+- Main implementation in [CodeDiff.tsx](mdc:src/components/CodeDiff.tsx)
+- Modal integration and debug toggle in [FileDiffModal.tsx](mdc:src/components/FileDiffModal.tsx)
+

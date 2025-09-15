@@ -106,6 +106,19 @@
 
 /* 语法高亮样式 */
 @layer components {
+  /* GitLite 缩略图指示框（单一写者 + CSS 变量驱动） */
+  .gitlite-indicator {
+    position: fixed;
+    z-index: 9999;
+    background: rgba(59,130,246,0.4);
+    border: 1px solid rgba(59,130,246,0.9);
+    min-height: 4px;
+    height: var(--indicator-h, 4px);
+    transform: translate3d(0, var(--indicator-ty, 0px), 0);
+    will-change: transform;
+    transition: none !important;
+    pointer-events: none;
+  }
   .syntax-highlighter {
     @apply relative;
   }

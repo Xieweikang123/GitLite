@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { Button } from './ui/button'
 import { Copy, ChevronDown, ChevronRight, ChevronUp, ChevronDown as ChevronDownIcon, Navigation, Sidebar, FileText } from 'lucide-react'
@@ -22,6 +22,7 @@ interface VSCodeDiffProps {
   diff: string
   filePath?: string
   repoPath?: string
+  debugEnabled?: boolean
 }
 
 // 根据文件路径获取语言类型
@@ -215,7 +216,7 @@ function Tooltip({ children, content, position = 'top' }: TooltipProps) {
   )
 }
 
-export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
+export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromParent }: VSCodeDiffProps) {
   const [fileLines, setFileLines] = useState<FileLine[]>([])
   const [isExpanded, setIsExpanded] = useState(true)
   const [currentChangeIndex, setCurrentChangeIndex] = useState(0)
@@ -738,20 +739,192 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
     const [currentScrollTop, setCurrentScrollTop] = useState(0)
     const [isDragging, setIsDragging] = useState(false)
     const [dragScrollTop, setDragScrollTop] = useState(0)
+    const [debugEnabled, setDebugEnabled] = useState(!!debugFromParent)
+    const thumbnailInnerRef = useRef<HTMLDivElement>(null)
+    const thumbnailContainerRef = useRef<HTMLDivElement>(null)
+    // 仅使用 portal 指示框，避免受内部布局影响
+    const indicatorRef = useRef<HTMLDivElement>(null) // 保留但不渲染，避免大范围改动
+    const indicatorPortalRef = useRef<HTMLDivElement>(null)
+    const indicatorTranslateYRef = useRef<number>(0)
+    // 移除未使用的 wantScrollTopRef
+    const containerRectRef = useRef<DOMRect | null>(null)
+    // 移除未使用的 rafIdRef
+    const indicatorElRef = useRef<HTMLDivElement | null>(null)
+    const desiredRef = useRef<{ scrollTop: number | null }>({ scrollTop: null })
+    const scheduledRef = useRef<number | null>(null)
+    const debugPortalRef = useRef<HTMLDivElement | null>(null)
     
-    // 监听滚动位置变化
+    // 单一写入者：在 rAF 中统一写入（top/left/width 和 CSS 变量）
+    const requestWrite = () => {
+      if (scheduledRef.current != null) return
+      scheduledRef.current = requestAnimationFrame(flushWrites)
+    }
+    const flushWrites = () => {
+      scheduledRef.current = null
+      const indicator = indicatorElRef.current
+      const rect = containerRectRef.current
+      if (!indicator || !rect) {
+        // 元素或测量尚未就绪，下一帧再尝试，避免丢写导致 css 变量缺失
+        scheduledRef.current = requestAnimationFrame(flushWrites)
+        return
+      }
+      // 读取目标值
+      const nextScrollTop = desiredRef.current.scrollTop
+      const thumbnailHeight = Math.min(containerHeight, 300)
+      const thumbnailScale = fileLines.length > 0 ? (thumbnailHeight / (fileLines.length * itemHeight)) : 0
+      const thumbnailItemHeight = Math.max(1, itemHeight * thumbnailScale)
+      const ty = nextScrollTop != null
+        ? Math.max(0, (nextScrollTop / itemHeight) * thumbnailItemHeight)
+        : (indicatorTranslateYRef.current ?? 0)
+      // 写入一次性样式
+      indicator.style.top = `${rect.top}px`
+      indicator.style.left = `${rect.left}px`
+      indicator.style.width = `${rect.width}px`
+      indicator.style.setProperty('--indicator-ty', `${Math.round(ty)}px`)
+      indicator.style.setProperty('--indicator-h', `${Math.max(4, Math.round((containerHeight / itemHeight) * thumbnailItemHeight))}px`)
+      // 强制确保 transform 使用 css 变量，防止被外部覆盖成 0px/none
+      if (!indicator.style.transform || !indicator.style.transform.includes('var(--indicator-ty')) {
+        indicator.style.transform = 'translate3d(0, var(--indicator-ty), 0)'
+      }
+      indicatorTranslateYRef.current = ty
+      // 清空已消费的目标
+      desiredRef.current.scrollTop = null
+      // 调试面板输出（同帧、同写者）+ 控制台打印
+      if (debugEnabled) {
+        const cssVarTy = getComputedStyle(indicator).getPropertyValue('--indicator-ty').trim()
+        const ts = performance.now().toFixed(1)
+        console.log('[IndicatorDebug]', {
+          tsMs: Number(ts),
+          scrollTop: scrollContainerRef.current?.scrollTop ?? 0,
+          desiredScrollTop: nextScrollTop ?? null,
+          translateYRefPx: Math.round(ty),
+          translateYCssVar: cssVarTy || '(empty)',
+          rect: { top: Math.round(rect.top), left: Math.round(rect.left), width: Math.round(rect.width) }
+        })
+        if (debugPortalRef.current) {
+          const left = rect.left + rect.width + 8
+          const top = rect.top + 8
+          const box = debugPortalRef.current
+          box.style.left = `${left}px`
+          box.style.top = `${top}px`
+          box.innerHTML = `
+            <div>ts: ${ts} ms</div>
+            <div>scrollTop: ${scrollContainerRef.current?.scrollTop ?? 0}</div>
+            <div>desired.scrollTop: ${nextScrollTop ?? 'null'}</div>
+            <div>ty(ref): ${Math.round(ty)} px</div>
+            <div>ty(css var): ${cssVarTy || '(empty)'}</div>
+            <div>rect: top=${Math.round(rect.top)}, left=${Math.round(rect.left)}, w=${Math.round(rect.width)}</div>
+          `
+        }
+      }
+    }
+    const enqueueScrollTop = (next: number) => {
+      desiredRef.current.scrollTop = next
+      requestWrite()
+    }
+    
+    // 统一改为入队，让 rAF 写者设置 CSS 变量与定位
+    const updateIndicatorTop = (scrollTopValue: number) => {
+      desiredRef.current.scrollTop = scrollTopValue
+      requestWrite()
+    }
+
+    // 初次渲染或尺寸变更时请求一次写入（避免位置被置为0）
+    useEffect(() => {
+      const scrollTopNow = scrollContainerRef.current?.scrollTop ?? currentScrollTop
+      if (isDragging) return
+      enqueueScrollTop(scrollTopNow)
+    }, [itemHeight, containerHeight, fileLines.length, isDragging])
+
+    // 父级控制调试开关同步
+    useEffect(() => {
+      setDebugEnabled(!!debugFromParent)
+    }, [debugFromParent])
+
+    // 自管控的 portal 元素，避免 React 重建导致样式丢失
+    useEffect(() => {
+      const el = document.createElement('div')
+      el.className = 'gitlite-indicator'
+      document.body.appendChild(el)
+      ;(indicatorPortalRef as React.MutableRefObject<HTMLDivElement | null>).current = el
+      indicatorElRef.current = el
+      // 初始写入，防止第一帧为 0
+      requestWrite()
+      return () => {
+        try { document.body.removeChild(el) } catch {}
+        if (indicatorPortalRef.current === el) (indicatorPortalRef as React.MutableRefObject<HTMLDivElement | null>).current = null
+        if (indicatorElRef.current === el) indicatorElRef.current = null
+      }
+    }, [])
+
+    // 渲染后确保有最新容器测量，并请求写入
+    useLayoutEffect(() => {
+      const rect = thumbnailContainerRef.current?.getBoundingClientRect() || null
+      if (rect) containerRectRef.current = rect
+      requestWrite()
+    })
+
+    // 监听容器位置变化，仅测量不写入，交由 rAF 写者统一处理
+    useEffect(() => {
+      const el = thumbnailContainerRef.current
+      if (!el) return
+      const measure = () => {
+        containerRectRef.current = el.getBoundingClientRect()
+        requestWrite()
+      }
+      const ro = new ResizeObserver(measure)
+      ro.observe(el)
+      measure()
+      window.addEventListener('resize', measure)
+      window.addEventListener('scroll', measure, true)
+      return () => {
+        ro.disconnect()
+        window.removeEventListener('resize', measure)
+        window.removeEventListener('scroll', measure, true)
+      }
+    }, [])
+
+    // 调试：观察是否有外部写者修改了 style（仅在启用时）
+    useEffect(() => {
+      if (!debugEnabled) return
+      const target = indicatorElRef.current
+      if (!target) return
+      const mo = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+          if (m.type === 'attributes' && m.attributeName === 'style') {
+            const t = target.style.transform || ''
+            const cssVarTy = getComputedStyle(target).getPropertyValue('--indicator-ty').trim()
+            // transform 不应被直接改写（应始终为 translate3d(0, var(--indicator-ty), 0)）
+            if (t && !t.includes('var(--indicator-ty')) {
+              console.warn('[IndicatorDebug] overwritten transform:', t)
+              if (debugPortalRef.current) {
+                debugPortalRef.current.innerHTML += `<div style=\"color:#ef4444\">overwritten transform: ${t}</div>`
+              }
+            }
+            // CSS 变量缺失也记录
+            if (!cssVarTy) {
+              console.warn('[IndicatorDebug] missing --indicator-ty')
+            }
+          }
+        }
+      })
+      mo.observe(target, { attributes: true, attributeFilter: ['style'] })
+      return () => mo.disconnect()
+    }, [debugEnabled])
+
+    // 监听滚动位置变化：capture+passive，仅入队目标值
     useEffect(() => {
       const scrollContainer = scrollContainerRef.current
       if (!scrollContainer) return
-
       const handleScroll = () => {
-        if (!isDragging) {
-          setCurrentScrollTop(scrollContainer.scrollTop)
-        }
+        if (isDragging) return
+        const next = scrollContainer.scrollTop
+        enqueueScrollTop(next)
+        setCurrentScrollTop(next)
+        console.log('滚动同步(handleScroll):', { scrollTop: next })
       }
-
-      scrollContainer.addEventListener('scroll', handleScroll)
-      return () => scrollContainer.removeEventListener('scroll', handleScroll)
+      scrollContainer.addEventListener('scroll', handleScroll, { capture: true, passive: true } as any)
+      return () => scrollContainer.removeEventListener('scroll', handleScroll as any, { capture: true } as any)
     }, [isDragging])
     
     // 防止拖拽结束后被滚动事件重置
@@ -767,10 +940,10 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
       }
     }, [isDragging, dragScrollTop])
     
-    // 调试：打印状态变化
-    useEffect(() => {
-      console.log('缩略图状态变化:', { isDragging, currentScrollTop, dragScrollTop })
-    }, [isDragging, currentScrollTop, dragScrollTop])
+    // // 调试：打印状态变化
+    // useEffect(() => {
+    //   console.log('缩略图状态变化:', { isDragging, currentScrollTop, dragScrollTop })
+    // }, [isDragging, currentScrollTop, dragScrollTop])
 
     // 如果没有数据或隐藏缩略图，返回占位元素而不是null
     if (fileLines.length === 0) {
@@ -784,62 +957,55 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
     const thumbnailItemHeight = Math.max(1, itemHeight * thumbnailScale) // 最小1px高度
 
     // 计算可见区域在缩略图中的位置
-    const effectiveScrollTop = isDragging ? dragScrollTop : currentScrollTop
-    const visibleStart = (effectiveScrollTop / itemHeight) * thumbnailItemHeight
-    const visibleHeight = (containerHeight / itemHeight) * thumbnailItemHeight
+    // 可见位置与高度改由 rAF 写者通过 CSS 变量与 rect 统一写入
     
-    // 调试：打印位置计算
-    console.log('蓝色指示器位置计算:', {
-      isDragging,
-      effectiveScrollTop,
-      visibleStart,
-      visibleHeight,
-      itemHeight,
-      thumbnailItemHeight,
-      containerHeight
-    })
 
     // 处理缩略图点击和拖拽
     const handleThumbnailClick = (event: React.MouseEvent) => {
       if (!scrollContainerRef.current) return
       
-      const rect = event.currentTarget.getBoundingClientRect()
-      const clickY = event.clientY - rect.top
-      const clickRatio = clickY / rect.height
+      const rect = (thumbnailInnerRef.current ?? event.currentTarget).getBoundingClientRect()
+      const clickY = Math.max(0, Math.min(event.clientY - rect.top, rect.height))
+      const clickRatio = rect.height > 0 ? (clickY / rect.height) : 0
       const targetScrollTop = clickRatio * (fileLines.length * itemHeight)
       
-      // 立即更新滚动位置状态，避免蓝色指示器延迟
+      // 入队等待 rAF 写者统一写入
+      updateIndicatorTop(targetScrollTop)
       setCurrentScrollTop(targetScrollTop)
-      
-      scrollContainerRef.current.scrollTo({
-        top: targetScrollTop,
-        behavior: 'smooth'
-      })
+      scrollContainerRef.current.scrollTop = targetScrollTop
     }
 
     // 处理缩略图拖拽
     const handleThumbnailMouseDown = (event: React.MouseEvent) => {
       if (!scrollContainerRef.current) return
       
-      const rect = event.currentTarget.getBoundingClientRect()
+      const rect = (thumbnailInnerRef.current ?? event.currentTarget).getBoundingClientRect()
       setIsDragging(true)
       
       let finalScrollTop = 0 // 保存最终滚动位置
       
       const handleMouseMove = (e: MouseEvent) => {
-        const currentY = e.clientY - rect.top
-        const clickRatio = currentY / rect.height
+        e.preventDefault()
+        const currentY = Math.max(0, Math.min(e.clientY - rect.top, rect.height))
+        const clickRatio = rect.height > 0 ? (currentY / rect.height) : 0
         const targetScrollTop = clickRatio * (fileLines.length * itemHeight)
         const newScrollTop = Math.max(0, Math.min(targetScrollTop, (fileLines.length - 1) * itemHeight))
         
         // 保存最终滚动位置
         finalScrollTop = newScrollTop
         
-        // 实时更新拖拽位置状态，用于蓝色指示器跟随
+        // 实时更新拖拽位置状态
         setDragScrollTop(newScrollTop)
-        scrollContainerRef.current!.scrollTop = newScrollTop
-        
-        console.log('拖拽中:', { currentY, clickRatio, targetScrollTop, newScrollTop })
+        enqueueScrollTop(newScrollTop)
+        if (scrollContainerRef.current) {
+          scrollContainerRef.current.scrollTop = newScrollTop
+        }
+        console.log('拖拽中(handleMouseMove):', {
+          currentY,
+          clickRatio,
+          newScrollTop,
+          translateY: indicatorTranslateYRef.current
+        })
       }
       
       const handleMouseUp = () => {
@@ -848,6 +1014,7 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
         // 先设置最终位置，再结束拖拽状态
         setDragScrollTop(finalScrollTop)
         setCurrentScrollTop(finalScrollTop)
+        enqueueScrollTop(finalScrollTop)
         
         // 延迟结束拖拽状态，确保状态更新完成
         setTimeout(() => {
@@ -870,7 +1037,7 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
         return (
           <div
             key={index}
-            className={`absolute w-full ${
+            className={`absolute z-0 w-full ${
               line.type === 'added' ? 'bg-green-300 dark:bg-green-600' :
               line.type === 'deleted' ? 'bg-red-300 dark:bg-red-600' :
               line.type === 'modified' ? 'bg-orange-300 dark:bg-orange-600' :
@@ -888,7 +1055,9 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
     }
 
     return (
+      <>
       <div 
+        ref={thumbnailContainerRef}
         className={`absolute right-0 top-0 w-16 h-full bg-gray-100 dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700 overflow-hidden select-none transition-opacity duration-200 ${
           showThumbnail ? 'opacity-100 cursor-pointer' : 'opacity-0 pointer-events-none'
         }`}
@@ -896,21 +1065,33 @@ export function VSCodeDiff({ diff, filePath, repoPath }: VSCodeDiffProps) {
         onMouseDown={showThumbnail ? handleThumbnailMouseDown : undefined}
         title={showThumbnail ? "点击或拖拽跳转到对应位置" : undefined}
       >
+        {/* 调试开关与面板（不阻拦交互） */}
+        <button
+          type="button"
+          className="absolute top-1 -left-8 z-[10000] text-[10px] px-1 py-0.5 bg-gray-200 dark:bg-gray-700 rounded shadow pointer-events-auto"
+          title="调试开关"
+          onClick={(e) => { e.stopPropagation(); setDebugEnabled(v => !v) }}
+        >
+          {debugEnabled ? '🐛 on' : '🐛 off'}
+        </button>
+        {/* 调试面板移至全局 portal，避免与缩略图重合 */}
         {/* 缩略图内容 */}
-        <div className="relative w-full" style={{ height: `${fileLines.length * thumbnailItemHeight}px` }}>
+        <div ref={thumbnailInnerRef} className="relative w-full" style={{ height: `${fileLines.length * thumbnailItemHeight}px` }}>
           {renderThumbnailLines()}
           
-          {/* 可见区域指示器 */}
-          <div
-            className="absolute w-full bg-blue-400 bg-opacity-60 border border-blue-500 shadow-sm"
-            style={{
-              top: `${visibleStart}px`,
-              height: `${Math.max(visibleHeight, 4)}px`, // 最小4px高度
-              minHeight: '4px'
-            }}
-          />
+          {/* 内部指示框已移除，改为使用 fixed portal */}
         </div>
       </div>
+      {/* indicator 由自管控 DOM 挂载到 body，不再通过 createPortal 渲染 */}
+      {debugEnabled && createPortal(
+        <div
+          ref={debugPortalRef}
+          className="fixed z-[10000] pointer-events-none text-[10px] leading-[1.1] p-1 rounded bg-white/90 dark:bg-black/60 text-gray-800 dark:text-gray-200 shadow"
+          style={{ maxWidth: '16rem' }}
+        />,
+        document.body
+      )}
+      </>
     )
   }
 
