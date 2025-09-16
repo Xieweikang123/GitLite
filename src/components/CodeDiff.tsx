@@ -990,9 +990,11 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       )
     }
 
-    const thumbnailHeight = Math.min(containerHeight, 300) // 缩略图最大高度
-    const thumbnailScale = thumbnailHeight / (fileLines.length * itemHeight)
-    const thumbnailItemHeight = Math.max(1, itemHeight * thumbnailScale) // 最小1px高度
+    // 使用与指示框一致的实际容器高度进行缩放，避免与指示框不匹配
+    const rectH = containerRectRef.current?.height
+      ?? (scrollContainerRef.current?.clientHeight ?? containerHeight)
+    const thumbnailHeight = Math.max(1, rectH)
+    // 比例可内联计算，无需单独变量
 
     // 计算可见区域在缩略图中的位置
     // 可见位置与高度改由 rAF 写者通过 CSS 变量与 rect 统一写入
@@ -1064,21 +1066,16 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         console.log('拖拽中(handleMouseMove):', { currentY, ty, p, newScrollTop, translateY: indicatorTranslateYRef.current })
       }
       
-      const handleMouseUp = (e: MouseEvent) => {
+      const handleMouseUp = () => {
         console.log('拖拽结束，最终位置:', finalScrollTop)
         
         // 若无明显移动，当作点击：用起点计算一次
         if (!moved) {
           const thumbnailHeight = rect.height
           const totalContentPx = Math.max(1, fileLines.length * itemHeight)
-          const indicatorHeightPx = Math.min(
-            thumbnailHeight,
-            Math.max(4, Math.round(((scrollContainerRef.current?.clientHeight ?? containerHeight) / totalContentPx) * thumbnailHeight))
-          )
-          const trackHeight = Math.max(0, thumbnailHeight - indicatorHeightPx)
+          // 计算点击比例 p（与拖拽一致），避免使用未读变量
           const clickY = Math.max(0, Math.min(startY - rect.top, thumbnailHeight))
           const p = thumbnailHeight > 0 ? Math.min(1, Math.max(0, clickY / thumbnailHeight)) : 0
-          const ty = trackHeight * p
           const scrollMax = Math.max(1, totalContentPx - (scrollContainerRef.current?.clientHeight ?? containerHeight))
           finalScrollTop = p * scrollMax
         }
@@ -1103,24 +1100,63 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
 
     // 统一的渲染逻辑：始终渲染所有行，但通过透明度区分
     const renderThumbnailLines = () => {
-      return fileLines.map((line, index) => {
+      // 仅按“更改块”绘制色条，避免未修改行造成误导
+      // 总行数用于比例，但下方改为像素映射后不再需要
+      const bars: Array<{ startIdx: number; endIdx: number; type: FileLine['type']; changeIndex?: number }> = []
+      let i = 0
+      while (i < fileLines.length) {
+        const line = fileLines[i]
         const isChanged = line.type === 'added' || line.type === 'deleted' || line.type === 'modified'
-        
+        if (!isChanged) {
+          i++
+          continue
+        }
+        const start = i
+        const thisChangeIndex = line.changeIndex
+        const thisType = line.type
+        // 合并连续的更改行（同一个 changeIndex 视为同一块）
+        while (
+          i + 1 < fileLines.length &&
+          (fileLines[i + 1].type === 'added' || fileLines[i + 1].type === 'deleted' || fileLines[i + 1].type === 'modified') &&
+          fileLines[i + 1].changeIndex === thisChangeIndex
+        ) {
+          i++
+        }
+        const end = i
+        bars.push({ startIdx: start, endIdx: end, type: thisType, changeIndex: thisChangeIndex })
+        i++
+      }
+
+      // 让色块使用与指示框一致的“trackHeight”坐标系，确保对齐
+      const viewportPx = scrollContainerRef.current?.clientHeight ?? containerHeight
+      const totalContentPx = Math.max(1, fileLines.length * itemHeight)
+      const indicatorHeightPx = Math.min(
+        thumbnailHeight,
+        Math.max(4, Math.round((viewportPx / totalContentPx) * thumbnailHeight))
+      )
+      const trackHeight = Math.max(0, thumbnailHeight - indicatorHeightPx)
+      const scrollMax = Math.max(1, totalContentPx - viewportPx)
+
+      return bars.map((bar, idx) => {
+        const linesCount = (bar.endIdx - bar.startIdx + 1)
+        const startTopPx = bar.startIdx * itemHeight
+        const blockHeightPx = Math.max(itemHeight, linesCount * itemHeight)
+        // 轻微下移一个偏置，使指示块与彩色块位置更直观（用户无需再向下滚动一点）
+        const lineBiasPx = itemHeight * 0.5
+        const top = trackHeight * Math.min(1, Math.max(0, (startTopPx - lineBiasPx) / scrollMax))
+        const height = Math.max(2, trackHeight * Math.min(1, blockHeightPx / scrollMax))
+        const cls = bar.type === 'added'
+          ? 'bg-green-300 dark:bg-green-600'
+          : bar.type === 'deleted'
+          ? 'bg-red-300 dark:bg-red-600'
+          : 'bg-orange-300 dark:bg-orange-600'
+        const isCurrent = bar.changeIndex === currentChangeIndex
         return (
           <div
-            key={index}
-            className={`absolute z-0 w-full ${
-              line.type === 'added' ? 'bg-green-300 dark:bg-green-600' :
-              line.type === 'deleted' ? 'bg-red-300 dark:bg-red-600' :
-              line.type === 'modified' ? 'bg-orange-300 dark:bg-orange-600' :
-              'bg-gray-200 dark:bg-gray-700'
-            } ${line.changeIndex === currentChangeIndex ? 'ring-1 ring-blue-400' : ''}`}
-            style={{
-              top: `${index * thumbnailItemHeight}px`,
-              height: `${thumbnailItemHeight}px`,
-              opacity: isChanged ? 1 : 0.3
-            }}
-            title={`行 ${line.lineNumber}: ${line.type === 'added' ? '添加' : line.type === 'deleted' ? '删除' : line.type === 'modified' ? '修改' : '未修改'}`}
+            key={idx}
+            className={`absolute z-0 w-full ${cls} ${isCurrent ? 'ring-1 ring-blue-400' : ''}`}
+            style={{ top: `${top}px`, height: `${height}px`, opacity: 1 }}
+            title={`更改块 ${String(bar.changeIndex ?? '')}`}
           />
         )
       })
@@ -1148,7 +1184,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         </button>
         {/* 调试面板移至全局 portal，避免与缩略图重合 */}
         {/* 缩略图内容 */}
-        <div ref={thumbnailInnerRef} className="relative w-full" style={{ height: `${fileLines.length * thumbnailItemHeight}px` }}>
+        <div ref={thumbnailInnerRef} className="relative w-full" style={{ height: `${Math.max(thumbnailHeight, 1)}px` }}>
           {renderThumbnailLines()}
           
           {/* 内部指示框已移除，改为使用 fixed portal */}

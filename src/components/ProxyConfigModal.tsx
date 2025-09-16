@@ -161,12 +161,15 @@ export function ProxyConfigModal({ isOpen, onClose }: ProxyConfigModalProps) {
                       onValueChange={(value) => handleInputChange('protocol', value)}
                     >
                       <SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="http">HTTP</SelectItem>
-                          <SelectItem value="https">HTTPS</SelectItem>
-                          <SelectItem value="socks5">SOCKS5</SelectItem>
-                        </SelectContent>
+                        {config.protocol === 'http' && 'HTTP'}
+                        {config.protocol === 'https' && 'HTTPS'}
+                        {config.protocol === 'socks5' && 'SOCKS5'}
                       </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="http">HTTP</SelectItem>
+                        <SelectItem value="https">HTTPS</SelectItem>
+                        <SelectItem value="socks5">SOCKS5</SelectItem>
+                      </SelectContent>
                     </Select>
                   </div>
 

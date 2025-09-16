@@ -1450,7 +1450,14 @@ async fn push_changes_with_realtime_logs(
     }));
 
     let proxy_config = match get_proxy_config().await {
-        Ok((config, _is_from_git)) => {
+        Ok((config, is_from_git)) => {
+            // 配置来源
+            let _ = window.emit("push-log", serde_json::json!({
+                "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+                "level": "INFO",
+                "message": if is_from_git { "代理配置来源: Git 全局配置" } else { "代理配置来源: 应用本地配置" }
+            }));
+
             if config.enabled {
                 let _ = window.emit("push-log", serde_json::json!({
                     "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
@@ -1491,6 +1498,20 @@ async fn push_changes_with_realtime_logs(
             "message": format!("设置代理环境变量失败: {}", e)
         }));
     }
+
+    // 输出当前生效的代理环境变量，便于排查是否真正应用
+    let http_proxy = std::env::var("http_proxy").ok();
+    let https_proxy = std::env::var("https_proxy").ok();
+    let all_proxy = std::env::var("all_proxy").ok();
+    let no_proxy = std::env::var("no_proxy").ok();
+    let _ = window.emit("push-log", serde_json::json!({
+        "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+        "level": "INFO",
+        "message": format!(
+            "环境变量 | http_proxy={:?} https_proxy={:?} all_proxy={:?} no_proxy={:?}",
+            http_proxy, https_proxy, all_proxy, no_proxy
+        )
+    }));
 
     let _ = window.emit("push-log", serde_json::json!({
         "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
