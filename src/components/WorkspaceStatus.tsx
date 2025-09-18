@@ -6,6 +6,7 @@ import { Badge } from './ui/badge'
 import { FileChange } from '../types/git'
 import { FileDiffModal } from './FileDiffModal'
 import { Eye, Archive, ArchiveRestore, Trash2 } from 'lucide-react'
+import { shortenPathMiddle } from '../lib/utils'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 
 interface WorkspaceStatusProps {
@@ -666,7 +667,7 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
                     {getStatusText(file.status)}
                   </Badge>
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-mono break-all">{file.path}</div>
+                    <div className="text-sm font-mono truncate" title={file.path}>{shortenPathMiddle(file.path, 56)}</div>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
                     <Button
@@ -718,7 +719,7 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
                     {getStatusText(file.status)}
                   </Badge>
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-mono break-all">{file.path}</div>
+                    <div className="text-sm font-mono truncate" title={file.path}>{shortenPathMiddle(file.path, 56)}</div>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
                     <Button
@@ -757,7 +758,7 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
                 <div key={index} className="flex items-start gap-2 p-2 border rounded">
                   <Badge variant="outline" className="flex-shrink-0">未跟踪</Badge>
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-mono break-all">{file}</div>
+                    <div className="text-sm font-mono truncate" title={file}>{shortenPathMiddle(file, 56)}</div>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
                     <Button

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react' 
 import { useGit } from './hooks/useGit'
 import { useDarkMode } from './hooks/useDarkMode'
 import { invoke } from '@tauri-apps/api/tauri'
@@ -14,6 +14,7 @@ import { ProxyConfigModal } from './components/ProxyConfigModal'
 import { CommitInfo, FileChange } from './types/git'
 
 function App() {
+  // 旧的三栏聚焦状态已废弃，保留为将来扩展可用；当前用 tab 切换
   const { 
     repoInfo, 
     loading, 
@@ -329,6 +330,8 @@ function App() {
     }
   }, [repoInfo])
 
+  const [activeTab, setActiveTab] = useState<'workspace' | 'commits'>('workspace')
+
   return (
     <div className="min-h-screen bg-background">
       {/* 菜单工具栏 */}
@@ -363,9 +366,31 @@ function App() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-[320px_minmax(500px,620px)_1fr] gap-6">
-          {/* 左侧：操作区（提交、暂存、未跟踪） */}
-          <div className="min-w-0">
+        {/* 顶部 Tab 切换 */}
+        <div className="mb-4 border-b border-border flex items-center gap-2">
+          <button
+            type="button"
+            className={`px-3 py-2 text-sm rounded-t-md border-b-2 ${
+              activeTab === 'workspace' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+            onClick={() => setActiveTab('workspace')}
+          >
+            工作区
+          </button>
+          <button
+            type="button"
+            className={`px-3 py-2 text-sm rounded-t-md border-b-2 ${
+              activeTab === 'commits' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+            onClick={() => setActiveTab('commits')}
+          >
+            提交
+          </button>
+        </div>
+
+        {/* Tab 内容 */}
+        {activeTab === 'workspace' ? (
+          <div>
             <OperationsPanel
               repoInfo={repoInfo}
               onRefresh={handleRefresh}
@@ -373,43 +398,42 @@ function App() {
               onGitDiagnostics={handleGitDiagnostics}
             />
           </div>
-
-          {/* 中间：仅提交历史（核心） */}
-          <div className="space-y-6 max-w-[720px] w-full">
-            {repoInfo ? (
-              <CommitList
-                commits={allCommits}
-                onCommitSelect={handleCommitSelect}
-                onLoadMore={handleLoadMore}
-                hasMore={hasMoreCommits}
-                loading={loadingMore}
-                aheadCount={repoInfo?.ahead ?? 0}
-              />
-            ) : (
-              <div className="text-center py-12">
-                <p className="text-muted-foreground">
-                  请先选择一个 Git 仓库
-                </p>
-              </div>
-            )}
+        ) : (
+          <div className="space-y-6">
+            {/* 提交列表 */}
+            <div>
+              {repoInfo ? (
+                <CommitList
+                  commits={allCommits}
+                  onCommitSelect={handleCommitSelect}
+                  onLoadMore={handleLoadMore}
+                  hasMore={hasMoreCommits}
+                  loading={loadingMore}
+                  aheadCount={repoInfo?.ahead ?? 0}
+                />
+              ) : (
+                <div className="text-center py-12">
+                  <p className="text-muted-foreground">请先选择一个 Git 仓库</p>
+                </div>
+              )}
+            </div>
+            {/* 文件列表（选中提交后显示） */}
+            <div>
+              {selectedCommit ? (
+                <FileList
+                  files={commitFiles}
+                  selectedFile={selectedFile}
+                  onFileSelect={handleFileSelect}
+                  loading={loading}
+                />
+              ) : (
+                <div className="text-center py-8">
+                  <p className="text-muted-foreground">选择一个提交以查看文件变更</p>
+                </div>
+              )}
+            </div>
           </div>
-
-          {/* 右侧：文件变更列表（替代原 Diff 区域） */}
-          <div>
-            {selectedCommit ? (
-              <FileList
-                files={commitFiles}
-                selectedFile={selectedFile}
-                onFileSelect={handleFileSelect}
-                loading={loading}
-              />
-            ) : (
-              <div className="text-center py-12">
-                <p className="text-muted-foreground">选择一个提交以查看文件变更</p>
-              </div>
-            )}
-          </div>
-        </div>
+        )}
       </div>
       
       {/* 日志弹窗 */}
@@ -430,4 +454,4 @@ function App() {
   )
 }
 
-export default App
+export default App 

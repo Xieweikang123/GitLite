@@ -779,17 +779,22 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         thumbnailHeight,
         Math.max(4, Math.round((viewportPx / totalContentPx) * thumbnailHeight))
       )
+      // 轨道高度：缩略图总高度减去蓝色可视指示块高度
       const trackHeight = Math.max(0, thumbnailHeight - indicatorHeightPx)
       const usedScrollTop = nextScrollTop ?? (scrollContainerRef.current?.scrollTop ?? 0)
       const scrollMax = Math.max(1, totalContentPx - viewportPx)
+      // 将代码区滚动位置映射到缩略图轨道比例 [0,1]
       const p = Math.min(1, Math.max(0, usedScrollTop / scrollMax))
+      // 指示块位移（像素）= 比例 × 轨道高度
       const ty = Math.round(trackHeight * p)
       // 写入一次性样式（含视口夹取）
       const viewportH = window.innerHeight || document.documentElement.clientHeight || 0
+      // 指示块的 fixed 基准 top，限制在视口内
       const topBase = Math.max(0, Math.min(rect.top, Math.max(0, viewportH - indicatorHeightPx)))
       indicator.style.top = `${topBase}px`
       indicator.style.left = `${rect.left}px`
       indicator.style.width = `${rect.width}px`
+      // 通过 CSS 变量驱动 fixed 指示块的位置
       indicator.style.setProperty('--indicator-ty', `${ty}px`)
       indicator.style.setProperty('--indicator-h', `${indicatorHeightPx}px`)
       // 强制确保 transform 使用 css 变量，防止被外部覆盖成 0px/none
@@ -959,7 +964,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           containerRectRef.current = thumbnailContainerRef.current.getBoundingClientRect()
           requestWrite()
         }
-        console.log('滚动同步(handleScroll):', { scrollTop: next })
       }
       scrollContainer.addEventListener('scroll', handleScroll, { capture: true, passive: true } as any)
       return () => scrollContainer.removeEventListener('scroll', handleScroll as any, { capture: true } as any)
@@ -1023,6 +1027,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           thumbnailHeight,
           Math.max(4, Math.round((viewportPx / totalContentPx) * thumbnailHeight))
         )
+        // 轨道高度：缩略图总高度减去蓝色可视指示块高度
         const trackHeight = Math.max(0, thumbnailHeight - indicatorHeightPx)
         const clickY = Math.max(0, Math.min(startY - rect.top, thumbnailHeight))
         // 比例映射：p = clickY / thumbnailHeight，ty = trackHeight * p
@@ -1045,9 +1050,11 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           thumbnailHeight,
           Math.max(4, Math.round((containerHeight / totalContentPx) * thumbnailHeight))
         )
+        // 轨道高度：缩略图总高度减去蓝色可视指示块高度
         const trackHeight = Math.max(0, thumbnailHeight - indicatorHeightPx)
         const currentY = Math.max(0, Math.min(e.clientY - rect.top, thumbnailHeight))
         const p = thumbnailHeight > 0 ? Math.min(1, Math.max(0, currentY / thumbnailHeight)) : 0
+        // 将代码区滚动位置映射到缩略图轨道比例 [0,1]
         const ty = trackHeight * p
         const viewportPx2 = scrollContainerRef.current?.clientHeight ?? containerHeight
         const scrollMax = Math.max(1, totalContentPx - viewportPx2)
@@ -1067,7 +1074,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       }
       
       const handleMouseUp = () => {
-        console.log('拖拽结束，最终位置:', finalScrollTop)
         
         // 若无明显移动，当作点击：用起点计算一次
         if (!moved) {
@@ -1100,50 +1106,62 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
 
     // 统一的渲染逻辑：始终渲染所有行，但通过透明度区分
     const renderThumbnailLines = () => {
-      // 仅按“更改块”绘制色条，避免未修改行造成误导
+      // 仅按"更改块"绘制色条，避免未修改行造成误导
       // 总行数用于比例，但下方改为像素映射后不再需要
       const bars: Array<{ startIdx: number; endIdx: number; type: FileLine['type']; changeIndex?: number }> = []
       let i = 0
       while (i < fileLines.length) {
         const line = fileLines[i]
-        const isChanged = line.type === 'added' || line.type === 'deleted' || line.type === 'modified'
+        // 只对新增/删除绘制色条；忽略 modified
+        const isChanged = line.type === 'added' || line.type === 'deleted'
         if (!isChanged) {
           i++
           continue
         }
         const start = i
         const thisChangeIndex = line.changeIndex
-        const thisType = line.type
-        // 合并连续的更改行（同一个 changeIndex 视为同一块）
+        // 合并连续的同类型更改行（在同一个 changeIndex 中，类型变化即另起一个色块）
+        const thisType = line.type // 'added' | 'deleted'
         while (
           i + 1 < fileLines.length &&
-          (fileLines[i + 1].type === 'added' || fileLines[i + 1].type === 'deleted' || fileLines[i + 1].type === 'modified') &&
+          (fileLines[i + 1].type === thisType) &&
           fileLines[i + 1].changeIndex === thisChangeIndex
-        ) {
-          i++
-        }
+        ) { i++ }
         const end = i
         bars.push({ startIdx: start, endIdx: end, type: thisType, changeIndex: thisChangeIndex })
         i++
       }
 
-      // 让色块使用与指示框一致的“trackHeight”坐标系，确保对齐
+      // 让色块使用与指示框一致的"trackHeight"坐标系，确保对齐
       const viewportPx = scrollContainerRef.current?.clientHeight ?? containerHeight
       const totalContentPx = Math.max(1, fileLines.length * itemHeight)
       const indicatorHeightPx = Math.min(
         thumbnailHeight,
         Math.max(4, Math.round((viewportPx / totalContentPx) * thumbnailHeight))
       )
-      const trackHeight = Math.max(0, thumbnailHeight - indicatorHeightPx)
+      // 彩色条可活动的轨道高度
+      // const trackHeight = Math.max(0, thumbnailHeight - indicatorHeightPx)
+      const trackHeight = Math.max(0, thumbnailHeight )
       const scrollMax = Math.max(1, totalContentPx - viewportPx)
 
       return bars.map((bar, idx) => {
+        // 更改块行数
         const linesCount = (bar.endIdx - bar.startIdx + 1)
+        // 代码区：更改块起点（像素）= 起始索引 × 行高
         const startTopPx = bar.startIdx * itemHeight
+        // 代码区：更改块高度（像素）
         const blockHeightPx = Math.max(itemHeight, linesCount * itemHeight)
-        // 轻微下移一个偏置，使指示块与彩色块位置更直观（用户无需再向下滚动一点）
+        // 视觉偏置：将彩色条略微下移半行
         const lineBiasPx = itemHeight * 0.5
-        const top = trackHeight * Math.min(1, Math.max(0, (startTopPx - lineBiasPx) / scrollMax))
+        // 起点校正：末尾贴底，否则减去偏置并做下界保护
+        const adjustedStartPx = startTopPx >= scrollMax
+          ? scrollMax
+          : Math.max(0, startTopPx - lineBiasPx)
+        // top 映射：把代码区起点按比例压缩到缩略图轨道
+        const top = trackHeight * Math.min(1, Math.max(0, adjustedStartPx / scrollMax))
+        //log
+        // console.log('[Thumbnail] renderThumbnailLines', { idx, type: bar.type, changeIndex: bar.changeIndex, startTopPx, adjustedStartPx, scrollMax, trackHeight })
+        // 高度映射：把代码区块高度按比例压缩到轨道，并保证最小 2px 可见
         const height = Math.max(2, trackHeight * Math.min(1, blockHeightPx / scrollMax))
         const cls = bar.type === 'added'
           ? 'bg-green-300 dark:bg-green-600'
@@ -1154,7 +1172,8 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         return (
           <div
             key={idx}
-            className={`absolute z-0 w-full ${cls} ${isCurrent ? 'ring-1 ring-blue-400' : ''}`}
+            className={`absolute z-0 w-full gitlite-thumb-bar ${cls} ${isCurrent ? 'ring-1 ring-blue-400' : ''}`}
+            data-bar-idx={idx}
             style={{ top: `${top}px`, height: `${height}px`, opacity: 1 }}
             title={`更改块 ${String(bar.changeIndex ?? '')}`}
           />
@@ -1166,42 +1185,33 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       <>
       <div 
         ref={thumbnailContainerRef}
-        className={`absolute right-0 top-0 w-16 h-full bg-gray-100 dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700 overflow-hidden select-none transition-opacity duration-200 ${
-          showThumbnail ? 'opacity-100 cursor-pointer' : 'opacity-0 pointer-events-none'
-        }`}
-        onClick={undefined}
-        onMouseDown={showThumbnail ? handleThumbnailMouseDown : undefined}
-        title={showThumbnail ? "点击或拖拽跳转到对应位置" : undefined}
-      >
-        {/* 调试开关与面板（不阻拦交互） */}
-        <button
-          type="button"
-          className="absolute top-1 -left-8 z-[10000] text-[10px] px-1 py-0.5 bg-gray-200 dark:bg-gray-700 rounded shadow pointer-events-auto"
-          title="调试开关"
-          onClick={(e) => { e.stopPropagation(); setDebugEnabled(v => !v) }}
-        >
-          {debugEnabled ? '🐛 on' : '🐛 off'}
-        </button>
-        {/* 调试面板移至全局 portal，避免与缩略图重合 */}
-        {/* 缩略图内容 */}
-        <div ref={thumbnailInnerRef} className="relative w-full" style={{ height: `${Math.max(thumbnailHeight, 1)}px` }}>
-          {renderThumbnailLines()}
-          
-          {/* 内部指示框已移除，改为使用 fixed portal */}
-        </div>
-      </div>
-      {/* indicator 由自管控 DOM 挂载到 body，不再通过 createPortal 渲染 */}
-      {debugEnabled && createPortal(
-        <div
-          ref={debugPortalRef}
-          className="fixed z-[10000] pointer-events-none text-[10px] leading-[1.1] p-1 rounded bg-white/90 dark:bg-black/60 text-gray-800 dark:text-gray-200 shadow"
-          style={{ maxWidth: '16rem' }}
-        />,
-        document.body
-      )}
-      </>
-    )
-  }
+        className={`absolute right-0 top-0 w-16 h-full bg-gray-100 dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700 overflow-hidden select-none transition-opacity duration-200 gitlite-thumb-container ${
+           showThumbnail ? 'opacity-100 cursor-pointer' : 'opacity-0 pointer-events-none'
+         }`}
+         onClick={undefined}
+         onMouseDown={showThumbnail ? handleThumbnailMouseDown : undefined}
+         title={showThumbnail ? "点击或拖拽跳转到对应位置" : undefined}
+       >
+         {/* 调试面板移至全局 portal，避免与缩略图重合（按钮已移除） */}
+         {/* 缩略图内容 */}
+         <div ref={thumbnailInnerRef} className="relative w-full gitlite-thumb-inner" style={{ height: `${Math.max(thumbnailHeight, 1)}px` }}>
+           {renderThumbnailLines()}
+           
+           {/* 内部指示框已移除，改为使用 fixed portal */}
+         </div>
+       </div>
+       {/* indicator 由自管控 DOM 挂载到 body，不再通过 createPortal 渲染 */}
+       {debugEnabled && createPortal(
+         <div
+           ref={debugPortalRef}
+           className="fixed z-[10000] pointer-events-none text-[10px] leading-[1.1] p-1 rounded bg-white/90 dark:bg-black/60 text-gray-800 dark:text-gray-200 shadow"
+           style={{ maxWidth: '16rem' }}
+         />,
+         document.body
+       )}
+       </>
+     )
+   }
 
   const renderUnifiedView = () => {
     // 统一的渲染逻辑，避免闪烁
@@ -1520,21 +1530,44 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
             复制
           </Button>
           
-          {/* 调试按钮 */}
+          {/* 打印关键尺寸信息 */}
           <Button
             variant="outline"
             size="sm"
             onClick={() => {
-              console.log('=== 调试信息 ===')
-              console.log('原始diff数据:', diff)
-              console.log('当前fileLines:', fileLines)
-              console.log('文件路径:', filePath)
-              console.log('仓库路径:', repoPath)
-              console.log('当前视图模式:', viewMode)
+              // 读取真实 DOM：缩略图高度
+              const thumbEl = document.querySelector('.gitlite-thumb-container') as HTMLElement | null
+              const thumbRectH = thumbEl?.getBoundingClientRect().height ?? 0
+              // 读取真实 DOM：指示块 CSS 变量（高度与位移）
+              const indicator = (document.querySelector('.gitlite-indicator') as HTMLElement) || null
+              const computed = indicator ? getComputedStyle(indicator) : null
+              const indicatorHVar = computed ? computed.getPropertyValue('--indicator-h').trim() : ''
+              const indicatorTyVar = computed ? computed.getPropertyValue('--indicator-ty').trim() : ''
+              const indicatorH = indicatorHVar ? parseFloat(indicatorHVar) : null
+              const indicatorTy = indicatorTyVar ? parseFloat(indicatorTyVar) : null
+
+              // 读取真实 DOM：每个彩色条的 top/height
+              const barNodes = document.querySelectorAll('.gitlite-thumb-inner .gitlite-thumb-bar') as NodeListOf<HTMLElement>
+              const bars = Array.from(barNodes).map((node) => {
+                const idxAttr = node.getAttribute('data-bar-idx') || ''
+                const idx = idxAttr ? parseInt(idxAttr) : null
+                const style = getComputedStyle(node)
+                const topPx = parseFloat(style.top || node.style.top || '0')
+                const heightPx = parseFloat(style.height || node.style.height || `${node.offsetHeight}`)
+                return { idx, top: Math.round(topPx), height: Math.round(heightPx) }
+              })
+
+              console.log('[ThumbnailReal]', {
+                thumbnailHeight: Math.round(thumbRectH),
+                indicatorH,
+                indicatorTy,
+                bars
+              })
             }}
             className="flex items-center gap-2 text-xs"
+            title="打印真实缩略图高度、指示块与彩色条位置"
           >
-            🐛 调试
+            📏 打印信息
           </Button>
           
           {/* 缩略图切换按钮 */}
