@@ -227,7 +227,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
   // 虚拟滚动相关状态
   const [visibleRange, setVisibleRange] = useState({ start: 0, end: 100 })
   const [itemHeight] = useState(24) // 每行的高度（像素）
-  const [containerHeight, setContainerHeight] = useState(600) // 容器高度
+  const [containerHeight, setContainerHeight] = useState(384) // 容器高度（初始与旧值保持一致，后续由实际测量更新）
   const [showThumbnail, setShowThumbnail] = useState(true) // 是否显示缩略图
   
   // 添加加载状态，避免闪烁
@@ -753,6 +753,8 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     const scheduledRef = useRef<number | null>(null)
     const debugPortalRef = useRef<HTMLDivElement | null>(null)
     const lastValidRectRef = useRef<DOMRect | null>(null)
+    // 映射参数快照：用于避免不同帧造成的偏差（供调试与渲染一致复算）
+    const mappingParamsRef = useRef<{ trackHeight: number; scrollMax: number; viewportPx: number; totalContentPx: number } | null>(null)
     
     // 单一写入者：在 rAF 中统一写入（top/left/width 和 CSS 变量）
     const requestWrite = () => {
@@ -995,9 +997,14 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     }
 
     // 使用与指示框一致的实际容器高度进行缩放，避免与指示框不匹配
-    const rectH = containerRectRef.current?.height
-      ?? (scrollContainerRef.current?.clientHeight ?? containerHeight)
-    const thumbnailHeight = Math.max(1, rectH)
+    // const rectH = containerRectRef.current?.height
+    //   ?? (scrollContainerRef.current?.clientHeight ?? containerHeight)
+    // const thumbnailHeight = Math.max(1, rectH)
+
+    const thumbnailHeight = 384
+
+    //log
+    console.log('[Thumbnail] handleThumbnailMouseDown 1', { thumbnailHeight })
     // 比例可内联计算，无需单独变量
 
     // 计算可见区域在缩略图中的位置
@@ -1140,8 +1147,9 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         Math.max(4, Math.round((viewportPx / totalContentPx) * thumbnailHeight))
       )
       // 彩色条可活动的轨道高度
-      // const trackHeight = Math.max(0, thumbnailHeight - indicatorHeightPx)
-      const trackHeight = Math.max(0, thumbnailHeight )
+      const trackHeight = Math.max(0, thumbnailHeight - indicatorHeightPx)
+      //log
+      // console.log('[Thumbnail] renderThumbnailLines 12', { trackHeight, viewportPx, totalContentPx, thumbnailHeight, indicatorHeightPx })
       const scrollMax = Math.max(1, totalContentPx - viewportPx)
 
       return bars.map((bar, idx) => {
@@ -1151,30 +1159,35 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         const startTopPx = bar.startIdx * itemHeight
         // 代码区：更改块高度（像素）
         const blockHeightPx = Math.max(itemHeight, linesCount * itemHeight)
-        // 视觉偏置：将彩色条略微下移半行
-        const lineBiasPx = itemHeight * 0.5
-        // 起点校正：末尾贴底，否则减去偏置并做下界保护
-        const adjustedStartPx = startTopPx >= scrollMax
+        // 严格对齐：移除半行偏置
+        const lineBiasPx = 0
+        // 用块底贴边的方式避免最后一块"差一点点"
+        const endPx = startTopPx + blockHeightPx
+        const adjustedStartPx = endPx >= scrollMax
           ? scrollMax
           : Math.max(0, startTopPx - lineBiasPx)
         // top 映射：把代码区起点按比例压缩到缩略图轨道
         const top = trackHeight * Math.min(1, Math.max(0, adjustedStartPx / scrollMax))
         //log
-        // console.log('[Thumbnail] renderThumbnailLines', { idx, type: bar.type, changeIndex: bar.changeIndex, startTopPx, adjustedStartPx, scrollMax, trackHeight })
         // 高度映射：把代码区块高度按比例压缩到轨道，并保证最小 2px 可见
-        const height = Math.max(2, trackHeight * Math.min(1, blockHeightPx / scrollMax))
+        const height = trackHeight * Math.min(1, blockHeightPx / scrollMax)
+        // 子像素对齐：顶部向下取整，底部向上取整，保证总高不丢失，且最小 2px
+        const topPx = Math.floor(top)
+        const heightPx = Math.max(2, Math.ceil(top + height) - topPx)
         const cls = bar.type === 'added'
           ? 'bg-green-300 dark:bg-green-600'
           : bar.type === 'deleted'
           ? 'bg-red-300 dark:bg-red-600'
           : 'bg-orange-300 dark:bg-orange-600'
         const isCurrent = bar.changeIndex === currentChangeIndex
+
+
         return (
           <div
             key={idx}
             className={`absolute z-0 w-full gitlite-thumb-bar ${cls} ${isCurrent ? 'ring-1 ring-blue-400' : ''}`}
             data-bar-idx={idx}
-            style={{ top: `${top}px`, height: `${height}px`, opacity: 1 }}
+            style={{ top: `${topPx}px`, height: `${heightPx}px`, opacity: 1 }}
             title={`更改块 ${String(bar.changeIndex ?? '')}`}
           />
         )
@@ -1563,6 +1576,126 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
                 indicatorTy,
                 bars
               })
+
+              // 计算每个彩色块"应当占用的高度"（与渲染一致的映射和取整）
+              const totalContentPxForExpect = Math.max(1, fileLines.length * itemHeight)
+              const viewportPxForExpect = scrollContainerRef.current?.clientHeight ?? containerHeight
+              const scrollMaxForExpect = Math.max(1, totalContentPxForExpect - viewportPxForExpect)
+              const trackHeightForExpect = (thumbRectH && indicatorH != null) ? Math.max(0, thumbRectH - indicatorH) : Math.max(0, thumbRectH)
+
+              // 复用与渲染一致的 bars 重建（只按类型与 changeIndex 分段）
+              const barsForExpect: Array<{ startIdx: number; endIdx: number; type: FileLine['type']; changeIndex?: number }> = []
+              let k = 0
+              while (k < fileLines.length) {
+                const line = fileLines[k]
+                const isChanged = line.type === 'added' || line.type === 'deleted'
+                if (!isChanged) { k++; continue }
+                const start = k
+                const chIdx = line.changeIndex
+                const thisType = line.type
+                while (
+                  k + 1 < fileLines.length &&
+                  (fileLines[k + 1].type === thisType) &&
+                  fileLines[k + 1].changeIndex === chIdx
+                ) { k++ }
+                const end = k
+                barsForExpect.push({ startIdx: start, endIdx: end, type: thisType, changeIndex: chIdx })
+                k++
+              }
+
+              const expectedHeights = barsForExpect.map((bar, idx) => {
+                const linesCount = (bar.endIdx - bar.startIdx + 1)
+                const startTopPx = bar.startIdx * itemHeight
+                const blockHeightPx = Math.max(itemHeight, linesCount * itemHeight)
+                const lineBiasPx = 0
+                const endPx = startTopPx + blockHeightPx
+                const adjustedStartPx = endPx >= scrollMaxForExpect ? scrollMaxForExpect : Math.max(0, startTopPx - lineBiasPx)
+                const top = trackHeightForExpect * Math.min(1, Math.max(0, adjustedStartPx / scrollMaxForExpect))
+                const heightRaw = trackHeightForExpect * Math.min(1, blockHeightPx / scrollMaxForExpect)
+                const topPx = Math.floor(top)
+                const heightPx = Math.max(2, Math.ceil(top + heightRaw) - topPx)
+                return { idx, type: bar.type, expectedTop: topPx, expectedHeight: heightPx }
+              })
+
+              console.log('[ThumbnailExpect]', {
+                thumbnailHeight: Math.round(thumbRectH),
+                indicatorH,
+                trackHeight: Math.round(trackHeightForExpect),
+                expectedHeights
+              })
+
+              // 可选：对比指定 idx 的"期望位置 vs 实际 DOM 位置"
+              const idxInput = prompt('输入要对比的色条 idx（留空跳过）：')
+              if (idxInput !== null && idxInput.trim() !== '') {
+                const idxToCheck = parseInt(idxInput.trim(), 10)
+                if (!Number.isNaN(idxToCheck)) {
+                  // 重建 bars（与渲染一致：只合并 added/deleted，按类型分段）
+                  const totalContentPx = Math.max(1, fileLines.length * itemHeight)
+                  const viewportPx = scrollContainerRef.current?.clientHeight ?? containerHeight
+                  const scrollMax = Math.max(1, totalContentPx - viewportPx)
+                  // 使用真实 DOM 的轨道高度，确保坐标系一致
+                  const trackHeight = (thumbRectH && indicatorH != null) ? Math.max(0, thumbRectH - indicatorH) : Math.max(0, thumbRectH)
+
+                  const rebuilt: Array<{ startIdx: number; endIdx: number; type: FileLine['type']; changeIndex?: number }> = []
+                  let j = 0
+                  while (j < fileLines.length) {
+                    const line = fileLines[j]
+                    const isChanged = line.type === 'added' || line.type === 'deleted'
+                    if (!isChanged) { j++; continue }
+                    const start = j
+                    const chIdx = line.changeIndex
+                    const thisType = line.type
+                    while (
+                      j + 1 < fileLines.length &&
+                      (fileLines[j + 1].type === thisType) &&
+                      fileLines[j + 1].changeIndex === chIdx
+                    ) { j++ }
+                    const end = j
+                    rebuilt.push({ startIdx: start, endIdx: end, type: thisType, changeIndex: chIdx })
+                    j++
+                  }
+
+                  const target = rebuilt[idxToCheck]
+                  if (target) {
+                    const linesCount = (target.endIdx - target.startIdx + 1)
+                    const startTopPx = target.startIdx * itemHeight
+                    const blockHeightPx = Math.max(itemHeight, linesCount * itemHeight)
+                    const lineBiasPx = itemHeight * 0.5
+                    const adjustedStartPx = startTopPx >= scrollMax ? scrollMax : Math.max(0, startTopPx - lineBiasPx)
+                    const expectedTop = trackHeight * Math.min(1, Math.max(0, adjustedStartPx / scrollMax))
+                    //log
+                    console.log('[ThumbnailCompare] expectedTop', { expectedTop, adjustedStartPx, scrollMax, trackHeight })
+                    const expectedHeightRaw = trackHeight * Math.min(1, blockHeightPx / scrollMax)
+                    const expectedTopPx = Math.floor(expectedTop)
+                    const expectedHeightPx = Math.max(2, Math.ceil(expectedTop + expectedHeightRaw) - expectedTopPx)
+
+                    const node = document.querySelector(`.gitlite-thumb-inner .gitlite-thumb-bar[data-bar-idx="${idxToCheck}"]`) as HTMLElement | null
+                    const style = node ? getComputedStyle(node) : null
+                    const actualTop = style ? parseFloat(style.top || node!.style.top || '0') : null
+                    const actualHeight = style ? parseFloat(style.height || node!.style.height || `${node!.offsetHeight}`) : null
+
+                    console.log('[ThumbnailCompare]', {
+                      idx: idxToCheck,
+                      type: target.type,
+                      changeIndex: target.changeIndex,
+                      // 期望（计算值，基于与渲染一致的公式）
+                      expectedTop: expectedTopPx,
+                      expectedHeight: expectedHeightPx,
+                      // 实际（真实 DOM）
+                      actualTop: actualTop != null ? Math.round(actualTop) : null,
+                      actualHeight: actualHeight != null ? Math.round(actualHeight) : null,
+                      // 其它参考
+                      trackHeight: Math.round(trackHeight),
+                      scrollMax,
+                      startTopPx,
+                      adjustedStartPx,
+                      blockHeightPx
+                    })
+                  } else {
+                    console.warn('[ThumbnailCompare] 未找到该 idx 对应的色条:', idxToCheck)
+                  }
+                }
+              }
             }}
             className="flex items-center gap-2 text-xs"
             title="打印真实缩略图高度、指示块与彩色条位置"
@@ -1685,7 +1818,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           <div 
             ref={scrollContainerRef} 
             className={`overflow-y-auto ${showThumbnail ? 'pr-16' : ''}`}
-            style={{ height: '384px' }}
+            style={{ height: `${containerHeight}px` }}
           >
             {isLoading ? (
               <div className="p-4 text-center text-muted-foreground">

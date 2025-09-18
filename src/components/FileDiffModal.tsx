@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog' 
 import { Button } from './ui/button'
 import { VSCodeDiff } from './CodeDiff'
 
@@ -16,7 +16,6 @@ export function FileDiffModal({ isOpen, onClose, filePath, repoPath, fileType }:
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const modalContentRef = useRef<HTMLDivElement>(null)
-  const [debugEnabled, setDebugEnabled] = useState(false)
 
   useEffect(() => {
     if (isOpen && filePath && repoPath) {
@@ -137,11 +136,7 @@ export function FileDiffModal({ isOpen, onClose, filePath, repoPath, fileType }:
             {getModalTitle()}
           </DialogTitle>
           <p className="text-sm text-muted-foreground font-mono">{filePath}</p>
-          <div className="mt-2 flex items-center gap-2">
-            <Button size="sm" variant="outline" onClick={() => setDebugEnabled(v => !v)} title="切换缩略图调试面板">
-              🐛 调试 {debugEnabled ? '开' : '关'}
-            </Button>
-          </div>
+          
         </DialogHeader>
         
         <div className="flex-1 overflow-hidden">
@@ -163,7 +158,7 @@ export function FileDiffModal({ isOpen, onClose, filePath, repoPath, fileType }:
           )}
           
           {!loading && !error && diff && (
-            <VSCodeDiff diff={diff} filePath={filePath} repoPath={repoPath} debugEnabled={debugEnabled} />
+            <VSCodeDiff diff={diff} filePath={filePath} repoPath={repoPath} />
           )}
           
           {!loading && !error && !diff && (
@@ -175,4 +170,4 @@ export function FileDiffModal({ isOpen, onClose, filePath, repoPath, fileType }:
       </DialogContent>
     </Dialog>
   )
-}
+} 
