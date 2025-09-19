@@ -1,5 +1,34 @@
 # GitLite 调试指南
 
+## Thumbnail scrollbar mapping (diff bars) – engineering notes
+
+Context: The miniature diff bars in `CodeDiff.tsx` must align with code lines across the entire file and naturally snap to the visual bottom when the last line changes. A series of fixes converged to these rules that remove edge cases and avoid rounding drift.
+
+Principles
+- Single coordinate system: map bars in the thumbnail container coordinate system (`thumbnailHeight`), not the track (`thumbnailHeight - indicatorHeightPx`). The indicator height only affects the blue viewport box, not bar positions.
+- Pure mapping by total file pixels: map by `totalContentPx = fileLines.length * itemHeight` instead of `scrollMax`. This ensures the last line (endRatio = 1) lands at the container bottom.
+- Deterministic rounding: use floor for the top and ceil for the bottom so each bar fully covers its range with minimum loss.
+- Invariants: height >= 2px; 0 <= top <= containerHeight - height; clamp inputs.
+
+Formulas (container coordinates)
+- startTopPx = startIdx * itemHeight
+- blockHeightPx = max(itemHeight, (endIdx - startIdx + 1) * itemHeight)
+- startRatio = clamp01(startTopPx / totalContentPx)
+- endRatio = clamp01((startTopPx + blockHeightPx) / totalContentPx)
+- topPx = floor(thumbnailHeight * startRatio)
+- bottomPx = ceil(thumbnailHeight * endRatio)
+- heightPx = max(2, bottomPx - topPx)
+- Clamp: if topPx + heightPx > thumbnailHeight → topPx = thumbnailHeight - heightPx
+
+Do NOT
+- Do not map bars using `trackHeight` (that includes the viewport box subtraction) or `scrollMax` (viewport dependent). Both caused bottom misalignment when the last change is near EOF.
+- Do not special-case the last bar when formulas above are used; it snaps to bottom naturally.
+
+Debugging
+- Metrics log: `[ThumbMetrics]` prints `fileLinesLen, itemHeight, viewportPx, containerHeight, thumbnailHeight, indicatorHeightPx, trackHeight, totalContentPx`.
+- Bar log: `[ThumbBar]` prints `idx, type, startIdx, endIdx, startTopPx, blockHeightPx, startRatio, endRatio, topPx, bottomPx, heightPx` (first and last by default).
+- If a regression appears, verify: containerHeight used for mapping; endRatio equals 1 for last-line blocks; rounding is floor/ceil as above.
+
 ## 🔍 问题诊断步骤
 
 ### 1. 环境检查

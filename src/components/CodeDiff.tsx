@@ -221,8 +221,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
   const [isExpanded, setIsExpanded] = useState(true)
   const [currentChangeIndex, setCurrentChangeIndex] = useState(0)
   const [changeCount, setChangeCount] = useState(0)
-  // 顶部工具栏调试开关（持久显示/隐藏调试面板）
-  const [uiDebug, setUiDebug] = useState<boolean>(!!debugFromParent)
   const [viewMode, setViewMode] = useState<'unified' | 'side-by-side'>('unified')
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   
@@ -298,42 +296,16 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     }
   }, [])
 
-  // 调试：检查传入的props（只在diff变化时打印）
-  useEffect(() => {
-    console.log('VSCodeDiff props changed:', {
-      diff: diff,
-      filePath,
-      repoPath,
-      diffLength: diff?.length,
-      diffPreview: diff?.substring(0, 200) + '...'
-    })
-  }, [diff, filePath, repoPath])
+  
 
   useEffect(() => {
     if (diff) {
       setIsLoading(true) // 开始加载
       
       const startTime = performance.now()
-      console.log('Raw diff content:', diff)
-      console.log('Diff length:', diff.length)
-      console.log('First 500 chars:', diff.substring(0, 500))
       
       const parsedLines = parseDiffToFullFile(diff)
       const parseTime = performance.now() - startTime
-      console.log(`Parsed lines: ${parsedLines.length} (took ${parseTime.toFixed(2)}ms)`)
-      
-      // 检查解析结果
-      const addedLines = parsedLines.filter(line => line.type === 'added')
-      const deletedLines = parsedLines.filter(line => line.type === 'deleted')
-      const unchangedLines = parsedLines.filter(line => line.type === 'unchanged')
-      console.log(`Added lines: ${addedLines.length}, Deleted lines: ${deletedLines.length}, Unchanged lines: ${unchangedLines.length}`)
-      
-      if (addedLines.length > 0) {
-        console.log('First added line:', addedLines[0])
-      }
-      if (deletedLines.length > 0) {
-        console.log('First deleted line:', deletedLines[0])
-      }
       
       // 为更改行添加索引
       const linesWithChangeIndex = addChangeIndices(parsedLines)
@@ -346,7 +318,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       )
       const newChangeCount = uniqueChangeIndices.size
       
-      console.log('Final fileLines set:', linesWithChangeIndex.length)
+      
       
       // 批量更新状态，避免多次渲染
       const updateStates = (finalLines: FileLine[]) => {
@@ -371,7 +343,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         updateStates(linesWithChangeIndex)
       }
     } else {
-      console.log('No diff provided')
       setFileLines([])
       setChangeCount(0)
       setCurrentChangeIndex(0)
@@ -417,7 +388,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       }) as string
       
       const fileContentLines = fileContent.split('\n')
-      console.log(`File content lines: ${fileContentLines.length}`)
+      
       
       // 创建diff行的映射表，支持同一行号的多个diff行
       const diffLinesMap = new Map<number, FileLine[]>()
@@ -428,7 +399,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         diffLinesMap.get(line.lineNumber)!.push(line)
       })
       
-      console.log('🔍 diffLinesMap 内容:', Array.from(diffLinesMap.entries()).slice(0, 5))
+      
       
       // 创建完整的文件行数组
       const fullFileLines: FileLine[] = [] 
@@ -458,11 +429,11 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       }
       
       const processingTime = performance.now() - startTime
-      console.log(`Full file lines: ${fullFileLines.length} (processing took ${processingTime.toFixed(2)}ms)`)
+      
       
       // 检查第一行的处理结果
       const firstLines = fullFileLines.filter(line => line.lineNumber === 1)
-      console.log('🔍 fillUnchangedLines 后第一行结果:', firstLines)
+      
       
       // 重新为完整文件行添加更改索引
       const fullFileLinesWithIndex = addChangeIndices(fullFileLines)
@@ -470,7 +441,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       // 返回处理后的行数据，而不是直接设置状态
       return fullFileLinesWithIndex
     } catch (err) {
-      console.error('Failed to read file content:', err)
+      
       // 如果读取失败，返回原始行数据
       return lines
     }
@@ -508,7 +479,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
   const goToNextChange = () => {
     if (currentChangeIndex < changeCount - 1) {
       const newIndex = currentChangeIndex + 1
-      console.log(`Navigating to next change: ${newIndex + 1}/${changeCount}`)
+      
       setCurrentChangeIndex(newIndex)
       scrollToChange(newIndex)
     }
@@ -518,7 +489,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
   const goToPreviousChange = () => {
     if (currentChangeIndex > 0) {
       const newIndex = currentChangeIndex - 1
-      console.log(`Navigating to previous change: ${newIndex + 1}/${changeCount}`)
+      
       setCurrentChangeIndex(newIndex)
       scrollToChange(newIndex)
     }
@@ -527,7 +498,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
   // 滚动到指定的更改位置
   const scrollToChange = (changeIndex: number) => {
     const changeLines = fileLines.filter(line => line.changeIndex === changeIndex)
-    console.log(`scrollToChange: changeIndex=${changeIndex}, found ${changeLines.length} lines`)
+    
     
     if (changeLines.length > 0 && scrollContainerRef.current) {
       // 滚动到更改块的第一行
@@ -537,7 +508,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       // 计算目标位置
       const targetScrollTop = targetLineIndex * itemHeight
       
-      console.log(`Scrolling to line ${firstChangeLine.lineNumber}, targetScrollTop=${targetScrollTop}`)
+      
       
       // 平滑滚动到目标位置
       scrollContainerRef.current.scrollTo({
@@ -581,9 +552,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
             nextLine.type === 'added' &&
             currentLine.lineNumber === nextLine.lineNumber) {
           
-          console.log('🔍 发现相邻的删除和添加行，行号:', currentLine.lineNumber)
-          console.log('删除行内容:', currentLine.content)
-          console.log('添加行内容:', nextLine.content)
+          
           
           // 既然已经显示了两行（删除行和添加行），就不再添加字符级别的差异高亮
           // 直接添加删除行和添加行，保持简洁的显示
@@ -609,46 +578,43 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     let oldLineNumber = 1
     let inHunk = false
 
-    console.log('=== 开始解析diff ===')
-    console.log('原始diff内容:', diffText)
-    console.log('分割后的行:', lines)
-    console.log('总行数:', lines.length)
+    
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]
-      console.log(`Processing line ${i}: "${line}"`)
+      
       
       if (line.startsWith('diff --git')) {
         // 重置状态
         currentLineNumber = 1
         oldLineNumber = 1
         inHunk = false
-        console.log('Found diff header, resetting state')
+        
         continue
       } else if (line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')) {
         // 跳过这些header行
-        console.log('Skipping header line')
+        
         continue
       } else if (line.startsWith('@@')) {
         // 解析hunk header获取起始行号
         const match = line.match(/@@ -(\d+),?\d* \+(\d+),?\d* @@/)
         if (match) {
           const hunkNewStart = parseInt(match[2])
-          console.log('Found hunk header, new start:', hunkNewStart)
+          
           
           // 直接设置当前行号为hunk起始行号，不创建空行
           currentLineNumber = hunkNewStart
           oldLineNumber = parseInt(match[1])
           inHunk = true
-          console.log('Entering hunk mode, currentLineNumber:', currentLineNumber, 'oldLineNumber:', oldLineNumber)
+          
         }
       } else if (inHunk) {
-        console.log(`In hunk, processing line: "${line}" (starts with +: ${line.startsWith('+')}, starts with -: ${line.startsWith('-')}, starts with space: ${line.startsWith(' ')})`)
+        
         
         if (line.startsWith('+')) {
           // 新增的行
           const content = line.substring(1)
-          console.log('🟢 发现添加行:', content, 'currentLineNumber:', currentLineNumber)
+          
           fileLines.push({
             lineNumber: currentLineNumber,
             content,
@@ -658,7 +624,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         } else if (line.startsWith('-')) {
           // 删除的行
           const content = line.substring(1)
-          console.log('🔴 发现删除行:', content, 'currentLineNumber:', currentLineNumber, 'oldLineNumber:', oldLineNumber)
+          
           fileLines.push({
             lineNumber: currentLineNumber,
             content,
@@ -670,7 +636,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         } else if (line.startsWith(' ')) {
           // 未修改的行
           const content = line.substring(1)
-          console.log('Found unchanged line:', content)
+          
           fileLines.push({
             lineNumber: currentLineNumber,
             content,
@@ -681,53 +647,34 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           oldLineNumber++
         } else if (line.trim() === '') {
           // 空行，跳过
-          console.log('Skipping empty line')
+          
           continue
         } else if (line.trim() === '\\ No newline at end of file') {
           // Git diff 特殊标记：文件末尾无换行符。应忽略且保持在 hunk 模式，
           // 否则后续的 + 行可能会被错误地丢弃。
-          console.log('Encountered "\\ No newline at end of file" marker, continuing hunk')
+          
           continue
         } else {
           // 其他行，可能是hunk结束或其他内容
-          console.log('Exiting hunk mode, unknown line:', line)
+          
           inHunk = false
         }
       } else {
-        console.log('Not in hunk, skipping line:', line)
+        
       }
     }
-
-    console.log('=== 解析完成 ===')
-    console.log('最终解析的行数:', fileLines.length)
-    console.log('解析结果详情:', fileLines.map(line => ({
-      lineNumber: line.lineNumber,
-      type: line.type,
-      content: line.content.substring(0, 50) + (line.content.length > 50 ? '...' : ''),
-      oldLineNumber: line.oldLineNumber
-    })))
     
     // 统计各类型行数
-    const addedCount = fileLines.filter(l => l.type === 'added').length
-    const deletedCount = fileLines.filter(l => l.type === 'deleted').length
-    const unchangedCount = fileLines.filter(l => l.type === 'unchanged').length
-    console.log(`行数统计: 添加=${addedCount}, 删除=${deletedCount}, 未修改=${unchangedCount}`)
+    // 统计行数（如需调试可启用）
+    // const addedCount = fileLines.filter(l => l.type === 'added').length
+    // const deletedCount = fileLines.filter(l => l.type === 'deleted').length
+    // const unchangedCount = fileLines.filter(l => l.type === 'unchanged').length
     
     // 后处理：检测空白字符的变化
     const processedLines = detectWhitespaceChanges(fileLines)
-    console.log('=== 空白字符处理后 ===')
-    console.log('处理后行数:', processedLines.length)
-    console.log('处理后详情:', processedLines.map(line => ({
-      lineNumber: line.lineNumber,
-      type: line.type,
-      content: line.content.substring(0, 50) + (line.content.length > 50 ? '...' : ''),
-      hasSegments: !!line.segments,
-      segmentsCount: line.segments?.length || 0
-    })))
     
     // 特别检查第一行的处理结果
-    const firstLines = processedLines.filter(line => line.lineNumber === 1)
-    console.log('第一行处理结果:', firstLines)
+    // const firstLines = processedLines.filter(line => line.lineNumber === 1)
     
     return processedLines
   }
@@ -736,7 +683,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     try {
       await navigator.clipboard.writeText(diff)
     } catch (err) {
-      console.error('Failed to copy:', err)
+      
     }
   }
 
@@ -746,7 +693,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     const [currentScrollTop, setCurrentScrollTop] = useState(0)
     const [isDragging, setIsDragging] = useState(false)
     const [dragScrollTop, setDragScrollTop] = useState(0)
-    const [debugEnabled, setDebugEnabled] = useState(!!uiDebug)
+    
     const thumbnailInnerRef = useRef<HTMLDivElement>(null)
     const thumbnailContainerRef = useRef<HTMLDivElement>(null)
     // 仅使用 portal 指示框，避免受内部布局影响
@@ -758,10 +705,61 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     const indicatorElRef = useRef<HTMLDivElement | null>(null)
     const desiredRef = useRef<{ scrollTop: number | null }>({ scrollTop: null })
     const scheduledRef = useRef<number | null>(null)
-    const debugPortalRef = useRef<HTMLDivElement | null>(null)
+    
+    // 纯函数：将代码区像素(startTopPx, blockHeightPx)映射到缩略图轨道(trackHeight)
+    // 保证：
+    // - heightPx >= 2
+    // - 0 <= topPx <= trackHeight - heightPx
+    // - 若 endPx >= scrollMax 则 topPx + heightPx == trackHeight（贴底）
+    const calculateBarPosition = (
+      containerHeight: number,
+      totalContentPx: number,
+      startTopPx: number,
+      blockHeightPx: number,
+      minHeightPx: number = 2
+    ): { topPx: number; heightPx: number } => {
+      const safeContainer = Math.max(0, containerHeight)
+      const safeTotal = Math.max(1, totalContentPx)
+      const startClamped = Math.max(0, Math.min(safeTotal, startTopPx))
+      const endClamped = Math.max(0, Math.min(safeTotal, startTopPx + blockHeightPx))
+
+      // 按“文件总像素”精确映射到轨道
+      const startRatio = startClamped / safeTotal
+      const endRatio = endClamped / safeTotal
+
+      const topFloat = safeContainer * startRatio
+      const bottomFloat = safeContainer * endRatio
+
+      // 取整策略：顶部向下取整，底部向上取整，确保覆盖区间且不丢失
+      let topPx = Math.max(0, Math.min(safeContainer, Math.floor(topFloat)))
+      let bottomPx = Math.max(0, Math.min(safeContainer, Math.ceil(bottomFloat)))
+
+      if (bottomPx <= topPx) {
+        bottomPx = Math.min(safeContainer, topPx + minHeightPx)
+      }
+      let heightPx = bottomPx - topPx
+      if (heightPx < minHeightPx) {
+        heightPx = minHeightPx
+        topPx = Math.max(0, Math.min(safeContainer - heightPx, topPx))
+      }
+
+      if (topPx + heightPx > safeContainer) {
+        topPx = Math.max(0, safeContainer - heightPx)
+      }
+
+      if (import.meta.env.DEV) {
+        const okBounds = topPx >= 0 && topPx + heightPx <= safeContainer + 0.5
+        const okHeight = heightPx >= minHeightPx
+        if (!okBounds || !okHeight) {
+          throw new Error(`[ThumbnailInvariant] bounds=${okBounds} height=${okHeight} container=${safeContainer} top=${topPx} h=${heightPx}`)
+        }
+      }
+      return { topPx, heightPx }
+    }
+
     const lastValidRectRef = useRef<DOMRect | null>(null)
     // 映射参数快照：用于避免不同帧造成的偏差（供调试与渲染一致复算）
-    const mappingParamsRef = useRef<{ trackHeight: number; scrollMax: number; viewportPx: number; totalContentPx: number } | null>(null)
+    
     
     // 单一写入者：在 rAF 中统一写入（top/left/width 和 CSS 变量）
     const requestWrite = () => {
@@ -792,6 +790,18 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       const trackHeight = Math.max(0, thumbnailHeight - indicatorHeightPx)
       const usedScrollTop = nextScrollTop ?? (scrollContainerRef.current?.scrollTop ?? 0)
       const scrollMax = Math.max(1, totalContentPx - viewportPx)
+      if (import.meta.env.DEV) {
+        console.log('[ThumbMetrics]', {
+          fileLinesLen: fileLines.length,
+          itemHeight,
+          viewportPx,
+          containerHeight,
+          thumbnailHeight,
+          indicatorHeightPx,
+          trackHeight,
+          totalContentPx
+        })
+      }
       // 将代码区滚动位置映射到缩略图轨道比例 [0,1]
       const p = Math.min(1, Math.max(0, usedScrollTop / scrollMax))
       // 指示块位移（像素）= 比例 × 轨道高度
@@ -832,36 +842,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       indicatorTranslateYRef.current = ty
       // 清空已消费的目标
       desiredRef.current.scrollTop = null
-      // 调试面板输出（同帧、同写者）+ 控制台打印
-      if (debugEnabled) {
-        const cssVarTy = getComputedStyle(indicator).getPropertyValue('--indicator-ty').trim()
-        const ts = performance.now().toFixed(1)
-       
-        if (debugPortalRef.current) {
-          const left = rect.left + rect.width + 8
-          const top = rect.top + 8
-          const box = debugPortalRef.current
-          box.style.left = `${left}px`
-          box.style.top = `${top}px`
-          // 写入 indicator 专用区域，避免覆盖彩色块信息
-          const indicatorBox = box.querySelector('#gitlite-indicator-debug') as HTMLDivElement | null
-          const target = indicatorBox || box
-          target.innerHTML = `
-            <div>ts: ${ts} ms</div>
-            <div>scrollTop: ${scrollContainerRef.current?.scrollTop ?? 0}</div>
-            <div>desired.scrollTop: ${nextScrollTop ?? 'null'}</div>
-            <div>ty(ref): ${Math.round(ty)} px</div>
-            <div>ty(css var): ${cssVarTy || '(empty)'}</div>
-            <div>rect: top=${Math.round(rect.top)}, left=${Math.round(rect.left)}, w=${Math.round(rect.width)}</div>
-            <div>thumbnailHeight: ${Math.round(thumbnailHeight)} px</div>
-            <div>viewportPx: ${Math.round(viewportPx)} px</div>
-            <div>totalContentPx: ${Math.round(totalContentPx)} px</div>
-            <div>indicatorHeightPx: ${Math.round(indicatorHeightPx)} px</div>
-            <div>trackHeight: ${Math.round(trackHeight)} px</div>
-            <div>scrollMax: ${Math.round(scrollMax)} px</div>
-          `
-        }
-      }
+      
     }
     const enqueueScrollTop = (next: number) => {
       desiredRef.current.scrollTop = next
@@ -881,10 +862,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       enqueueScrollTop(scrollTopNow)
     }, [itemHeight, containerHeight, fileLines.length, isDragging])
 
-    // 工具栏状态变化时同步
-    useEffect(() => {
-      setDebugEnabled(!!uiDebug)
-    }, [uiDebug])
+    
 
     // 自管控的 portal 元素，避免 React 重建导致样式丢失
     useEffect(() => {
@@ -933,33 +911,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       }
     }, [])
 
-    // 调试：观察是否有外部写者修改了 style（仅在启用时）
-    useEffect(() => {
-      if (!debugEnabled) return
-      const target = indicatorElRef.current
-      if (!target) return
-      const mo = new MutationObserver((mutations) => {
-        for (const m of mutations) {
-          if (m.type === 'attributes' && m.attributeName === 'style') {
-            const t = target.style.transform || ''
-            const cssVarTy = getComputedStyle(target).getPropertyValue('--indicator-ty').trim()
-            // transform 不应被直接改写（应始终为 translate3d(0, var(--indicator-ty), 0)）
-            if (t && !t.includes('var(--indicator-ty')) {
-              console.warn('[IndicatorDebug] overwritten transform:', t)
-              if (debugPortalRef.current) {
-                debugPortalRef.current.innerHTML += `<div style=\"color:#ef4444\">overwritten transform: ${t}</div>`
-              }
-            }
-            // CSS 变量缺失也记录
-            if (!cssVarTy) {
-              console.warn('[IndicatorDebug] missing --indicator-ty')
-            }
-          }
-        }
-      })
-      mo.observe(target, { attributes: true, attributeFilter: ['style'] })
-      return () => mo.disconnect()
-    }, [debugEnabled])
+    
 
     // 监听滚动位置变化：capture+passive，仅入队目标值
     useEffect(() => {
@@ -983,7 +935,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     // 防止拖拽结束后被滚动事件重置
     useEffect(() => {
       if (!isDragging && dragScrollTop > 0) {
-        console.log('拖拽结束后同步状态:', { dragScrollTop, currentScrollTop })
         setCurrentScrollTop(dragScrollTop)
         
         // 强制同步滚动容器的位置
@@ -1009,8 +960,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     // 使用实际容器高度，避免硬编码导致色块比例失真
     // const rectH = containerRectRef.current?.height?? (scrollContainerRef.current?.clientHeight ?? containerHeight)
     const thumbnailHeight = containerHeight
-    //log
-    // console.log('[ThumbnailDebug] thumbnailHeight rectH', { thumbnailHeight, rectH, scrollContainerRef, containerHeight })
+    
 
 
     // 计算可见区域在缩略图中的位置
@@ -1048,7 +998,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         const ty0 = trackHeight * p0
         const scrollMax = Math.max(1, totalContentPx - viewportPx)
         const jumpScrollTop = p0 * scrollMax
-        console.log('缩略图 mousedown 首跳', { startY, clickY, ty: ty0, p: p0, jumpScrollTop })
         finalScrollTop = jumpScrollTop
         setDragScrollTop(jumpScrollTop)
         enqueueImmediate(jumpScrollTop)
@@ -1083,7 +1032,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         if (scrollContainerRef.current) {
           scrollContainerRef.current.scrollTop = newScrollTop
         }
-        console.log('拖拽中(handleMouseMove):', { currentY, ty, p, newScrollTop, translateY: indicatorTranslateYRef.current })
       }
       
       const handleMouseUp = () => {
@@ -1123,6 +1071,8 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       // 总行数用于比例，但下方改为像素映射后不再需要
       const bars: Array<{ startIdx: number; endIdx: number; type: FileLine['type']; changeIndex?: number }> = []
       let i = 0
+
+      
       while (i < fileLines.length) {
         const line = fileLines[i]
         // 只对新增/删除绘制色条；忽略 modified
@@ -1144,6 +1094,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         bars.push({ startIdx: start, endIdx: end, type: thisType, changeIndex: thisChangeIndex })
         i++
       }
+      
 
       // 让色块使用与指示框一致的"trackHeight"坐标系，确保对齐
       const viewportPx = scrollContainerRef.current?.clientHeight ?? containerHeight
@@ -1154,27 +1105,8 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       )
       // 彩色条可活动的轨道高度
       const trackHeight = Math.max(0, thumbnailHeight - indicatorHeightPx)
-      //log
-      // console.log('[Thumbnail] renderThumbnailLines 12', { trackHeight, viewportPx, totalContentPx, thumbnailHeight, indicatorHeightPx })
       const scrollMax = Math.max(1, totalContentPx - viewportPx)
 
-      let lastTopPx = -1
-      const debugList: Array<{
-        idx: number;
-        type: string;
-        topPx: number;
-        heightPx: number;
-        startIdx: number;
-        linesCount: number;
-        startTopPx: number;
-        blockHeightPx: number;
-        adjustedStartPx: number;
-        p: number;
-        topFloat: number;
-        heightRaw: number;
-        trackHeight: number;
-        scrollMax: number;
-      }> = []
       const elements = bars.map((bar, idx) => {
         // 更改块行数
         const linesCount = (bar.endIdx - bar.startIdx + 1)
@@ -1182,58 +1114,41 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         const startTopPx = bar.startIdx * itemHeight
         // 代码区：更改块高度（像素）
         const blockHeightPx = Math.max(itemHeight, linesCount * itemHeight)
-        // 严格对齐：移除半行偏置
-        const lineBiasPx = 0
-        // 用块底贴边的方式避免最后一块"差一点点"
-        const endPx = startTopPx + blockHeightPx
-        const adjustedStartPx = endPx >= scrollMax
-          ? scrollMax
-          : Math.max(0, startTopPx - lineBiasPx)
-        // top 映射：把代码区起点按比例压缩到缩略图轨道
-        const pRatio = Math.min(1, Math.max(0, adjustedStartPx / scrollMax))
-        let top = thumbnailHeight * pRatio-2
-        //log
-        console.log('[ThumbnailDebug] top', { top, pRatio, adjustedStartPx, scrollMax, thumbnailHeight })
-
-        // if(top==374|| top==354){
-        //   top=384;
-        //   console.log('[ThumbnailDebug] top 374', { top })
-
-        // }
-        //log
-        // 高度映射：把代码区块高度按比例压缩到轨道，并保证最小 2px 可见
-        const height = trackHeight * Math.min(1, blockHeightPx / scrollMax)
-        // 子像素对齐：顶部向下取整，底部向上取整，保证总高不丢失，且最小 2px
-        let topPx = Math.floor(top)
-        const heightPx = Math.max(2, Math.ceil(top + height) - topPx)
-       
-        if (debugEnabled) {
-          debugList.push({
+        const isLastBlock = (idx === bars.length - 1)
+        const { topPx, heightPx } = calculateBarPosition(
+          thumbnailHeight,
+          totalContentPx,
+          startTopPx,
+          blockHeightPx,
+          2
+        )
+        if (import.meta.env.DEV && (isLastBlock || idx === 0)) {
+          const startRatio = startTopPx / totalContentPx
+          const endRatio = Math.min(1, (startTopPx + blockHeightPx) / totalContentPx)
+          const bottomPx = topPx + heightPx
+          console.log('[ThumbBar]', {
             idx,
             type: bar.type,
-            topPx,
-            heightPx,
+            changeIndex: bar.changeIndex,
             startIdx: bar.startIdx,
-            linesCount,
+            endIdx: bar.endIdx,
             startTopPx,
             blockHeightPx,
-            adjustedStartPx,
-            p: pRatio,
-            topFloat: top,
-            heightRaw: height,
-            trackHeight,
-            scrollMax
+            startRatio,
+            endRatio,
+            topPx,
+            bottomPx,
+            heightPx
           })
         }
+       
+        
         const cls = bar.type === 'added'
           ? 'bg-green-300 dark:bg-green-600'
           : bar.type === 'deleted'
           ? 'bg-red-300 dark:bg-red-600'
           : 'bg-orange-300 dark:bg-orange-600'
         const isCurrent = bar.changeIndex === currentChangeIndex
-        
-        //log
-        console.log('[ThumbnailDebug] top px 382', { topPx })
 
         return (
           <div
@@ -1246,91 +1161,12 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         )
       })
 
-      // 输出调试信息到独立 portal
-      if (debugEnabled && debugPortalRef.current) {
-        const box = debugPortalRef.current
-        // 构造两个区域：indicator 信息 + bars 信息
-        if (!box.querySelector('#gitlite-indicator-debug')) {
-          const wrap = document.createElement('div')
-          wrap.innerHTML = `
-            <div id="gitlite-indicator-debug"></div>
-            <div id="gitlite-bars-debug" style="margin-top:6px; max-height:200px; overflow:auto; border-top:1px solid rgba(0,0,0,0.15)"></div>
-          `
-          box.appendChild(wrap)
-        }
-        const barsBox = box.querySelector('#gitlite-bars-debug') as HTMLDivElement
-        const header = `<div><b>[Thumbnail]</b> h:${Math.round(thumbnailHeight)} ih:${Math.round(indicatorHeightPx)} track:${Math.round(trackHeight)} bars:${elements.length} scrollMax:${Math.round(scrollMax)}</div>`
-        const list = debugList.map(d => `<div>#${d.idx} ${d.type} startIdx:${d.startIdx} lines:${d.linesCount} startTopPx:${d.startTopPx} blockH:${d.blockHeightPx} adjustedStartPx:${d.adjustedStartPx} p:${d.p.toFixed(4)} top:${Math.round(d.topFloat)} topPx:${d.topPx} hRaw:${d.heightRaw.toFixed(2)} hPx:${d.heightPx}</div>`).join('')
-        barsBox.innerHTML = header + list
-      }
+      
 
       return elements
     }
 
-    // 调试：在首帧与依赖变化时主动写入彩色块列表，避免必须交互才更新
-    useEffect(() => {
-      if (!debugEnabled || !debugPortalRef.current) return
-      const box = debugPortalRef.current
-      const writeBars = () => {
-        const viewportPx = scrollContainerRef.current?.clientHeight ?? containerHeight
-        const totalContentPx = Math.max(1, fileLines.length * itemHeight)
-        const indicatorHeightPx = Math.min(
-          (containerRectRef.current?.height ?? viewportPx),
-          Math.max(4, Math.round((viewportPx / totalContentPx) * (containerRectRef.current?.height ?? viewportPx)))
-        )
-        const thumbnailHeight = containerRectRef.current?.height ?? viewportPx
-        const trackHeight = Math.max(0, thumbnailHeight - indicatorHeightPx)
-        // 重建 bars，与渲染逻辑一致
-        const bars = [] as Array<{ startIdx: number; endIdx: number; type: FileLine['type']; changeIndex?: number }>
-        let i = 0
-        while (i < fileLines.length) {
-          const line = fileLines[i]
-          const isChanged = line.type === 'added' || line.type === 'deleted'
-          if (!isChanged) { i++; continue }
-          const start = i
-          const thisChangeIndex = line.changeIndex
-          const thisType = line.type
-          while (i + 1 < fileLines.length && (fileLines[i + 1].type === thisType) && fileLines[i + 1].changeIndex === thisChangeIndex) { i++ }
-          const end = i
-          bars.push({ startIdx: start, endIdx: end, type: thisType, changeIndex: thisChangeIndex })
-          i++
-        }
-        const scrollMax = Math.max(1, totalContentPx - viewportPx)
-        const list = bars.map((bar, idx) => {
-          const linesCount = (bar.endIdx - bar.startIdx + 1)
-          const startTopPx = bar.startIdx * itemHeight
-          const blockHeightPx = Math.max(itemHeight, linesCount * itemHeight)
-          const endPx = startTopPx + blockHeightPx
-          const adjustedStartPx = endPx >= scrollMax ? scrollMax : Math.max(0, startTopPx)
-          const p = Math.min(1, Math.max(0, adjustedStartPx / scrollMax))
-          const top = thumbnailHeight * p
-        
-          let topPx = Math.floor(top)
-          const heightRaw = trackHeight * Math.min(1, blockHeightPx / scrollMax)
-          const heightPx = Math.max(2, Math.ceil(top + heightRaw) - topPx)
-          return `<div>#${idx} ${bar.type} startTopPx:${startTopPx} blockH:${blockHeightPx} adjustedStartPx:${adjustedStartPx} p:${p.toFixed(4)} top:${Math.round(top)} topPx:${topPx} hRaw:${heightRaw.toFixed(2)} hPx:${heightPx}</div>`
-        }).join('')
-        if (!box.querySelector('#gitlite-indicator-debug')) {
-          const wrap = document.createElement('div')
-          wrap.innerHTML = `
-            <div id="gitlite-indicator-debug"></div>
-            <div id="gitlite-bars-debug" style="margin-top:6px; max-height:200px; overflow:auto; border-top:1px solid rgba(0,0,0,0.15)"></div>
-          `
-          box.appendChild(wrap)
-        }
-        const barsBox = box.querySelector('#gitlite-bars-debug') as HTMLDivElement
-        barsBox.innerHTML = `<div><b>[Thumbnail]</b> h:${Math.round(thumbnailHeight)} ih:${Math.round(indicatorHeightPx)} track:${Math.round(trackHeight)} bars:${bars.length} scrollMax:${Math.round(scrollMax)}</div>` + list
-      }
-      writeBars()
-      const onResize = () => writeBars()
-      const onScroll = () => writeBars()
-      window.addEventListener('resize', onResize)
-      scrollContainerRef.current?.addEventListener('scroll', onScroll, { passive: true })
-      return () => {
-        window.removeEventListener('resize', onResize)
-        scrollContainerRef.current?.removeEventListener('scroll', onScroll as any)
-      }
-    }, [debugEnabled, fileLines.length, itemHeight, containerHeight])
+    
 
     return (
       <>
@@ -1353,15 +1189,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
            {/* 内部指示框已移除，改为使用 fixed portal */}
          </div>
        </div>
-       {/* indicator 由自管控 DOM 挂载到 body，不再通过 createPortal 渲染 */}
-       {debugEnabled && createPortal(
-         <div
-           ref={debugPortalRef}
-           className="fixed z-[10000] pointer-events-none text-[10px] leading-[1.1] p-1 rounded bg-white/90 dark:bg-black/60 text-gray-800 dark:text-gray-200 shadow"
-           style={{ maxWidth: '16rem' }}
-         />,
-         document.body
-       )}
+      
        </>
      )
    }
@@ -1683,177 +1511,10 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
             复制
           </Button>
           
-          {/* 调试开关（全局入口，不放在缩略图内） */}
-          <Button
-            variant={uiDebug ? 'default' : 'outline'}
-            size="sm"
-            onClick={() => {
-              setUiDebug(v => !v)
-            }}
-            title="切换缩略图调试信息"
-          >
-            🐛 调试
-          </Button>
+          
 
           {/* 打印关键尺寸信息 */}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              // 读取真实 DOM：缩略图高度
-              const thumbEl = document.querySelector('.gitlite-thumb-container') as HTMLElement | null
-              const thumbRectH = thumbEl?.getBoundingClientRect().height ?? 0
-              // 读取真实 DOM：指示块 CSS 变量（高度与位移）
-              const indicator = (document.querySelector('.gitlite-indicator') as HTMLElement) || null
-              const computed = indicator ? getComputedStyle(indicator) : null
-              const indicatorHVar = computed ? computed.getPropertyValue('--indicator-h').trim() : ''
-              const indicatorTyVar = computed ? computed.getPropertyValue('--indicator-ty').trim() : ''
-              const indicatorH = indicatorHVar ? parseFloat(indicatorHVar) : null
-              const indicatorTy = indicatorTyVar ? parseFloat(indicatorTyVar) : null
-
-              // 读取真实 DOM：每个彩色条的 top/height
-              const barNodes = document.querySelectorAll('.gitlite-thumb-inner .gitlite-thumb-bar') as NodeListOf<HTMLElement>
-              const bars = Array.from(barNodes).map((node) => {
-                const idxAttr = node.getAttribute('data-bar-idx') || ''
-                const idx = idxAttr ? parseInt(idxAttr) : null
-                const style = getComputedStyle(node)
-                const topPx = parseFloat(style.top || node.style.top || '0')
-                const heightPx = parseFloat(style.height || node.style.height || `${node.offsetHeight}`)
-                return { idx, top: Math.round(topPx), height: Math.round(heightPx) }
-              })
-
-              console.log('[ThumbnailReal]', {
-                thumbnailHeight: Math.round(thumbRectH),
-                indicatorH,
-                indicatorTy,
-                bars
-              })
-
-              // 计算每个彩色块"应当占用的高度"（与渲染一致的映射和取整）
-              const totalContentPxForExpect = Math.max(1, fileLines.length * itemHeight)
-              const viewportPxForExpect = scrollContainerRef.current?.clientHeight ?? containerHeight
-              const scrollMaxForExpect = Math.max(1, totalContentPxForExpect - viewportPxForExpect)
-              const trackHeightForExpect = (thumbRectH && indicatorH != null) ? Math.max(0, thumbRectH - indicatorH) : Math.max(0, thumbRectH)
-
-              // 复用与渲染一致的 bars 重建（只按类型与 changeIndex 分段）
-              const barsForExpect: Array<{ startIdx: number; endIdx: number; type: FileLine['type']; changeIndex?: number }> = []
-              let k = 0
-              while (k < fileLines.length) {
-                const line = fileLines[k]
-                const isChanged = line.type === 'added' || line.type === 'deleted'
-                if (!isChanged) { k++; continue }
-                const start = k
-                const chIdx = line.changeIndex
-                const thisType = line.type
-                while (
-                  k + 1 < fileLines.length &&
-                  (fileLines[k + 1].type === thisType) &&
-                  fileLines[k + 1].changeIndex === chIdx
-                ) { k++ }
-                const end = k
-                barsForExpect.push({ startIdx: start, endIdx: end, type: thisType, changeIndex: chIdx })
-                k++
-              }
-
-              const expectedHeights = barsForExpect.map((bar, idx) => {
-                const linesCount = (bar.endIdx - bar.startIdx + 1)
-                const startTopPx = bar.startIdx * itemHeight
-                const blockHeightPx = Math.max(itemHeight, linesCount * itemHeight)
-                const lineBiasPx = 0
-                const endPx = startTopPx + blockHeightPx
-                const adjustedStartPx = endPx >= scrollMaxForExpect ? scrollMaxForExpect : Math.max(0, startTopPx - lineBiasPx)
-                const top = trackHeightForExpect * Math.min(1, Math.max(0, adjustedStartPx / scrollMaxForExpect))
-                const heightRaw = trackHeightForExpect * Math.min(1, blockHeightPx / scrollMaxForExpect)
-                const topPx = Math.floor(top)
-                const heightPx = Math.max(2, Math.ceil(top + heightRaw) - topPx)
-                return { idx, type: bar.type, expectedTop: topPx, expectedHeight: heightPx }
-              })
-
-              console.log('[ThumbnailExpect]', {
-                thumbnailHeight: Math.round(thumbRectH),
-                indicatorH,
-                trackHeight: Math.round(trackHeightForExpect),
-                expectedHeights
-              })
-
-              // 可选：对比指定 idx 的"期望位置 vs 实际 DOM 位置"
-              const idxInput = prompt('输入要对比的色条 idx（留空跳过）：')
-              if (idxInput !== null && idxInput.trim() !== '') {
-                const idxToCheck = parseInt(idxInput.trim(), 10)
-                if (!Number.isNaN(idxToCheck)) {
-                  // 重建 bars（与渲染一致：只合并 added/deleted，按类型分段）
-                  const totalContentPx = Math.max(1, fileLines.length * itemHeight)
-                  const viewportPx = scrollContainerRef.current?.clientHeight ?? containerHeight
-                  const scrollMax = Math.max(1, totalContentPx - viewportPx)
-                  // 使用真实 DOM 的轨道高度，确保坐标系一致
-                  const trackHeight = (thumbRectH && indicatorH != null) ? Math.max(0, thumbRectH - indicatorH) : Math.max(0, thumbRectH)
-
-                  const rebuilt: Array<{ startIdx: number; endIdx: number; type: FileLine['type']; changeIndex?: number }> = []
-                  let j = 0
-                  while (j < fileLines.length) {
-                    const line = fileLines[j]
-                    const isChanged = line.type === 'added' || line.type === 'deleted'
-                    if (!isChanged) { j++; continue }
-                    const start = j
-                    const chIdx = line.changeIndex
-                    const thisType = line.type
-                    while (
-                      j + 1 < fileLines.length &&
-                      (fileLines[j + 1].type === thisType) &&
-                      fileLines[j + 1].changeIndex === chIdx
-                    ) { j++ }
-                    const end = j
-                    rebuilt.push({ startIdx: start, endIdx: end, type: thisType, changeIndex: chIdx })
-                    j++
-                  }
-
-                  const target = rebuilt[idxToCheck]
-                  if (target) {
-                    const linesCount = (target.endIdx - target.startIdx + 1)
-                    const startTopPx = target.startIdx * itemHeight
-                    const blockHeightPx = Math.max(itemHeight, linesCount * itemHeight)
-                    const lineBiasPx = itemHeight * 0.5
-                    const adjustedStartPx = startTopPx >= scrollMax ? scrollMax : Math.max(0, startTopPx - lineBiasPx)
-                    const expectedTop = trackHeight * Math.min(1, Math.max(0, adjustedStartPx / scrollMax))
-                    //log
-                    console.log('[ThumbnailCompare] expectedTop', { expectedTop, adjustedStartPx, scrollMax, trackHeight })
-                    const expectedHeightRaw = trackHeight * Math.min(1, blockHeightPx / scrollMax)
-                    const expectedTopPx = Math.floor(expectedTop)
-                    const expectedHeightPx = Math.max(2, Math.ceil(expectedTop + expectedHeightRaw) - expectedTopPx)
-
-                    const node = document.querySelector(`.gitlite-thumb-inner .gitlite-thumb-bar[data-bar-idx="${idxToCheck}"]`) as HTMLElement | null
-                    const style = node ? getComputedStyle(node) : null
-                    const actualTop = style ? parseFloat(style.top || node!.style.top || '0') : null
-                    const actualHeight = style ? parseFloat(style.height || node!.style.height || `${node!.offsetHeight}`) : null
-
-                    console.log('[ThumbnailCompare]', {
-                      idx: idxToCheck,
-                      type: target.type,
-                      changeIndex: target.changeIndex,
-                      // 期望（计算值，基于与渲染一致的公式）
-                      expectedTop: expectedTopPx,
-                      expectedHeight: expectedHeightPx,
-                      // 实际（真实 DOM）
-                      actualTop: actualTop != null ? Math.round(actualTop) : null,
-                      actualHeight: actualHeight != null ? Math.round(actualHeight) : null,
-                      // 其它参考
-                      trackHeight: Math.round(trackHeight),
-                      scrollMax,
-                      startTopPx,
-                      adjustedStartPx,
-                      blockHeightPx
-                    })
-                  } else {
-                    console.warn('[ThumbnailCompare] 未找到该 idx 对应的色条:', idxToCheck)
-                  }
-                }
-              }
-            }}
-            className="flex items-center gap-2 text-xs"
-            title="打印真实缩略图高度、指示块与彩色条位置"
-          >
-            📏 打印信息
-          </Button>
+          
           
           {/* 缩略图切换按钮 */}
           <Button
