@@ -221,6 +221,8 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
   const [isExpanded, setIsExpanded] = useState(true)
   const [currentChangeIndex, setCurrentChangeIndex] = useState(0)
   const [changeCount, setChangeCount] = useState(0)
+  // 顶部工具栏调试开关（持久显示/隐藏调试面板）
+  const [uiDebug, setUiDebug] = useState<boolean>(!!debugFromParent)
   const [viewMode, setViewMode] = useState<'unified' | 'side-by-side'>('unified')
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   
@@ -681,6 +683,11 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           // 空行，跳过
           console.log('Skipping empty line')
           continue
+        } else if (line.trim() === '\\ No newline at end of file') {
+          // Git diff 特殊标记：文件末尾无换行符。应忽略且保持在 hunk 模式，
+          // 否则后续的 + 行可能会被错误地丢弃。
+          console.log('Encountered "\\ No newline at end of file" marker, continuing hunk')
+          continue
         } else {
           // 其他行，可能是hunk结束或其他内容
           console.log('Exiting hunk mode, unknown line:', line)
@@ -739,7 +746,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     const [currentScrollTop, setCurrentScrollTop] = useState(0)
     const [isDragging, setIsDragging] = useState(false)
     const [dragScrollTop, setDragScrollTop] = useState(0)
-    const [debugEnabled, setDebugEnabled] = useState(!!debugFromParent)
+    const [debugEnabled, setDebugEnabled] = useState(!!uiDebug)
     const thumbnailInnerRef = useRef<HTMLDivElement>(null)
     const thumbnailContainerRef = useRef<HTMLDivElement>(null)
     // 仅使用 portal 指示框，避免受内部布局影响
@@ -829,27 +836,29 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       if (debugEnabled) {
         const cssVarTy = getComputedStyle(indicator).getPropertyValue('--indicator-ty').trim()
         const ts = performance.now().toFixed(1)
-        console.log('[IndicatorDebug]', {
-          tsMs: Number(ts),
-          scrollTop: scrollContainerRef.current?.scrollTop ?? 0,
-          desiredScrollTop: nextScrollTop ?? null,
-          translateYRefPx: Math.round(ty),
-          translateYCssVar: cssVarTy || '(empty)',
-          rect: { top: Math.round(rect.top), left: Math.round(rect.left), width: Math.round(rect.width) }
-        })
+       
         if (debugPortalRef.current) {
           const left = rect.left + rect.width + 8
           const top = rect.top + 8
           const box = debugPortalRef.current
           box.style.left = `${left}px`
           box.style.top = `${top}px`
-          box.innerHTML = `
+          // 写入 indicator 专用区域，避免覆盖彩色块信息
+          const indicatorBox = box.querySelector('#gitlite-indicator-debug') as HTMLDivElement | null
+          const target = indicatorBox || box
+          target.innerHTML = `
             <div>ts: ${ts} ms</div>
             <div>scrollTop: ${scrollContainerRef.current?.scrollTop ?? 0}</div>
             <div>desired.scrollTop: ${nextScrollTop ?? 'null'}</div>
             <div>ty(ref): ${Math.round(ty)} px</div>
             <div>ty(css var): ${cssVarTy || '(empty)'}</div>
             <div>rect: top=${Math.round(rect.top)}, left=${Math.round(rect.left)}, w=${Math.round(rect.width)}</div>
+            <div>thumbnailHeight: ${Math.round(thumbnailHeight)} px</div>
+            <div>viewportPx: ${Math.round(viewportPx)} px</div>
+            <div>totalContentPx: ${Math.round(totalContentPx)} px</div>
+            <div>indicatorHeightPx: ${Math.round(indicatorHeightPx)} px</div>
+            <div>trackHeight: ${Math.round(trackHeight)} px</div>
+            <div>scrollMax: ${Math.round(scrollMax)} px</div>
           `
         }
       }
@@ -872,10 +881,10 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       enqueueScrollTop(scrollTopNow)
     }, [itemHeight, containerHeight, fileLines.length, isDragging])
 
-    // 父级控制调试开关同步
+    // 工具栏状态变化时同步
     useEffect(() => {
-      setDebugEnabled(!!debugFromParent)
-    }, [debugFromParent])
+      setDebugEnabled(!!uiDebug)
+    }, [uiDebug])
 
     // 自管控的 portal 元素，避免 React 重建导致样式丢失
     useEffect(() => {
@@ -997,15 +1006,13 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     }
 
     // 使用与指示框一致的实际容器高度进行缩放，避免与指示框不匹配
-    // const rectH = containerRectRef.current?.height
-    //   ?? (scrollContainerRef.current?.clientHeight ?? containerHeight)
-    // const thumbnailHeight = Math.max(1, rectH)
-
-    const thumbnailHeight = 384
-
+    // 使用实际容器高度，避免硬编码导致色块比例失真
+    const rectH = containerRectRef.current?.height
+      ?? (scrollContainerRef.current?.clientHeight ?? containerHeight)
+    const thumbnailHeight = Math.max(1, rectH)
     //log
-    console.log('[Thumbnail] handleThumbnailMouseDown 1', { thumbnailHeight })
-    // 比例可内联计算，无需单独变量
+    console.log('[ThumbnailDebug] thumbnailHeight rectH', { thumbnailHeight, rectH, scrollContainerRef, containerHeight })
+
 
     // 计算可见区域在缩略图中的位置
     // 可见位置与高度改由 rAF 写者通过 CSS 变量与 rect 统一写入
@@ -1152,7 +1159,24 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       // console.log('[Thumbnail] renderThumbnailLines 12', { trackHeight, viewportPx, totalContentPx, thumbnailHeight, indicatorHeightPx })
       const scrollMax = Math.max(1, totalContentPx - viewportPx)
 
-      return bars.map((bar, idx) => {
+      let lastTopPx = -1
+      const debugList: Array<{
+        idx: number;
+        type: string;
+        topPx: number;
+        heightPx: number;
+        startIdx: number;
+        linesCount: number;
+        startTopPx: number;
+        blockHeightPx: number;
+        adjustedStartPx: number;
+        p: number;
+        topFloat: number;
+        heightRaw: number;
+        trackHeight: number;
+        scrollMax: number;
+      }> = []
+      const elements = bars.map((bar, idx) => {
         // 更改块行数
         const linesCount = (bar.endIdx - bar.startIdx + 1)
         // 代码区：更改块起点（像素）= 起始索引 × 行高
@@ -1167,13 +1191,45 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           ? scrollMax
           : Math.max(0, startTopPx - lineBiasPx)
         // top 映射：把代码区起点按比例压缩到缩略图轨道
-        const top = trackHeight * Math.min(1, Math.max(0, adjustedStartPx / scrollMax))
+        const pRatio = Math.min(1, Math.max(0, adjustedStartPx / scrollMax))
+        const top = thumbnailHeight * pRatio
+        //log
+        console.log('[ThumbnailDebug] top', { top, pRatio, adjustedStartPx, scrollMax, thumbnailHeight })
         //log
         // 高度映射：把代码区块高度按比例压缩到轨道，并保证最小 2px 可见
         const height = trackHeight * Math.min(1, blockHeightPx / scrollMax)
         // 子像素对齐：顶部向下取整，底部向上取整，保证总高不丢失，且最小 2px
-        const topPx = Math.floor(top)
+        let topPx = Math.floor(top)
         const heightPx = Math.max(2, Math.ceil(top + height) - topPx)
+        // 夹取：确保色块完全落在轨道内（贴底）
+        const upperBoundClamp = Math.max(0, trackHeight - heightPx)
+        if (topPx > upperBoundClamp) topPx = upperBoundClamp
+        // 防重合：若与上一块 top 一致或倒序，向下错开 1px，并在轨道内夹取
+        if (topPx <= lastTopPx) {
+          const upperBound = Math.max(0, trackHeight - heightPx)
+          topPx = Math.max(lastTopPx + 1, Math.min(upperBound, topPx))
+          // 再次夹取，防止被推到上界之外
+          topPx = Math.min(upperBound, topPx)
+        }
+        lastTopPx = topPx
+        if (debugEnabled) {
+          debugList.push({
+            idx,
+            type: bar.type,
+            topPx,
+            heightPx,
+            startIdx: bar.startIdx,
+            linesCount,
+            startTopPx,
+            blockHeightPx,
+            adjustedStartPx,
+            p: pRatio,
+            topFloat: top,
+            heightRaw: height,
+            trackHeight,
+            scrollMax
+          })
+        }
         const cls = bar.type === 'added'
           ? 'bg-green-300 dark:bg-green-600'
           : bar.type === 'deleted'
@@ -1192,7 +1248,92 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           />
         )
       })
+
+      // 输出调试信息到独立 portal
+      if (debugEnabled && debugPortalRef.current) {
+        const box = debugPortalRef.current
+        // 构造两个区域：indicator 信息 + bars 信息
+        if (!box.querySelector('#gitlite-indicator-debug')) {
+          const wrap = document.createElement('div')
+          wrap.innerHTML = `
+            <div id="gitlite-indicator-debug"></div>
+            <div id="gitlite-bars-debug" style="margin-top:6px; max-height:200px; overflow:auto; border-top:1px solid rgba(0,0,0,0.15)"></div>
+          `
+          box.appendChild(wrap)
+        }
+        const barsBox = box.querySelector('#gitlite-bars-debug') as HTMLDivElement
+        const header = `<div><b>[Thumbnail]</b> h:${Math.round(thumbnailHeight)} ih:${Math.round(indicatorHeightPx)} track:${Math.round(trackHeight)} bars:${elements.length} scrollMax:${Math.round(scrollMax)}</div>`
+        const list = debugList.map(d => `<div>#${d.idx} ${d.type} startIdx:${d.startIdx} lines:${d.linesCount} startTopPx:${d.startTopPx} blockH:${d.blockHeightPx} adjustedStartPx:${d.adjustedStartPx} p:${d.p.toFixed(4)} top:${Math.round(d.topFloat)} topPx:${d.topPx} hRaw:${d.heightRaw.toFixed(2)} hPx:${d.heightPx}</div>`).join('')
+        barsBox.innerHTML = header + list
+      }
+
+      return elements
     }
+
+    // 调试：在首帧与依赖变化时主动写入彩色块列表，避免必须交互才更新
+    useEffect(() => {
+      if (!debugEnabled || !debugPortalRef.current) return
+      const box = debugPortalRef.current
+      const writeBars = () => {
+        const viewportPx = scrollContainerRef.current?.clientHeight ?? containerHeight
+        const totalContentPx = Math.max(1, fileLines.length * itemHeight)
+        const indicatorHeightPx = Math.min(
+          (containerRectRef.current?.height ?? viewportPx),
+          Math.max(4, Math.round((viewportPx / totalContentPx) * (containerRectRef.current?.height ?? viewportPx)))
+        )
+        const thumbnailHeight = containerRectRef.current?.height ?? viewportPx
+        const trackHeight = Math.max(0, thumbnailHeight - indicatorHeightPx)
+        // 重建 bars，与渲染逻辑一致
+        const bars = [] as Array<{ startIdx: number; endIdx: number; type: FileLine['type']; changeIndex?: number }>
+        let i = 0
+        while (i < fileLines.length) {
+          const line = fileLines[i]
+          const isChanged = line.type === 'added' || line.type === 'deleted'
+          if (!isChanged) { i++; continue }
+          const start = i
+          const thisChangeIndex = line.changeIndex
+          const thisType = line.type
+          while (i + 1 < fileLines.length && (fileLines[i + 1].type === thisType) && fileLines[i + 1].changeIndex === thisChangeIndex) { i++ }
+          const end = i
+          bars.push({ startIdx: start, endIdx: end, type: thisType, changeIndex: thisChangeIndex })
+          i++
+        }
+        const scrollMax = Math.max(1, totalContentPx - viewportPx)
+        const list = bars.map((bar, idx) => {
+          const linesCount = (bar.endIdx - bar.startIdx + 1)
+          const startTopPx = bar.startIdx * itemHeight
+          const blockHeightPx = Math.max(itemHeight, linesCount * itemHeight)
+          const endPx = startTopPx + blockHeightPx
+          const adjustedStartPx = endPx >= scrollMax ? scrollMax : Math.max(0, startTopPx)
+          const p = Math.min(1, Math.max(0, adjustedStartPx / scrollMax))
+          const top = thumbnailHeight * p
+        
+          let topPx = Math.floor(top)
+          const heightRaw = trackHeight * Math.min(1, blockHeightPx / scrollMax)
+          const heightPx = Math.max(2, Math.ceil(top + heightRaw) - topPx)
+          return `<div>#${idx} ${bar.type} startTopPx:${startTopPx} blockH:${blockHeightPx} adjustedStartPx:${adjustedStartPx} p:${p.toFixed(4)} top:${Math.round(top)} topPx:${topPx} hRaw:${heightRaw.toFixed(2)} hPx:${heightPx}</div>`
+        }).join('')
+        if (!box.querySelector('#gitlite-indicator-debug')) {
+          const wrap = document.createElement('div')
+          wrap.innerHTML = `
+            <div id="gitlite-indicator-debug"></div>
+            <div id="gitlite-bars-debug" style="margin-top:6px; max-height:200px; overflow:auto; border-top:1px solid rgba(0,0,0,0.15)"></div>
+          `
+          box.appendChild(wrap)
+        }
+        const barsBox = box.querySelector('#gitlite-bars-debug') as HTMLDivElement
+        barsBox.innerHTML = `<div><b>[Thumbnail]</b> h:${Math.round(thumbnailHeight)} ih:${Math.round(indicatorHeightPx)} track:${Math.round(trackHeight)} bars:${bars.length} scrollMax:${Math.round(scrollMax)}</div>` + list
+      }
+      writeBars()
+      const onResize = () => writeBars()
+      const onScroll = () => writeBars()
+      window.addEventListener('resize', onResize)
+      scrollContainerRef.current?.addEventListener('scroll', onScroll, { passive: true })
+      return () => {
+        window.removeEventListener('resize', onResize)
+        scrollContainerRef.current?.removeEventListener('scroll', onScroll as any)
+      }
+    }, [debugEnabled, fileLines.length, itemHeight, containerHeight])
 
     return (
       <>
@@ -1205,6 +1346,8 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
          onMouseDown={showThumbnail ? handleThumbnailMouseDown : undefined}
          title={showThumbnail ? "点击或拖拽跳转到对应位置" : undefined}
        >
+        {/* 调试开关按钮（不影响布局） */}
+        {/* 移除缩略图内按钮，避免难以点击。调试入口统一放到工具栏。 */}
          {/* 调试面板移至全局 portal，避免与缩略图重合（按钮已移除） */}
          {/* 缩略图内容 */}
          <div ref={thumbnailInnerRef} className="relative w-full gitlite-thumb-inner" style={{ height: `${Math.max(thumbnailHeight, 1)}px` }}>
@@ -1543,6 +1686,18 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
             复制
           </Button>
           
+          {/* 调试开关（全局入口，不放在缩略图内） */}
+          <Button
+            variant={uiDebug ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => {
+              setUiDebug(v => !v)
+            }}
+            title="切换缩略图调试信息"
+          >
+            🐛 调试
+          </Button>
+
           {/* 打印关键尺寸信息 */}
           <Button
             variant="outline"

@@ -1,4 +1,4 @@
-@tailwind base;
+@tailwind base; 
 @tailwind components;
 @tailwind utilities;
 
@@ -312,4 +312,4 @@
   .code-viewer pre {
     @apply m-0;
   }
-}
+} 

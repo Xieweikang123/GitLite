@@ -1,6 +1,7 @@
 import { Button } from './ui/button'
+import { invoke } from '@tauri-apps/api/tauri'
 import { Select, SelectContent, SelectItem, SelectTrigger } from './ui/select'
-import { FolderOpen, GitBranch, ExternalLink, Moon, Sun, GitPullRequest, Download } from 'lucide-react'
+import { FolderOpen, GitBranch, Moon, Sun, GitPullRequest, Download } from 'lucide-react'
 
 interface TopToolbarProps {
   onOpenRepository: () => void
@@ -25,6 +26,15 @@ export function TopToolbar({
   isDark,
   onToggleDarkMode
 }: TopToolbarProps) {
+  const handleOpenFolder = async () => {
+    try {
+      if (repoInfo?.path) {
+        await invoke('open_folder', { path: repoInfo.path })
+      }
+    } catch (error) {
+      console.error('无法打开文件夹:', error)
+    }
+  }
   return (
     <div className="flex items-center justify-between bg-card border-b px-6 py-3">
       {/* 左侧：应用标题 */}
@@ -41,7 +51,10 @@ export function TopToolbar({
         {repoInfo && (
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
-              <GitBranch className="h-4 w-4 text-muted-foreground" />
+              <GitBranch
+                className="h-4 w-4 text-muted-foreground cursor-pointer hover:text-foreground"
+                onClick={onOpenRemoteRepository}
+              />
               <Select value={repoInfo.current_branch} onValueChange={onBranchSelect}>
                 <SelectTrigger className="w-40 h-8 text-sm min-w-0">
                   <span className="truncate">{repoInfo.current_branch}</span>
@@ -64,7 +77,11 @@ export function TopToolbar({
                 <span className="text-xs rounded bg-amber-600/10 text-amber-600 px-2 py-0.5">{repoInfo.behind} 待拉取</span>
               )}
             </div>
-            <div className="text-xs text-muted-foreground max-w-xs truncate">
+            <div
+              className="text-xs text-muted-foreground max-w-xs truncate cursor-pointer hover:underline"
+              title="点击打开本地文件夹"
+              onClick={handleOpenFolder}
+            >
               {repoInfo.path}
             </div>
           </div>
@@ -113,16 +130,7 @@ export function TopToolbar({
           </Button>
         )}
         
-        {repoInfo?.remote_url && onOpenRemoteRepository && (
-          <Button
-            onClick={onOpenRemoteRepository}
-            variant="outline"
-            className="flex items-center gap-2"
-          >
-            <ExternalLink className="h-4 w-4" />
-            打开远程仓库
-          </Button>
-        )}
+        {/* 移除单独的“打开远程仓库”按钮，改为点击 GitBranch 图标触发 */}
         <Button
           onClick={onOpenRepository}
           disabled={loading}

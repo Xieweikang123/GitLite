@@ -453,6 +453,42 @@ async fn open_log_dir() -> Result<(), String> {
     Ok(())
 }
 
+// 打开指定文件夹（跨平台）
+#[tauri::command]
+async fn open_folder(path: String) -> Result<(), String> {
+    use std::path::PathBuf;
+    let target: PathBuf = PathBuf::from(path);
+    if !target.exists() {
+        return Err("Folder does not exist".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(target)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&target)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&target)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+
+    Ok(())
+}
+
 // 在默认浏览器中打开外部链接（跨平台）
 #[tauri::command]
 async fn open_external_url(url: String) -> Result<(), String> {
@@ -2713,6 +2749,7 @@ fn main() {
             git_diagnostics,
             get_log_file_path,
             open_log_dir,
+            open_folder,
             open_external_url,
             get_staged_file_diff,
             get_unstaged_file_diff,
