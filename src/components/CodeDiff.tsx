@@ -1007,11 +1007,10 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
 
     // 使用与指示框一致的实际容器高度进行缩放，避免与指示框不匹配
     // 使用实际容器高度，避免硬编码导致色块比例失真
-    const rectH = containerRectRef.current?.height
-      ?? (scrollContainerRef.current?.clientHeight ?? containerHeight)
-    const thumbnailHeight = Math.max(1, rectH)
+    // const rectH = containerRectRef.current?.height?? (scrollContainerRef.current?.clientHeight ?? containerHeight)
+    const thumbnailHeight = containerHeight
     //log
-    console.log('[ThumbnailDebug] thumbnailHeight rectH', { thumbnailHeight, rectH, scrollContainerRef, containerHeight })
+    // console.log('[ThumbnailDebug] thumbnailHeight rectH', { thumbnailHeight, rectH, scrollContainerRef, containerHeight })
 
 
     // 计算可见区域在缩略图中的位置
@@ -1192,26 +1191,22 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           : Math.max(0, startTopPx - lineBiasPx)
         // top 映射：把代码区起点按比例压缩到缩略图轨道
         const pRatio = Math.min(1, Math.max(0, adjustedStartPx / scrollMax))
-        const top = thumbnailHeight * pRatio
+        let top = thumbnailHeight * pRatio-2
         //log
         console.log('[ThumbnailDebug] top', { top, pRatio, adjustedStartPx, scrollMax, thumbnailHeight })
+
+        // if(top==374|| top==354){
+        //   top=384;
+        //   console.log('[ThumbnailDebug] top 374', { top })
+
+        // }
         //log
         // 高度映射：把代码区块高度按比例压缩到轨道，并保证最小 2px 可见
         const height = trackHeight * Math.min(1, blockHeightPx / scrollMax)
         // 子像素对齐：顶部向下取整，底部向上取整，保证总高不丢失，且最小 2px
         let topPx = Math.floor(top)
         const heightPx = Math.max(2, Math.ceil(top + height) - topPx)
-        // 夹取：确保色块完全落在轨道内（贴底）
-        const upperBoundClamp = Math.max(0, trackHeight - heightPx)
-        if (topPx > upperBoundClamp) topPx = upperBoundClamp
-        // 防重合：若与上一块 top 一致或倒序，向下错开 1px，并在轨道内夹取
-        if (topPx <= lastTopPx) {
-          const upperBound = Math.max(0, trackHeight - heightPx)
-          topPx = Math.max(lastTopPx + 1, Math.min(upperBound, topPx))
-          // 再次夹取，防止被推到上界之外
-          topPx = Math.min(upperBound, topPx)
-        }
-        lastTopPx = topPx
+       
         if (debugEnabled) {
           debugList.push({
             idx,
@@ -1236,7 +1231,9 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           ? 'bg-red-300 dark:bg-red-600'
           : 'bg-orange-300 dark:bg-orange-600'
         const isCurrent = bar.changeIndex === currentChangeIndex
-
+        
+        //log
+        console.log('[ThumbnailDebug] top px 382', { topPx })
 
         return (
           <div
@@ -1999,3 +1996,4 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
   )
 }
 
+ 
