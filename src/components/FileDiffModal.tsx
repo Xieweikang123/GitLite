@@ -139,7 +139,7 @@ export function FileDiffModal({ isOpen, onClose, filePath, repoPath, fileType }:
           
         </DialogHeader>
         
-        <div className="flex-1 overflow-hidden">
+        <div className="flex-1 overflow-visible">
           {loading && (
             <div className="flex items-center justify-center h-32">
               <p className="text-muted-foreground">加载中...</p>

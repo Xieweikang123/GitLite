@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react' 
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Button } from './ui/button'
 import { Copy, ChevronDown, ChevronRight } from 'lucide-react'
@@ -132,7 +132,7 @@ export function VisualDiff({ diff, fileName, commitInfo }: VisualDiffProps) {
     <Card>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <div>
+          <div> 
             <CardTitle className="text-lg font-semibold">文件差异</CardTitle>
             {commitInfo && (
               <p className="text-sm text-muted-foreground mt-1">{commitInfo}</p>
@@ -226,3 +226,4 @@ export function VisualDiff({ diff, fileName, commitInfo }: VisualDiffProps) {
   )
 }
 
+ 

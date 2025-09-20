@@ -230,6 +230,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
   const [containerHeight, setContainerHeight] = useState(384) // 容器高度（初始与旧值保持一致，后续由实际测量更新）
   const [showThumbnail, setShowThumbnail] = useState(true) // 是否显示缩略图
   
+  
   // 添加加载状态，避免闪烁
   const [isLoading, setIsLoading] = useState(false)
 
@@ -244,15 +245,62 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     setVisibleRange({ start, end })
   }, [itemHeight, containerHeight, fileLines.length])
 
+  // 使用 document 级别监听器处理缩略图滚轮
+  useEffect(() => {
+    if (!showThumbnail) return
+    
+    const handleDocumentWheel = (e: WheelEvent) => {
+      // 检查鼠标是否在缩略图区域内
+      const thumbnailEl = document.querySelector('.gitlite-thumb-container') as HTMLElement
+      if (!thumbnailEl) return
+      
+      const rect = thumbnailEl.getBoundingClientRect()
+      const x = e.clientX
+      const y = e.clientY
+      
+      // 检查鼠标是否在缩略图区域内
+      if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+        console.log('[Document wheel in thumb]', e.deltaY)
+        e.preventDefault()
+        e.stopPropagation()
+        
+        const sc = scrollContainerRef.current
+        if (!sc) return
+        
+        const totalContentPx = Math.max(1, fileLines.length * itemHeight)
+        const viewportPx = sc.clientHeight || containerHeight
+        const scrollMax = Math.max(1, totalContentPx - viewportPx)
+        const containerH = rect.height
+        const ratio = scrollMax / Math.max(1, containerH)
+        const next = Math.max(0, Math.min(scrollMax, sc.scrollTop + e.deltaY * ratio))
+        sc.scrollTop = next
+        
+        // 更新可见范围
+        updateVisibleRange()
+      }
+    }
+    
+    document.addEventListener('wheel', handleDocumentWheel, { passive: false, capture: true })
+    return () => document.removeEventListener('wheel', handleDocumentWheel, { capture: true })
+  }, [showThumbnail, fileLines.length, itemHeight, containerHeight, updateVisibleRange])
+
   // 防止滚动事件冒泡到主界面，并处理虚拟滚动
   useEffect(() => {
     const scrollContainer = scrollContainerRef.current
     if (!scrollContainer) return
 
     const handleWheel = (e: WheelEvent) => {
-      // 完全阻止事件冒泡和默认行为
-      e.stopPropagation()
-      e.preventDefault()
+      // 临时完全禁用 wheel 拦截，让所有事件正常冒泡
+      // 检查事件是否来自缩略图区域
+      const target = e.target as HTMLElement
+      if (target.closest('.gitlite-thumb-container')) {
+        // 如果事件来自缩略图，不拦截，让缩略图自己处理
+        return
+      }
+      
+      // 对于其他区域，也暂时不拦截，让原生滚动工作
+      // e.stopPropagation()
+      // e.preventDefault()
       
       // 手动控制滚动
       const scrollAmount = e.deltaY
@@ -578,6 +626,12 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     let oldLineNumber = 1
     let inHunk = false
 
+    if (import.meta.env.DEV) {
+      try {
+        console.log('[RawDiffTail]', lines.slice(-30))
+      } catch {}
+    }
+
     
 
     for (let i = 0; i < lines.length; i++) {
@@ -672,6 +726,17 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     
     // 后处理：检测空白字符的变化
     const processedLines = detectWhitespaceChanges(fileLines)
+
+    if (import.meta.env.DEV) {
+      try {
+        console.log('[ParseTailLines]', processedLines.slice(-12).map(l => ({
+          type: l.type,
+          lineNumber: l.lineNumber,
+          oldLineNumber: l.oldLineNumber,
+          content: (l.content || '').slice(0, 60)
+        })))
+      } catch {}
+    }
     
     // 特别检查第一行的处理结果
     // const firstLines = processedLines.filter(line => line.lineNumber === 1)
@@ -808,8 +873,8 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       const ty = Math.round(trackHeight * p)
       // 写入一次性样式（含视口夹取）
       const viewportH = window.innerHeight || document.documentElement.clientHeight || 0
-      // 指示块的 fixed 基准 top，限制在视口内
-      const topBase = Math.max(0, Math.min(rect.top, Math.max(0, viewportH - indicatorHeightPx)))
+      // 指示块的 fixed 基准 top，确保指示块不超出缩略图底部
+      const topBase = rect.top
       indicator.style.top = `${topBase}px`
       indicator.style.left = `${rect.left}px`
       indicator.style.width = `${rect.width}px`
@@ -871,8 +936,24 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       document.body.appendChild(el)
       ;(indicatorPortalRef as React.MutableRefObject<HTMLDivElement | null>).current = el
       indicatorElRef.current = el
-      // 初始写入，防止第一帧为 0
-      requestWrite()
+      
+      // 确保有正确的容器测量后再写入
+      const ensureRectAndWrite = () => {
+        const thumbnailEl = thumbnailContainerRef.current
+        if (thumbnailEl) {
+          const rect = thumbnailEl.getBoundingClientRect()
+          if (rect.height > 2 && rect.width > 0) {
+            containerRectRef.current = rect
+            lastValidRectRef.current = rect
+            requestWrite()
+            return
+          }
+        }
+        // 如果还没有正确的测量，延迟重试
+        setTimeout(ensureRectAndWrite, 16)
+      }
+      ensureRectAndWrite()
+      
       return () => {
         try { document.body.removeChild(el) } catch {}
         if (indicatorPortalRef.current === el) (indicatorPortalRef as React.MutableRefObject<HTMLDivElement | null>).current = null
@@ -910,6 +991,29 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         window.removeEventListener('scroll', measure, true)
       }
     }, [])
+
+      // 缩略图滚轮 => 驱动代码滚动（阻止默认以免影响页面）
+    useEffect(() => {
+      const el = thumbnailContainerRef.current
+      const sc = scrollContainerRef.current
+      if (!el || !sc) return
+      const onWheel = (e: WheelEvent) => {
+        // 仅在缩略图区域拦截
+        e.preventDefault()
+        e.stopPropagation()
+        const totalContentPx = Math.max(1, fileLines.length * itemHeight)
+        const viewportPx = sc.clientHeight || containerHeight
+        const scrollMax = Math.max(1, totalContentPx - viewportPx)
+        const containerH = containerRectRef.current?.height ?? el.getBoundingClientRect().height
+        const ratio = scrollMax / Math.max(1, containerH)
+        const next = Math.max(0, Math.min(scrollMax, sc.scrollTop + e.deltaY * ratio))
+        sc.scrollTop = next
+        enqueueScrollTop(next)
+        setCurrentScrollTop(next)
+      }
+      el.addEventListener('wheel', onWheel, { passive: false })
+      return () => el.removeEventListener('wheel', onWheel as any)
+    }, [fileLines.length, itemHeight, containerHeight])
 
     
 
@@ -1065,6 +1169,23 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       document.addEventListener('mouseup', handleMouseUp)
     }
 
+    const handleThumbnailWheel = (e: React.WheelEvent) => {
+      const sc = scrollContainerRef.current
+      const el = thumbnailContainerRef.current
+      if (!sc || !el) return
+      e.preventDefault()
+      e.stopPropagation()
+      const totalContentPx = Math.max(1, fileLines.length * itemHeight)
+      const viewportPx = sc.clientHeight || containerHeight
+      const scrollMax = Math.max(1, totalContentPx - viewportPx)
+      const containerH = containerRectRef.current?.height ?? el.getBoundingClientRect().height
+      const ratio = scrollMax / Math.max(1, containerH)
+      const next = Math.max(0, Math.min(scrollMax, sc.scrollTop + e.deltaY * ratio))
+      sc.scrollTop = next
+      enqueueScrollTop(next)
+      setCurrentScrollTop(next)
+    }
+
     // 统一的渲染逻辑：始终渲染所有行，但通过透明度区分
     const renderThumbnailLines = () => {
       // 仅按"更改块"绘制色条，避免未修改行造成误导
@@ -1072,7 +1193,19 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       const bars: Array<{ startIdx: number; endIdx: number; type: FileLine['type']; changeIndex?: number }> = []
       let i = 0
 
-      
+      if (import.meta.env.DEV) {
+        const changed = fileLines
+          .map((l, idx) => ({ idx, type: l.type, changeIndex: l.changeIndex, lineNumber: l.lineNumber }))
+          .filter(x => x.type === 'added' || x.type === 'deleted')
+        console.log('[TailChangedPreview]', changed.slice(-8))
+        console.log('[TailWindow]', fileLines.slice(-12).map((l, idx) => ({
+          idx: fileLines.length - 12 + idx,
+          type: l.type,
+          changeIndex: l.changeIndex,
+          lineNumber: l.lineNumber
+        })))
+      }
+
       while (i < fileLines.length) {
         const line = fileLines[i]
         // 只对新增/删除绘制色条；忽略 modified
@@ -1094,6 +1227,9 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         bars.push({ startIdx: start, endIdx: end, type: thisType, changeIndex: thisChangeIndex })
         i++
       }
+      if (import.meta.env.DEV) {
+        console.log('[BarsAfterGroup]', bars.map(b => ({ type: b.type, startIdx: b.startIdx, endIdx: b.endIdx, changeIndex: b.changeIndex })).slice(-6))
+      }
       
 
       // 让色块使用与指示框一致的"trackHeight"坐标系，确保对齐
@@ -1107,7 +1243,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       const trackHeight = Math.max(0, thumbnailHeight - indicatorHeightPx)
       const scrollMax = Math.max(1, totalContentPx - viewportPx)
 
-      const elements = bars.map((bar, idx) => {
+      const barRecords = bars.map((bar, idx) => {
         // 更改块行数
         const linesCount = (bar.endIdx - bar.startIdx + 1)
         // 代码区：更改块起点（像素）= 起始索引 × 行高
@@ -1122,7 +1258,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           blockHeightPx,
           2
         )
-        if (import.meta.env.DEV && (isLastBlock || idx === 0)) {
+        if (import.meta.env.DEV && (idx === bars.length - 1 || idx === 0)) {
           const startRatio = startTopPx / totalContentPx
           const endRatio = Math.min(1, (startTopPx + blockHeightPx) / totalContentPx)
           const bottomPx = topPx + heightPx
@@ -1142,26 +1278,48 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           })
         }
        
-        
-        const cls = bar.type === 'added'
-          ? 'bg-green-300 dark:bg-green-600'
-          : bar.type === 'deleted'
-          ? 'bg-red-300 dark:bg-red-600'
-          : 'bg-orange-300 dark:bg-orange-600'
-        const isCurrent = bar.changeIndex === currentChangeIndex
+        return { idx, type: bar.type, changeIndex: bar.changeIndex, topPx, heightPx }
+      })
 
+      if (import.meta.env.DEV) {
+        console.log('[ThumbBarsRaw]', barRecords.slice(0, 8), 'count=', barRecords.length)
+      }
+      // 处理重叠：允许1px内的区间交叠也并排显示（覆盖你提供的案例：top 0/1 高度2/3）
+      const overlapTolerance = 1 // px
+      const hasOverlapOpposite = (a: any) => {
+        const aTop = a.topPx
+        const aBottom = a.topPx + a.heightPx
+        return barRecords.some(b =>
+          b !== a && b.type !== a.type && (
+            // 同 changeIndex 优先判定；若缺失也允许像素区间交叠
+            (b.changeIndex === a.changeIndex && (
+              Math.max(aTop, b.topPx) < Math.min(aBottom, b.topPx + b.heightPx)
+            )) || (
+              Math.max(aTop, b.topPx) - Math.min(aBottom, b.topPx + b.heightPx) < overlapTolerance
+            )
+          )
+        )
+      }
+      const elements = barRecords.map((rec) => {
+        const overlapOpposite = hasOverlapOpposite(rec)
+        if (import.meta.env.DEV && overlapOpposite) {
+        }
+        const cls = rec.type === 'added'
+          ? 'bg-green-300 dark:bg-green-600'
+          : 'bg-red-300 dark:bg-red-600'
+        const isCurrent = rec.changeIndex === currentChangeIndex
+        const width = overlapOpposite ? '50%' : '100%'
+        const left = overlapOpposite ? (rec.type === 'deleted' ? '0' : '50%') : '0'
         return (
           <div
-            key={idx}
-            className={`absolute z-0 w-full gitlite-thumb-bar ${cls} ${isCurrent ? 'ring-1 ring-blue-400' : ''}`}
-            data-bar-idx={idx}
-            style={{ top: `${topPx}px`, height: `${heightPx}px`, opacity: 1 }}
-            title={`更改块 ${String(bar.changeIndex ?? '')}`}
+            key={rec.idx}
+            className={`absolute z-0 gitlite-thumb-bar ${cls} ${isCurrent ? 'ring-1 ring-blue-400' : ''}`}
+            data-bar-idx={rec.idx}
+            style={{ top: `${rec.topPx}px`, height: `${rec.heightPx}px`, width, left, opacity: 1 }}
+            title={`更改块 ${String(rec.changeIndex ?? '')}`}
           />
         )
       })
-
-      
 
       return elements
     }
@@ -1170,20 +1328,42 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
 
     return (
       <>
-      <div 
+        <div 
         ref={thumbnailContainerRef}
-        className={`absolute right-0 top-0 w-16 h-full bg-gray-100 dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700 overflow-hidden select-none transition-opacity duration-200 gitlite-thumb-container ${
+        className={`absolute right-0 top-0 w-16 h-full bg-gray-100 dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700 overflow-visible select-none transition-opacity duration-200 gitlite-thumb-container ${
            showThumbnail ? 'opacity-100 cursor-pointer' : 'opacity-0 pointer-events-none'
          }`}
+        style={{ overscrollBehavior: 'contain' as any, WebkitOverflowScrolling: 'auto' as any }}
          onClick={undefined}
          onMouseDown={showThumbnail ? handleThumbnailMouseDown : undefined}
+         onWheel={(e) => {
+           console.log('[React onWheel]', e.deltaY)
+           e.preventDefault()
+           e.stopPropagation()
+           const sc = scrollContainerRef.current
+           if (!sc) return
+           const totalContentPx = Math.max(1, fileLines.length * itemHeight)
+           const viewportPx = sc.clientHeight || containerHeight
+           const scrollMax = Math.max(1, totalContentPx - viewportPx)
+           const containerH = containerRectRef.current?.height ?? thumbnailContainerRef.current?.getBoundingClientRect().height ?? 0
+           const ratio = scrollMax / Math.max(1, containerH)
+           const next = Math.max(0, Math.min(scrollMax, sc.scrollTop + e.deltaY * ratio))
+           sc.scrollTop = next
+           enqueueScrollTop(next)
+           setCurrentScrollTop(next)
+         }}
          title={showThumbnail ? "点击或拖拽跳转到对应位置" : undefined}
        >
         {/* 调试开关按钮（不影响布局） */}
         {/* 移除缩略图内按钮，避免难以点击。调试入口统一放到工具栏。 */}
          {/* 调试面板移至全局 portal，避免与缩略图重合（按钮已移除） */}
          {/* 缩略图内容 */}
-         <div ref={thumbnailInnerRef} className="relative w-full gitlite-thumb-inner" style={{ height: `${Math.max(thumbnailHeight, 1)}px` }}>
+        <div
+          ref={thumbnailInnerRef}
+          className="relative w-full gitlite-thumb-inner"
+          style={{ height: `${Math.max(thumbnailHeight, 1)}px` }}
+          onWheel={showThumbnail ? handleThumbnailWheel : undefined}
+        >
            {renderThumbnailLines()}
            
            {/* 内部指示框已移除，改为使用 fixed portal */}
@@ -1627,7 +1807,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       </div>
       
       {isExpanded && (
-        <div className="relative max-h-96 overflow-hidden">
+        <div className="relative max-h-96 overflow-visible">
           <div 
             ref={scrollContainerRef} 
             className={`overflow-y-auto ${showThumbnail ? 'pr-16' : ''}`}
