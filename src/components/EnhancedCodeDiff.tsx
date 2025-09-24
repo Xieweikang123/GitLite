@@ -130,22 +130,22 @@ const EnhancedCodeDiff: React.FC<EnhancedCodeDiffProps> = ({
           <div 
             key={index}
             data-line-number={line.lineNumber}
-            className={`px-4 py-1 flex items-start gap-4 transition-all duration-200 ${
+            className={`px-4 py-1 flex items-start transition-all duration-200 ${
               line.type === 'added' ? 'bg-green-50 border-l-4 border-green-500 dark:bg-green-900/20 dark:border-green-400' :
               line.type === 'deleted' ? 'bg-red-50 border-l-4 border-red-500 dark:bg-red-900/20 dark:border-red-400' :
               line.type === 'modified' ? 'bg-yellow-50 border-l-4 border-yellow-500 dark:bg-yellow-900/20 dark:border-yellow-400' :
               'bg-transparent'
             }`}
           >
-            <div className="flex-shrink-0 w-12 text-right text-gray-500 dark:text-gray-400 select-none">
+            <div className="flex-shrink-0 w-12 text-right text-gray-500 dark:text-gray-400 select-none mr-4">
               {line.lineNumber}
             </div>
-            <div className="flex-shrink-0 w-8 text-center">
+            <div className="flex-shrink-0 w-8 text-center mr-4">
               {line.type === 'added' && <span className="text-green-600 dark:text-green-400">+</span>}
               {line.type === 'deleted' && <span className="text-red-600 dark:text-red-400">-</span>}
               {line.type === 'unchanged' && <span className="text-gray-400"> </span>}
             </div>
-            <div className="flex-1 min-w-0">
+            <div className="flex-1 min-w-0 w-full">
               <SyntaxHighlighter
                 code={line.content}
                 language={language || getLanguageFromPath(filePath)}
@@ -190,15 +190,15 @@ const EnhancedCodeDiff: React.FC<EnhancedCodeDiffProps> = ({
             
             return (
               <React.Fragment key={index}>
-                <div className={`px-4 py-1 flex items-start gap-2 ${
+                <div className={`px-4 py-1 flex items-start ${
                   leftLine.type === 'deleted' ? 'bg-red-50 border-l-4 border-red-500 dark:bg-red-900/20 dark:border-red-400' :
                   leftLine.type === 'modified' ? 'bg-red-50 border-l-4 border-red-500 dark:bg-red-900/20 dark:border-red-400' :
                   'bg-transparent'
                 }`}>
-                  <div className="flex-shrink-0 w-8 text-center text-red-600 dark:text-red-400">
+                  <div className="flex-shrink-0 w-8 text-center text-red-600 dark:text-red-400 mr-2">
                     {leftLine.type === 'deleted' ? '-' : ' '}
                   </div>
-                  <div className="flex-1 min-w-0">
+                  <div className="flex-1 min-w-0 w-full">
                     <SyntaxHighlighter
                       code={leftLine.content}
                       language={language || getLanguageFromPath(filePath)}
@@ -207,15 +207,15 @@ const EnhancedCodeDiff: React.FC<EnhancedCodeDiffProps> = ({
                   </div>
                 </div>
                 
-                <div className={`px-4 py-1 flex items-start gap-2 ${
+                <div className={`px-4 py-1 flex items-start ${
                   rightLine.type === 'added' ? 'bg-green-50 border-l-4 border-green-500 dark:bg-green-900/20 dark:border-green-400' :
                   rightLine.type === 'modified' ? 'bg-green-50 border-l-4 border-green-500 dark:bg-green-900/20 dark:border-green-400' :
                   'bg-transparent'
                 }`}>
-                  <div className="flex-shrink-0 w-8 text-center text-green-600 dark:text-green-400">
+                  <div className="flex-shrink-0 w-8 text-center text-green-600 dark:text-green-400 mr-2">
                     {rightLine.type === 'added' ? '+' : ' '}
                   </div>
-                  <div className="flex-1 min-w-0">
+                  <div className="flex-1 min-w-0 w-full">
                     <SyntaxHighlighter
                       code={rightLine.content}
                       language={language || getLanguageFromPath(filePath)}

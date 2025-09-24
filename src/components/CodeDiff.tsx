@@ -413,7 +413,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         // 平滑滚动到目标位置
         scrollContainerRef.current?.scrollTo({
           top: targetScrollTop,
-          behavior: 'smooth'
+          behavior: 'instant'
         })
         
         // 更新可见范围以确保目标行被渲染
@@ -421,8 +421,8 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           const start = Math.max(0, targetLineIndex - 10)
           const end = Math.min(lines.length, targetLineIndex + 30)
           setVisibleRange({ start, end })
-        }, 100)
-      }, 100)
+        }, 10)
+      }, 10)
     }
   }
 
@@ -1333,7 +1333,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         className={`absolute right-0 top-0 w-16 h-full bg-gray-100 dark:bg-gray-800 border-l border-gray-200 dark:border-gray-700 overflow-visible select-none transition-opacity duration-200 gitlite-thumb-container ${
            showThumbnail ? 'opacity-100 cursor-pointer' : 'opacity-0 pointer-events-none'
          }`}
-        style={{ overscrollBehavior: 'contain' as any, WebkitOverflowScrolling: 'auto' as any }}
+        style={{ zIndex: 1, overscrollBehavior: 'contain' as any, WebkitOverflowScrolling: 'auto' as any }}
          onClick={undefined}
          onMouseDown={showThumbnail ? handleThumbnailMouseDown : undefined}
          onWheel={(e) => {
@@ -1380,21 +1380,21 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       <div 
         key={index}
         data-line-number={line.lineNumber}
-        className={`px-4 py-1 flex items-start gap-4 transition-all duration-200 ${
+        className={`px-4 py-1 flex items-start transition-all duration-200 ${
           line.type === 'added' ? 'bg-green-50 border-l-4 border-green-500 dark:bg-green-900/20 dark:border-green-400' :
           line.type === 'deleted' ? 'bg-red-50 border-l-4 border-red-500 dark:bg-red-900/20 dark:border-red-400' :
           line.type === 'modified' ? 'bg-orange-50 border-l-4 border-orange-500 dark:bg-orange-900/20 dark:border-orange-400' :
           'bg-white hover:bg-gray-50 dark:bg-gray-900 dark:hover:bg-gray-800'
-        }`}
-        style={{ height: itemHeight }}
+        } ${showThumbnail ? '-mr-16' : ''}`}
+        style={{ height: itemHeight, zIndex: 2 }}
       >
         {/* Line Number */}
-        <div className="text-xs text-gray-500 dark:text-gray-400 w-12 text-right flex-shrink-0">
+        <div className="text-xs text-gray-500 dark:text-gray-400 w-12 text-right flex-shrink-0 mr-4">
           {line.lineNumber}
         </div>
         
         {/* Line Icon */}
-        <div className="w-4 flex-shrink-0 text-center">
+        <div className="w-4 flex-shrink-0 text-center mr-4">
           {line.type === 'added' && <span className="text-green-600 dark:text-green-400 font-bold">+</span>}
           {line.type === 'deleted' && <span className="text-red-600 dark:text-red-400 font-bold">-</span>}
           {line.type === 'modified' && <span className="text-orange-600 dark:text-orange-400 font-bold">~</span>}
@@ -1402,7 +1402,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         </div>
         
         {/* Line Content */}
-        <div className="flex-1 min-w-0" style={{ whiteSpace: 'pre' }}>
+        <div className="flex-1 min-w-0 w-full" style={{ whiteSpace: 'pre' }}>
           {line.segments ? (
             // 显示字符级别的差异
             <div className="inline">
@@ -1475,7 +1475,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       const offsetY = visibleRange.start * itemHeight
       
       return (
-        <div className="font-mono text-sm relative" style={{ height: totalHeight }}>
+        <div className="font-mono text-sm relative" style={{ height: totalHeight, width: 'max-content' ,padding: '0 16px'  }}>  
           <div style={{ transform: `translateY(${offsetY}px)` }}>
             {visibleLines.map((line, index) => {
               const actualIndex = visibleRange.start + index
@@ -1547,20 +1547,21 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
             return (
               <div key={index} className="contents">
                 {/* 左侧（删除） */}
-                <div className={`px-4 py-1 flex items-start gap-2 ${
+                <div className={`px-4 py-1 flex items-start ${
                   item.type === 'deleted' ? 'bg-red-50 border-l-4 border-red-500 dark:bg-red-900/20 dark:border-red-400' :
                   item.type === 'modified' ? 'bg-red-50 border-l-4 border-red-500 dark:bg-red-900/20 dark:border-red-400' :
                   'bg-white hover:bg-gray-50 dark:bg-gray-900 dark:hover:bg-gray-800'
-                } border-r border-gray-200 dark:border-gray-700`}>
-                  <div className="text-xs text-gray-500 dark:text-gray-400 w-8 text-right flex-shrink-0">
+                } border-r border-gray-200 dark:border-gray-700 ${showThumbnail ? '-mr-16' : ''}`}
+                style={{ zIndex: 2 }}>
+                  <div className="text-xs text-gray-500 dark:text-gray-400 w-8 text-right flex-shrink-0 mr-2">
                     {item.leftLine?.oldLineNumber || item.leftLine?.lineNumber || ''}
                   </div>
-                  <div className="w-4 flex-shrink-0 text-center">
+                  <div className="w-4 flex-shrink-0 text-center mr-2">
                     {item.type === 'deleted' && <span className="text-red-600 dark:text-red-400 font-bold">-</span>}
                     {item.type === 'modified' && <span className="text-red-600 dark:text-red-400 font-bold">-</span>}
                     {item.type === 'unchanged' && <span className="text-gray-400 dark:text-gray-500"> </span>}
                   </div>
-                  <div className="flex-1 min-w-0 text-red-800 dark:text-red-200" style={{ whiteSpace: 'pre' }}>
+                  <div className="flex-1 min-w-0 w-full text-red-800 dark:text-red-200" style={{ whiteSpace: 'pre' }}>
                     {item.type === 'modified' && item.originalLine?.segments ? (
                       <Tooltip
                         content={
@@ -1604,20 +1605,21 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
                 </div>
                 
                 {/* 右侧（添加） */}
-                <div className={`px-4 py-1 flex items-start gap-2 ${
+                <div className={`px-4 py-1 flex items-start ${
                   item.type === 'added' ? 'bg-green-50 border-l-4 border-green-500 dark:bg-green-900/20 dark:border-green-400' :
                   item.type === 'modified' ? 'bg-green-50 border-l-4 border-green-500 dark:bg-green-900/20 dark:border-green-400' :
                   'bg-white hover:bg-gray-50 dark:bg-gray-900 dark:hover:bg-gray-800'
-                }`}>
-                  <div className="text-xs text-gray-500 dark:text-gray-400 w-8 text-right flex-shrink-0">
+                } ${showThumbnail ? '-mr-16' : ''}`}
+                style={{ zIndex: 2 }}>
+                  <div className="text-xs text-gray-500 dark:text-gray-400 w-8 text-right flex-shrink-0 mr-2">
                     {item.rightLine?.lineNumber || ''}
                   </div>
-                  <div className="w-4 flex-shrink-0 text-center">
+                  <div className="w-4 flex-shrink-0 text-center mr-2">
                     {item.type === 'added' && <span className="text-green-600 dark:text-green-400 font-bold">+</span>}
                     {item.type === 'modified' && <span className="text-green-600 dark:text-green-400 font-bold">+</span>}
                     {item.type === 'unchanged' && <span className="text-gray-400 dark:text-gray-500"> </span>}
                   </div>
-                  <div className="flex-1 min-w-0 text-green-800 dark:text-green-200" style={{ whiteSpace: 'pre' }}>
+                  <div className="flex-1 min-w-0 w-full text-green-800 dark:text-green-200" style={{ whiteSpace: 'pre' }}>
                     {item.type === 'modified' && item.originalLine?.segments ? (
                       <Tooltip
                         content={
@@ -1810,7 +1812,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         <div className="relative max-h-96 overflow-visible">
           <div 
             ref={scrollContainerRef} 
-            className={`overflow-y-auto ${showThumbnail ? 'pr-16' : ''}`}
+            className={`overflow-y-auto bg-white dark:bg-gray-900`}
             style={{ height: `${containerHeight}px` }}
           >
             {isLoading ? (

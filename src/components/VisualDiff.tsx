@@ -190,10 +190,10 @@ export function VisualDiff({ diff, fileName, commitInfo }: VisualDiffProps) {
                         {hunk.lines.map((line, lineIndex) => (
                           <div 
                             key={lineIndex}
-                            className={`px-4 py-1 flex items-start gap-4 ${getLineClassName(line.type)}`}
+                            className={`px-4 py-1 flex items-start ${getLineClassName(line.type)}`}
                           >
                             {/* Line Numbers */}
-                            <div className="flex gap-2 text-xs text-gray-500 min-w-0 flex-shrink-0">
+                            <div className="flex gap-2 text-xs text-gray-500 min-w-0 flex-shrink-0 mr-4">
                               <span className="w-8 text-right">
                                 {line.oldLineNumber || ''}
                               </span>
@@ -203,12 +203,12 @@ export function VisualDiff({ diff, fileName, commitInfo }: VisualDiffProps) {
                             </div>
                             
                             {/* Line Icon */}
-                            <div className="w-4 flex-shrink-0 text-center">
+                            <div className="w-4 flex-shrink-0 text-center mr-4">
                               {getLineIcon(line.type)}
                             </div>
                             
                             {/* Line Content */}
-                            <div className="flex-1 min-w-0 break-all">
+                            <div className="flex-1 min-w-0 w-full break-all">
                               {line.content || ' '}
                             </div>
                           </div>
@@ -224,6 +224,4 @@ export function VisualDiff({ diff, fileName, commitInfo }: VisualDiffProps) {
       )}
     </Card>
   )
-}
-
- 
+} 
