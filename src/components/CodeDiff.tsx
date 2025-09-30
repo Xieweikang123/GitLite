@@ -1747,7 +1747,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       </div>
       
       {isExpanded && (
-        <div ref={outerContainerRef} className="relative max-h-96 overflow-visible">
+        <div ref={outerContainerRef} className="relative h-full overflow-visible">
           <div 
             ref={scrollContainerRef} 
             className={`overflow-y-auto bg-white dark:bg-gray-900`}

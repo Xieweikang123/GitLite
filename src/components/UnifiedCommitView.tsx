@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useCallback, useMemo, memo, useRef, useEffect } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -37,23 +37,30 @@ export function UnifiedCommitView({
   const [diff, setDiff] = useState<string>('')
   const [loadingFiles, setLoadingFiles] = useState(false)
   const [loadingDiff, setLoadingDiff] = useState(false)
+  const loadingTimeoutRef = useRef<number | null>(null)
+  const currentLoadingFileRef = useRef<string | null>(null)
 
-  // 过滤提交
-  const filteredCommits = commits.filter(commit => {
-    if (!searchTerm.trim()) return true
-    const term = searchTerm.toLowerCase()
-    return commit.message.toLowerCase().includes(term) ||
-           commit.author.toLowerCase().includes(term) ||
-           commit.short_id.toLowerCase().includes(term)
-  })
+  // 过滤提交 - 使用 useMemo 优化
+  const filteredCommits = useMemo(() => {
+    return commits.filter(commit => {
+      if (!searchTerm.trim()) return true
+      const term = searchTerm.toLowerCase()
+      return commit.message.toLowerCase().includes(term) ||
+             commit.author.toLowerCase().includes(term) ||
+             commit.short_id.toLowerCase().includes(term)
+    })
+  }, [commits, searchTerm])
 
-  // 计算待推送提交集合
-  const pendingPushIds = new Set(
-    commits.slice(0, aheadCount).map(c => c.id)
-  )
+  // 计算待推送提交集合 - 使用 useMemo 优化
+  const pendingPushIds = useMemo(() => {
+    return new Set(commits.slice(0, aheadCount).map(c => c.id))
+  }, [commits, aheadCount])
 
-  // 处理提交选择
-  const handleCommitSelect = async (commit: CommitInfo) => {
+  // 处理提交选择 - 使用 useCallback 优化
+  const handleCommitSelect = useCallback(async (commit: CommitInfo) => {
+    // 如果已经是当前选中的提交，直接返回
+    if (selectedCommit?.id === commit.id) return
+    
     setSelectedCommit(commit)
     setSelectedFile(null)
     setDiff('')
@@ -67,37 +74,57 @@ export function UnifiedCommitView({
     } finally {
       setLoadingFiles(false)
     }
-  }
+  }, [selectedCommit, onGetCommitFiles])
 
-  // 处理文件选择
-  const handleFileSelect = async (filePath: string) => {
+  // 处理文件选择 - 优化版本，立即显示加载状态
+  const handleFileSelect = useCallback(async (filePath: string) => {
+    // 如果已经是当前选中的文件，直接返回
+    if (selectedFile === filePath) return
+    
+    // 清除之前的加载超时
+    if (loadingTimeoutRef.current) {
+      clearTimeout(loadingTimeoutRef.current)
+    }
+    
+    // 立即更新选中状态和加载状态
     setSelectedFile(filePath)
+    setLoadingDiff(true)
+    currentLoadingFileRef.current = filePath
     
     if (!selectedCommit) {
       console.error('❌ 没有选中的提交')
+      setLoadingDiff(false)
       return
     }
     
     try {
-      setLoadingDiff(true)
-      console.info('[DiffFlow] request single-file diff', { commitId: selectedCommit.id, filePath })
       const diffContent = await onGetSingleFileDiff(selectedCommit.id, filePath)
-      console.info('[DiffFlow] got diff', {
-        length: diffContent?.length || 0,
-        isEmpty: !diffContent || diffContent.trim() === '',
-        hasHeader: diffContent?.startsWith('diff --git') || false,
-        hasHunk: diffContent?.includes('@@') || false
-      })
-      setDiff(diffContent)
+      
+      // 只有当前文件仍然是选中的文件时才更新
+      if (currentLoadingFileRef.current === filePath) {
+        setDiff(diffContent || '')
+        setLoadingDiff(false)
+      }
     } catch (error) {
       console.error('❌ 获取文件差异失败:', error)
-    } finally {
-      setLoadingDiff(false)
+      if (currentLoadingFileRef.current === filePath) {
+        setDiff('')
+        setLoadingDiff(false)
+      }
     }
-  }
+  }, [selectedFile, selectedCommit, onGetSingleFileDiff])
 
-  // 获取状态图标
-  const getStatusIcon = (status: string) => {
+  // 清理定时器
+  useEffect(() => {
+    return () => {
+      if (loadingTimeoutRef.current) {
+        clearTimeout(loadingTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  // 获取状态图标 - 使用 useMemo 优化
+  const getStatusIcon = useCallback((status: string) => {
     switch (status) {
       case 'added':
         return <Plus className="h-4 w-4 text-green-600 dark:text-green-400" />
@@ -110,9 +137,9 @@ export function UnifiedCommitView({
       default:
         return <FileText className="h-4 w-4 text-gray-600 dark:text-gray-400" />
     }
-  }
+  }, [])
 
-  const getStatusColor = (status: string) => {
+  const getStatusColor = useCallback((status: string) => {
     switch (status) {
       case 'added':
         return 'bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-300 dark:border-green-700'
@@ -125,9 +152,9 @@ export function UnifiedCommitView({
       default:
         return 'bg-gray-100 text-gray-800 border-gray-200 dark:bg-gray-800/50 dark:text-gray-300 dark:border-gray-600'
     }
-  }
+  }, [])
 
-  const getStatusText = (status: string) => {
+  const getStatusText = useCallback((status: string) => {
     switch (status) {
       case 'added': return '新增'
       case 'modified': return '修改'
@@ -135,12 +162,76 @@ export function UnifiedCommitView({
       case 'renamed': return '重命名'
       default: return status
     }
-  }
+  }, [])
+
+  // 优化的文件项组件 - 使用更严格的 memo 比较
+  const FileItem = memo(({ file, isSelected, onSelect, getStatusIcon, getStatusColor, getStatusText }: {
+    file: FileChange
+    isSelected: boolean
+    onSelect: (filePath: string) => void
+    getStatusIcon: (status: string) => React.ReactNode
+    getStatusColor: (status: string) => string
+    getStatusText: (status: string) => string
+  }) => {
+    const handleClick = useCallback(() => {
+      onSelect(file.path)
+    }, [onSelect, file.path])
+
+    return (
+      <div
+        className={`border rounded p-2 cursor-pointer transition-colors ${
+          isSelected
+            ? 'bg-accent border-primary'
+            : 'hover:bg-accent'
+        }`}
+        onClick={handleClick}
+      >
+        <div className="flex items-start justify-between">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              {getStatusIcon(file.status)}
+              <span className="text-sm font-medium truncate">
+                {file.path}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge 
+                variant="outline" 
+                className={`text-xs ${getStatusColor(file.status)}`}
+              >
+                {getStatusText(file.status)}
+              </Badge>
+              {(file.additions > 0 || file.deletions > 0) && (
+                <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                  <span className="text-green-600 dark:text-green-400">+{file.additions}</span>
+                  <span className="text-red-600 dark:text-red-400">-{file.deletions}</span>
+                </div>
+              )}
+            </div>
+          </div>
+          {isSelected && (
+            <div className="ml-2">
+              <div className="w-2 h-2 bg-primary rounded-full"></div>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }, (prevProps, nextProps) => {
+    // 自定义比较函数，只在关键属性变化时重新渲染
+    return (
+      prevProps.file.path === nextProps.file.path &&
+      prevProps.file.status === nextProps.file.status &&
+      prevProps.file.additions === nextProps.file.additions &&
+      prevProps.file.deletions === nextProps.file.deletions &&
+      prevProps.isSelected === nextProps.isSelected
+    )
+  })
 
   return (
-    <div className="flex flex-col h-[calc(100vh-200px)] gap-4">
+    <div className="flex flex-col h-full gap-4">
       {/* 上方：提交记录单独一列 */}
-      <div className="flex-shrink-0" style={{height: '40%', maxHeight: '400px'}}>
+      <div className="flex-shrink-0" style={{height: '35%', maxHeight: '300px'}}>
         {/* 提交记录 */}
         <div className="h-full">
         <Card className="h-full flex flex-col">
@@ -222,9 +313,9 @@ export function UnifiedCommitView({
       </div>
 
       {/* 下方：文件变更和代码差异并列 */}
-      <div className="grid grid-cols-2 gap-4 flex-1 min-h-0" style={{overflow: 'auto'}}>
+      <div className="grid grid-cols-2 gap-4 flex-1 min-h-0">
         {/* 文件变更 */}
-        <div className="h-full max-h-full">
+        <div className="h-full">
         <Card className="h-full flex flex-col">
           <CardHeader className="py-1 flex-shrink-0">
             <CardTitle className="flex items-center gap-2 text-base">
@@ -248,45 +339,15 @@ export function UnifiedCommitView({
             ) : (
               <div className="space-y-1 h-full overflow-y-auto">
                 {commitFiles.map((file) => (
-                  <div
+                  <FileItem
                     key={file.path}
-                    className={`border rounded p-2 cursor-pointer transition-colors ${
-                      selectedFile === file.path
-                        ? 'bg-accent border-primary'
-                        : 'hover:bg-accent'
-                    }`}
-                    onClick={() => { handleFileSelect(file.path) }}
-                  >
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          {getStatusIcon(file.status)}
-                          <span className="text-sm font-medium truncate">
-                            {file.path}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Badge 
-                            variant="outline" 
-                            className={`text-xs ${getStatusColor(file.status)}`}
-                          >
-                            {getStatusText(file.status)}
-                          </Badge>
-                          {(file.additions > 0 || file.deletions > 0) && (
-                            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                              <span className="text-green-600 dark:text-green-400">+{file.additions}</span>
-                              <span className="text-red-600 dark:text-red-400">-{file.deletions}</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                      {selectedFile === file.path && (
-                        <div className="ml-2">
-                          <div className="w-2 h-2 bg-primary rounded-full"></div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                    file={file}
+                    isSelected={selectedFile === file.path}
+                    onSelect={handleFileSelect}
+                    getStatusIcon={getStatusIcon}
+                    getStatusColor={getStatusColor}
+                    getStatusText={getStatusText}
+                  />
                 ))}
               </div>
             )}
@@ -295,7 +356,7 @@ export function UnifiedCommitView({
         </div>
 
         {/* 代码差异 */}
-        <div className="h-full max-h-full">
+        <div className="h-full">
         <Card className="h-full flex flex-col">
           <CardHeader className="py-1">
             <div className="flex items-center justify-between">
@@ -338,12 +399,7 @@ export function UnifiedCommitView({
             </div>
           </CardHeader>
           <CardContent className="flex-1 min-h-0 py-1 overflow-hidden">
-            {loadingDiff ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="h-6 w-6 animate-spin" />
-                <span className="ml-2">加载差异中...</span>
-              </div>
-            ) : !selectedCommit ? (
+            {!selectedCommit ? (
               <div className="text-center py-8">
                 <p className="text-muted-foreground">选择一个提交以查看差异</p>
               </div>
@@ -351,8 +407,26 @@ export function UnifiedCommitView({
               <div className="text-center py-8">
                 <p className="text-muted-foreground">选择一个文件以查看差异</p>
               </div>
+            ) : loadingDiff ? (
+              <div className="h-full overflow-hidden bg-white dark:bg-gray-900 relative">
+                {diff && (
+                  <div className="h-full">
+                    <VSCodeDiff
+                      diff={diff}
+                      filePath={selectedFile}
+                      repoPath={repoPath || ''}
+                    />
+                  </div>
+                )}
+                <div className="absolute inset-0 bg-background/80 flex items-center justify-center">
+                  <div className="flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span className="text-sm">加载中...</span>
+                  </div>
+                </div>
+              </div>
             ) : diff ? (
-              <div className="h-full overflow-auto bg-white dark:bg-gray-900">
+              <div className="h-full overflow-hidden bg-white dark:bg-gray-900">
                 <VSCodeDiff
                   diff={diff}
                   filePath={selectedFile}
