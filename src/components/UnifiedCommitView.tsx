@@ -138,13 +138,15 @@ export function UnifiedCommitView({
   }
 
   return (
-    <div className="grid grid-cols-12 gap-4 h-[calc(100vh-200px)]">
-      {/* 左栏：提交列表 */}
-      <div className="col-span-4">
-        <Card className="h-full">
-          <CardHeader>
+    <div className="flex flex-col h-[calc(100vh-200px)] gap-4">
+      {/* 上方：提交记录单独一列 */}
+      <div className="flex-shrink-0" style={{height: '40%', maxHeight: '400px'}}>
+        {/* 提交记录 */}
+        <div className="h-full">
+        <Card className="h-full flex flex-col">
+          <CardHeader className="py-1">
             <div className="flex items-center justify-between">
-              <CardTitle>提交记录</CardTitle>
+              <CardTitle className="text-base">提交记录</CardTitle>
               <div className="relative">
                 <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
                 <Input
@@ -156,25 +158,25 @@ export function UnifiedCommitView({
               </div>
             </div>
           </CardHeader>
-          <CardContent>
-            <div className="space-y-2 max-h-[calc(100vh-300px)] overflow-y-auto">
+          <CardContent className="flex-1 min-h-0 overflow-hidden py-2">
+            <div className="space-y-0.5 h-full overflow-y-auto">
               {filteredCommits.map((commit) => (
                 <div
                   key={commit.id}
-                  className={`border rounded-lg p-3 cursor-pointer transition-colors ${
+                  className={`border rounded p-1.5 cursor-pointer transition-colors ${
                     selectedCommit?.id === commit.id
                       ? 'bg-accent border-primary'
                       : 'hover:bg-accent'
                   }`}
                   onClick={() => handleCommitSelect(commit)}
                 >
-                  <div className="space-y-2">
+                  <div className="space-y-0.5">
                     {/* 提交信息 */}
                     <div className="flex items-start justify-between">
-                      <p className="text-sm font-medium text-foreground line-clamp-2 flex-1 min-w-0 pr-2">
+                      <p className="text-sm font-medium text-foreground line-clamp-1 flex-1 min-w-0 pr-2">
                         {commit.message}
                       </p>
-                      <div className="flex items-center gap-2 flex-shrink-0">
+                      <div className="flex items-center gap-1 flex-shrink-0">
                         {pendingPushIds.has(commit.id) && (
                           <Badge className="bg-blue-600 text-white hover:bg-blue-600/90 text-xs">待推送</Badge>
                         )}
@@ -184,8 +186,9 @@ export function UnifiedCommitView({
                     
                     {/* 作者和日期 */}
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
                         <span className="font-medium">{commit.author}</span>
+                        <span>•</span>
                         <span>{commit.date}</span>
                       </div>
                     </div>
@@ -215,19 +218,22 @@ export function UnifiedCommitView({
             </div>
           </CardContent>
         </Card>
+        </div>
       </div>
 
-      {/* 中栏：文件变更列表 */}
-      <div className="col-span-3">
-        <Card className="h-full">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <FileText className="h-5 w-5" />
+      {/* 下方：文件变更和代码差异并列 */}
+      <div className="grid grid-cols-2 gap-4 flex-1 min-h-0" style={{overflow: 'auto'}}>
+        {/* 文件变更 */}
+        <div className="h-full max-h-full">
+        <Card className="h-full flex flex-col">
+          <CardHeader className="py-1 flex-shrink-0">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <FileText className="h-4 w-4" />
               文件变更
               {commitFiles.length > 0 && ` (${commitFiles.length})`}
             </CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex-1 min-h-0 py-1 overflow-hidden">
             {loadingFiles ? (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="h-6 w-6 animate-spin" />
@@ -240,11 +246,11 @@ export function UnifiedCommitView({
                 </p>
               </div>
             ) : (
-              <div className="space-y-2 max-h-[calc(100vh-300px)] overflow-y-auto">
+              <div className="space-y-1 h-full overflow-y-auto">
                 {commitFiles.map((file) => (
                   <div
                     key={file.path}
-                    className={`border rounded-lg p-3 cursor-pointer transition-colors ${
+                    className={`border rounded p-2 cursor-pointer transition-colors ${
                       selectedFile === file.path
                         ? 'bg-accent border-primary'
                         : 'hover:bg-accent'
@@ -286,17 +292,52 @@ export function UnifiedCommitView({
             )}
           </CardContent>
         </Card>
-      </div>
+        </div>
 
-      {/* 右栏：差异查看 */}
-      <div className="col-span-5">
-        <Card className="h-full">
-          <CardHeader>
-            <CardTitle>
-              {selectedFile ? `差异: ${selectedFile}` : '代码差异'}
-            </CardTitle>
+        {/* 代码差异 */}
+        <div className="h-full max-h-full">
+        <Card className="h-full flex flex-col">
+          <CardHeader className="py-1">
+            <div className="flex items-center justify-between">
+              {/* <CardTitle className="text-base">
+                {selectedFile ? `差异: ${selectedFile}` : '代码差异'}
+              </CardTitle> */}
+              {/* {selectedFile && commitFiles.length > 1 && (
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const currentIndex = commitFiles.findIndex(f => f.path === selectedFile)
+                      if (currentIndex > 0) {
+                        handleFileSelect(commitFiles[currentIndex - 1].path)
+                      }
+                    }}
+                    disabled={commitFiles.findIndex(f => f.path === selectedFile) === 0}
+                  >
+                    上一个文件
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const currentIndex = commitFiles.findIndex(f => f.path === selectedFile)
+                      if (currentIndex < commitFiles.length - 1) {
+                        handleFileSelect(commitFiles[currentIndex + 1].path)
+                      }
+                    }}
+                    disabled={commitFiles.findIndex(f => f.path === selectedFile) === commitFiles.length - 1}
+                  >
+                    下一个文件
+                  </Button>
+                  <span className="text-sm text-muted-foreground">
+                    {commitFiles.findIndex(f => f.path === selectedFile) + 1} / {commitFiles.length}
+                  </span>
+                </div>
+              )} */}
+            </div>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex-1 min-h-0 py-1 overflow-hidden">
             {loadingDiff ? (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="h-6 w-6 animate-spin" />
@@ -311,7 +352,7 @@ export function UnifiedCommitView({
                 <p className="text-muted-foreground">选择一个文件以查看差异</p>
               </div>
             ) : diff ? (
-              <div className="max-h-[calc(100vh-300px)] overflow-auto bg-white dark:bg-gray-900">
+              <div className="h-full overflow-auto bg-white dark:bg-gray-900">
                 <VSCodeDiff
                   diff={diff}
                   filePath={selectedFile}
@@ -325,6 +366,7 @@ export function UnifiedCommitView({
             )}
           </CardContent>
         </Card>
+        </div>
       </div>
     </div>
   )

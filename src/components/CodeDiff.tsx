@@ -351,13 +351,11 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
   
 
   useEffect(() => {
-    console.info('[DiffFlow] CodeDiff mount/update', { hasDiff: !!diff, diffLength: diff?.length || 0, filePath ,diff })
     
     if (diff) {
       setIsLoading(true) // 开始加载
       
       const parsedLines = parseDiffToFullFile(diff)
-      console.info('[DiffFlow] parsed', { lines: parsedLines.length, added: parsedLines.filter(l=>l.type==='added').length, deleted: parsedLines.filter(l=>l.type==='deleted').length, unchanged: parsedLines.filter(l=>l.type==='unchanged').length })
       
       // 为更改行添加索引
       const linesWithChangeIndex = addChangeIndices(parsedLines)
@@ -383,16 +381,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
             content: (l.content ?? '').slice(0, 120),
             changeIndex: l.changeIndex
           }))
-          console.info('[DiffFlow] final lines summary', {
-            total: finalLines.length,
-            added: finalLines.filter(x => x.type === 'added').length,
-            deleted: finalLines.filter(x => x.type === 'deleted').length,
-            unchanged: finalLines.filter(x => x.type === 'unchanged').length
-          })
-          console.table(preview)
-          console.groupCollapsed('[DiffFlow] final lines (full)')
-          console.log(finalLines)
-          console.groupEnd()
         } catch {}
         setFileLines(finalLines)
         setChangeCount(newChangeCount)
@@ -453,7 +441,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
   const fillUnchangedLines = async (lines: FileLine[], filePath: string, repoPath: string): Promise<FileLine[]> => {
     try {
       // 关键日志：开始补全文件
-      console.info('[DiffFlow] fill unchanged lines', { filePath, repoPath, diffLinesCount: lines.length })
       const { invoke } = await import('@tauri-apps/api/tauri')
       const fileContent = await invoke('get_file_content', {
         repoPath,
@@ -461,7 +448,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       }) as string
       
       // 关键日志：拿到文件内容
-      console.info('[DiffFlow] file content loaded', { length: fileContent.length, lines: fileContent.split('\n').length })
       
       const fileContentLines = fileContent.split('\n')
       
@@ -504,7 +490,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         }
       }
       
-      console.info('[DiffFlow] fill done', { originalLines: lines.length, fullFileLines: fullFileLines.length })
       
       // 检查第一行的处理结果
       const firstLines = fullFileLines.filter(line => line.lineNumber === 1)
@@ -516,7 +501,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       // 返回处理后的行数据，而不是直接设置状态
       return fullFileLinesWithIndex
     } catch (err) {
-      console.error('[DiffFlow] fill failed', err)
       // 如果读取失败，返回原始行数据
       return lines
     }
@@ -655,7 +639,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       const minusCnt = lines.filter(l => l.startsWith('-')).length
       const spaceCnt = lines.filter(l => l.startsWith(' ')).length
       const atCnt = lines.filter(l => l.startsWith('@@')).length
-      console.info('[DiffFlow] prescan', { lines: lines.length, plusCnt, minusCnt, spaceCnt, atCnt })
     } catch {}
     const fileLines: FileLine[] = []
     let currentLineNumber = 1
@@ -663,7 +646,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     let inHunk = false
 
     // 仅保留必要日志
-    // console.info('[DiffFlow] raw diff lines', lines.length)
 
 
     
@@ -673,7 +655,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       if (i < 30) {
         const ch0 = line.length ? line[0] : ''
         const code0 = line.length ? line.charCodeAt(0) : -1
-        console.info('[DiffFlow] L', i, { ch0, code0, sample: line.substring(0, 120) })
       }
       // 规范化：去掉行首零宽字符/BOM与制表符以便识别 hunk/header；内容行仍使用原始字符处理
       const head = line.replace(/^\uFEFF/, '').replace(/^\u200B+/, '').replace(/^\r/, '')
@@ -713,7 +694,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           currentLineNumber = hunkNewStart
           oldLineNumber = parseInt(match[1])
           inHunk = true
-          console.info('[DiffFlow] enter hunk', { i, oldStart: oldLineNumber, newStart: currentLineNumber, header: line })
           // 额外：探测此 hunk 后面的若干行的首字符与编码
           try {
             const probe: Array<{i: number; ch: string; code: number; s: string}> = []
@@ -788,12 +768,10 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     // const deletedCount = fileLines.filter(l => l.type === 'deleted').length
     // const unchangedCount = fileLines.filter(l => l.type === 'unchanged').length
     
-    // console.info('[DiffFlow] parse done', { lines: fileLines.length })
     
     // 后处理：检测空白字符的变化
     const processedLines = detectWhitespaceChanges(fileLines)
     
-    // console.info('[DiffFlow] processed', { totalLines: processedLines.length })
 
     
     // 特别检查第一行的处理结果
@@ -1792,7 +1770,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
                   </div>
                 )
               } else {
-                console.info('[DiffFlow] render', { viewMode, lines: fileLines.length })
                 return viewMode === 'side-by-side' ? renderSideBySideView() : renderUnifiedView()
               }
             })()}

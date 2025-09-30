@@ -335,7 +335,7 @@ function App() {
   const [activeTab, setActiveTab] = useState<'workspace' | 'commits'>('workspace')
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="h-screen bg-background flex flex-col">
       {/* 菜单工具栏 */}
       <MenuToolbar
         onOpenRepository={openRepository}
@@ -361,7 +361,7 @@ function App() {
         onToggleDarkMode={toggleDarkMode}
       />
 
-      <div className="container mx-auto p-6">
+      <div className="container mx-auto p-3 flex-1 flex flex-col">
         {error && (
           <div className="mb-6 p-4 bg-destructive/10 border border-destructive/20 rounded-lg">
             <p className="text-destructive">{error}</p>
@@ -392,7 +392,7 @@ function App() {
 
         {/* Tab 内容 */}
         {activeTab === 'workspace' ? (
-          <div>
+          <div className="flex-1 flex flex-col">
             <OperationsPanel
               repoInfo={repoInfo}
               onRefresh={handleRefresh}
@@ -401,7 +401,7 @@ function App() {
             />
           </div>
         ) : (
-          <div>
+          <div className="flex-1 flex flex-col">
             {repoInfo ? (
               <UnifiedCommitView
                 commits={allCommits}
@@ -415,7 +415,7 @@ function App() {
                 repoPath={repoInfo.path}
               />
             ) : (
-              <div className="text-center py-12">
+              <div className="text-center py-12 flex-1 flex items-center justify-center">
                 <p className="text-muted-foreground">请先选择一个 Git 仓库</p>
               </div>
             )}
