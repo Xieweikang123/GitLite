@@ -229,7 +229,7 @@ export function UnifiedCommitView({
   })
 
   return (
-    <div className="flex flex-col h-full gap-4">
+    <div className="flex flex-col h-full gap-4 min-h-0">
       {/* 上方：提交记录单独一列 */}
       <div className="flex-shrink-0" style={{height: '35%', maxHeight: '300px'}}>
         {/* 提交记录 */}
@@ -250,7 +250,7 @@ export function UnifiedCommitView({
             </div>
           </CardHeader>
           <CardContent className="flex-1 min-h-0 overflow-hidden py-2">
-            <div className="space-y-0.5 h-full overflow-y-auto">
+            <div className="space-y-0.5 h-full overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent">
               {filteredCommits.map((commit) => (
                 <div
                   key={commit.id}
@@ -315,8 +315,8 @@ export function UnifiedCommitView({
       {/* 下方：文件变更和代码差异并列 */}
       <div className="grid grid-cols-2 gap-4 flex-1 min-h-0">
         {/* 文件变更 */}
-        <div className="h-full">
-        <Card className="h-full flex flex-col">
+        <div className="flex flex-col min-h-0">
+        <Card className="flex flex-col h-full min-h-0">
           <CardHeader className="py-1 flex-shrink-0">
             <CardTitle className="flex items-center gap-2 text-base">
               <FileText className="h-4 w-4" />
@@ -337,7 +337,7 @@ export function UnifiedCommitView({
                 </p>
               </div>
             ) : (
-              <div className="space-y-1 h-full overflow-y-auto">
+              <div className="space-y-1 h-full overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent">
                 {commitFiles.map((file) => (
                   <FileItem
                     key={file.path}
@@ -356,9 +356,9 @@ export function UnifiedCommitView({
         </div>
 
         {/* 代码差异 */}
-        <div className="h-full">
-        <Card className="h-full flex flex-col">
-          <CardHeader className="py-1">
+        <div className="flex flex-col min-h-0">
+        <Card className="flex flex-col h-full min-h-0">
+          <CardHeader className="py-1 flex-shrink-0">
             <div className="flex items-center justify-between">
               {/* <CardTitle className="text-base">
                 {selectedFile ? `差异: ${selectedFile}` : '代码差异'}
@@ -408,7 +408,7 @@ export function UnifiedCommitView({
                 <p className="text-muted-foreground">选择一个文件以查看差异</p>
               </div>
             ) : loadingDiff ? (
-              <div className="h-full overflow-hidden bg-white dark:bg-gray-900 relative">
+              <div className="flex-1 overflow-hidden bg-white dark:bg-gray-900 relative min-h-0">
                 {diff && (
                   <div className="h-full">
                     <VSCodeDiff
@@ -426,7 +426,7 @@ export function UnifiedCommitView({
                 </div>
               </div>
             ) : diff ? (
-              <div className="h-full overflow-hidden bg-white dark:bg-gray-900">
+              <div className="flex-1 overflow-hidden bg-white dark:bg-gray-900 min-h-0">
                 <VSCodeDiff
                   diff={diff}
                   filePath={selectedFile}

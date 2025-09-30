@@ -1750,7 +1750,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         <div ref={outerContainerRef} className="relative h-full overflow-visible">
           <div 
             ref={scrollContainerRef} 
-            className={`overflow-y-auto bg-white dark:bg-gray-900`}
+            className={`overflow-y-auto bg-white dark:bg-gray-900 scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent`}
             style={{ height: `${containerHeight}px` }}
           >
             {(() => {

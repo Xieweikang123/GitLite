@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CSS Flexbox 布局问题学习指南</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+            overflow: hidden;
+        }
+
+        .card-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            font-size: 1.5em;
+            font-weight: bold;
+        }
+
+        .card-content {
+            padding: 30px;
+        }
+
+        .problem-section {
+            background: #fff5f5;
+            border-left: 4px solid #e53e3e;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 0 8px 8px 0;
+        }
+
+        .solution-section {
+            background: #f0fff4;
+            border-left: 4px solid #38a169;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 0 8px 8px 0;
+        }
+
+        .code-block {
+            background: #2d3748;
+            color: #e2e8f0;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 15px 0;
+            overflow-x: auto;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 14px;
+        }
+
+        .code-block .comment {
+            color: #68d391;
+        }
+
+        .code-block .property {
+            color: #fbb6ce;
+        }
+
+        .code-block .value {
+            color: #90cdf4;
+        }
+
+        .demo-container {
+            border: 2px dashed #cbd5e0;
+            margin: 20px 0;
+            padding: 20px;
+            background: #f7fafc;
+            border-radius: 8px;
+        }
+
+        .demo-bad {
+            height: 200px;
+            background: #fed7d7;
+            border: 2px solid #e53e3e;
+            margin: 10px 0;
+        }
+
+        .demo-good {
+            height: 200px;
+            background: #c6f6d5;
+            border: 2px solid #38a169;
+            margin: 10px 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .demo-content {
+            flex: 1;
+            min-height: 0;
+            background: #e6fffa;
+            border: 1px solid #4fd1c7;
+            margin: 5px;
+            padding: 10px;
+        }
+
+        .highlight {
+            background: #ffd700;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-weight: bold;
+        }
+
+        .tip {
+            background: #ebf8ff;
+            border: 1px solid #3182ce;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+        }
+
+        .tip::before {
+            content: "💡 ";
+            font-size: 1.2em;
+        }
+
+        h1 {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        h2 {
+            color: #2d3748;
+            margin: 25px 0 15px 0;
+            font-size: 1.4em;
+        }
+
+        h3 {
+            color: #4a5568;
+            margin: 20px 0 10px 0;
+            font-size: 1.2em;
+        }
+
+        ul, ol {
+            margin: 15px 0;
+            padding-left: 30px;
+        }
+
+        li {
+            margin: 8px 0;
+        }
+
+        .grid-demo {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin: 20px 0;
+        }
+
+        .flex-demo {
+            display: flex;
+            flex-direction: column;
+            height: 300px;
+            border: 2px solid #3182ce;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .flex-header {
+            background: #3182ce;
+            color: white;
+            padding: 10px;
+            flex-shrink: 0;
+        }
+
+        .flex-content {
+            flex: 1;
+            min-height: 0;
+            background: #e6fffa;
+            padding: 10px;
+            overflow-y: auto;
+        }
+
+        .scrollbar-demo {
+            height: 100px;
+            overflow-y: auto;
+            background: #f7fafc;
+            border: 1px solid #cbd5e0;
+            padding: 10px;
+        }
+
+        .scrollbar-demo::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .scrollbar-demo::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .scrollbar-demo::-webkit-scrollbar-thumb {
+            background: #cbd5e0;
+            border-radius: 4px;
+        }
+
+        .scrollbar-demo::-webkit-scrollbar-thumb:hover {
+            background: #a0aec0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>CSS Flexbox 布局问题学习指南</h1>
+        
+        <div class="card">
+            <div class="card-header">
+                🎯 问题概述
+            </div>
+            <div class="card-content">
+                <p>在开发 GitLite 应用时，我们遇到了几个关键的 CSS 布局问题：</p>
+                <ul>
+                    <li><strong>主界面滚动问题</strong>：整个页面出现滚动条，无法完全适应屏幕高度</li>
+                    <li><strong>h-full 元素溢出</strong>：使用 <code>h-full</code> 的元素超出父容器高度</li>
+                    <li><strong>文件切换闪动</strong>：切换文件时界面出现不必要的重新渲染</li>
+                    <li><strong>加载状态卡死</strong>：文件差异一直显示加载中状态</li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                📚 核心知识点
+            </div>
+            <div class="card-content">
+                <h2>1. Flexbox 高度计算机制</h2>
+                <div class="problem-section">
+                    <h3>❌ 常见错误</h3>
+                    <div class="code-block">
+<span class="comment">/* 错误：直接使用 h-full 可能导致高度溢出 */</span>
+.container {
+    <span class="property">height</span>: <span class="value">100vh</span>;
+}
+
+.content {
+    <span class="property">height</span>: <span class="value">100%</span>; <span class="comment">/* 可能超出容器 */</span>
+}
+                    </div>
+                </div>
+
+                <div class="solution-section">
+                    <h3>✅ 正确做法</h3>
+                    <div class="code-block">
+<span class="comment">/* 正确：使用 flex 布局和 min-height: 0 */</span>
+.container {
+    <span class="property">height</span>: <span class="value">100vh</span>;
+    <span class="property">display</span>: <span class="value">flex</span>;
+    <span class="property">flex-direction</span>: <span class="value">column</span>;
+}
+
+.content {
+    <span class="property">flex</span>: <span class="value">1</span>;
+    <span class="property">min-height</span>: <span class="value">0</span>; <span class="comment">/* 关键！允许 flex 子元素收缩 */</span>
+}
+                    </div>
+                </div>
+
+                <div class="tip">
+                    <strong>关键理解</strong>：<code>min-height: 0</code> 是 flex 布局中的关键属性，它允许 flex 子元素收缩到比其内容更小的尺寸。
+                </div>
+
+                <h2>2. 容器高度约束</h2>
+                <div class="demo-container">
+                    <h3>演示：正确的容器高度约束</h3>
+                    <div class="flex-demo">
+                        <div class="flex-header">固定头部</div>
+                        <div class="flex-content">
+                            <div class="scrollbar-demo">
+                                <p>这是可滚动的内容区域</p>
+                                <p>内容可以很长...</p>
+                                <p>但不会超出容器高度</p>
+                                <p>因为使用了 flex: 1 和 min-height: 0</p>
+                                <p>更多内容...</p>
+                                <p>更多内容...</p>
+                                <p>更多内容...</p>
+                                <p>更多内容...</p>
+                                <p>更多内容...</p>
+                                <p>更多内容...</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <h2>3. flex: 1 作用详解</h2>
+                <div class="demo-container">
+                    <h3>示例 1：基本 flex: 1 效果</h3>
+                    <div style="display: flex; height: 200px; border: 2px solid #3182ce; border-radius: 8px; margin: 10px 0;">
+                        <div style="background: #fed7d7; padding: 10px; border-right: 2px solid #e53e3e; flex: 0 0 100px;">
+                            固定宽度 100px
+                        </div>
+                        <div style="background: #c6f6d5; padding: 10px; flex: 1; display: flex; align-items: center; justify-content: center;">
+                            flex: 1 (占据剩余空间)
+                        </div>
+                        <div style="background: #bee3f8; padding: 10px; border-left: 2px solid #3182ce; flex: 0 0 80px;">
+                            固定宽度 80px
+                        </div>
+                    </div>
+                    <p><strong>说明</strong>：中间的绿色区域使用 <code>flex: 1</code>，自动占据左右两个固定元素之间的所有剩余空间。</p>
+                </div>
+
+                <div class="demo-container">
+                    <h3>示例 2：垂直布局中的 flex: 1</h3>
+                    <div style="display: flex; flex-direction: column; height: 250px; border: 2px solid #38a169; border-radius: 8px; margin: 10px 0;">
+                        <div style="background: #fbb6ce; padding: 10px; text-align: center; flex-shrink: 0;">
+                            固定头部 (flex-shrink: 0)
+                        </div>
+                        <div style="background: #c6f6d5; padding: 10px; flex: 1; display: flex; align-items: center; justify-content: center; border: 1px solid #4fd1c7;">
+                            主要内容区域 (flex: 1)
+                        </div>
+                        <div style="background: #fbb6ce; padding: 10px; text-align: center; flex-shrink: 0;">
+                            固定底部 (flex-shrink: 0)
+                        </div>
+                    </div>
+                    <p><strong>说明</strong>：中间的绿色区域使用 <code>flex: 1</code>，在固定头部和底部之间占据所有可用空间。</p>
+                </div>
+
+                <div class="demo-container">
+                    <h3>示例 3：flex: 1 vs 固定高度对比</h3>
+                    <div style="display: flex; gap: 10px; margin: 10px 0;">
+                        <div style="flex: 1;">
+                            <h4>使用 flex: 1</h4>
+                            <div style="display: flex; flex-direction: column; height: 200px; border: 2px solid #38a169; border-radius: 8px;">
+                                <div style="background: #fbb6ce; padding: 5px; text-align: center; flex-shrink: 0;">头部</div>
+                                <div style="background: #c6f6d5; padding: 10px; flex: 1; display: flex; align-items: center; justify-content: center;">flex: 1</div>
+                                <div style="background: #fbb6ce; padding: 5px; text-align: center; flex-shrink: 0;">底部</div>
+                            </div>
+                        </div>
+                        <div style="flex: 1;">
+                            <h4>使用固定高度</h4>
+                            <div style="display: flex; flex-direction: column; height: 200px; border: 2px solid #e53e3e; border-radius: 8px;">
+                                <div style="background: #fed7d7; padding: 5px; text-align: center;">头部</div>
+                                <div style="background: #fed7d7; padding: 10px; height: 150px; display: flex; align-items: center; justify-content: center;">height: 150px</div>
+                                <div style="background: #fed7d7; padding: 5px; text-align: center;">底部</div>
+                            </div>
+                        </div>
+                    </div>
+                    <p><strong>说明</strong>：左侧使用 <code>flex: 1</code> 自动适应，右侧使用固定高度可能在不同屏幕尺寸下出现问题。</p>
+                </div>
+
+                <div class="code-block">
+<span class="comment">/* flex: 1 的完整含义 */</span>
+.flex-item {
+    <span class="property">flex</span>: <span class="value">1</span>; <span class="comment">/* 等同于 flex: 1 1 0% */</span>
+    <span class="comment">/* 等同于： */</span>
+    <span class="property">flex-grow</span>: <span class="value">1</span>;    <span class="comment">/* 可以增长 */</span>
+    <span class="property">flex-shrink</span>: <span class="value">1</span>;  <span class="comment">/* 可以收缩 */</span>
+    <span class="property">flex-basis</span>: <span class="value">0%</span>;   <span class="comment">/* 基础尺寸为 0 */</span>
+}
+
+<span class="comment">/* 为什么 flex-basis: 0% 很重要？ */</span>
+<span class="comment">/* 如果使用 flex-basis: auto，元素会基于内容大小分配空间 */</span>
+<span class="comment">/* 如果使用 flex-basis: 0%，元素会忽略内容大小，平均分配空间 */</span>
+                </div>
+
+                <h2>4. flex: 1 实际应用场景</h2>
+                <div class="demo-container">
+                    <h3>场景 1：侧边栏 + 主内容布局</h3>
+                    <div style="display: flex; height: 200px; border: 2px solid #4a5568; border-radius: 8px; margin: 10px 0;">
+                        <div style="background: #e2e8f0; padding: 10px; width: 200px; flex-shrink: 0; border-right: 2px solid #4a5568;">
+                            <strong>侧边栏</strong><br>
+                            固定宽度 200px
+                        </div>
+                        <div style="background: #f7fafc; padding: 10px; flex: 1; display: flex; align-items: center; justify-content: center; border-left: 1px solid #cbd5e0;">
+                            <div style="text-align: center;">
+                                <strong>主内容区域</strong><br>
+                                使用 flex: 1 占据剩余空间<br>
+                                <small>自动适应不同屏幕宽度</small>
+                            </div>
+                        </div>
+                    </div>
+                    <p><strong>应用</strong>：这是典型的后台管理系统布局，侧边栏固定，主内容区域自适应。</p>
+                </div>
+
+                <div class="demo-container">
+                    <h3>场景 2：头部 + 内容 + 底部布局</h3>
+                    <div style="display: flex; flex-direction: column; height: 250px; border: 2px solid #805ad5; border-radius: 8px; margin: 10px 0;">
+                        <div style="background: #e9d8fd; padding: 10px; text-align: center; flex-shrink: 0; border-bottom: 1px solid #805ad5;">
+                            <strong>页面头部</strong> - 导航栏、标题等
+                        </div>
+                        <div style="background: #faf5ff; padding: 10px; flex: 1; display: flex; align-items: center; justify-content: center; border: 1px solid #d6bcfa;">
+                            <div style="text-align: center;">
+                                <strong>主要内容区域</strong><br>
+                                使用 flex: 1 占据中间所有空间<br>
+                                <small>这里可以放置列表、表格、表单等</small>
+                            </div>
+                        </div>
+                        <div style="background: #e9d8fd; padding: 10px; text-align: center; flex-shrink: 0; border-top: 1px solid #805ad5;">
+                            <strong>页面底部</strong> - 版权信息、状态栏等
+                        </div>
+                    </div>
+                    <p><strong>应用</strong>：这是网页的标准布局模式，头部和底部固定，中间内容区域自适应高度。</p>
+                </div>
+
+                <div class="demo-container">
+                    <h3>场景 3：多列等宽布局</h3>
+                    <div style="display: flex; height: 150px; border: 2px solid #38a169; border-radius: 8px; margin: 10px 0;">
+                        <div style="background: #c6f6d5; padding: 10px; flex: 1; display: flex; align-items: center; justify-content: center; border-right: 1px solid #38a169;">
+                            列 1<br><small>flex: 1</small>
+                        </div>
+                        <div style="background: #9ae6b4; padding: 10px; flex: 1; display: flex; align-items: center; justify-content: center; border-right: 1px solid #38a169;">
+                            列 2<br><small>flex: 1</small>
+                        </div>
+                        <div style="background: #68d391; padding: 10px; flex: 1; display: flex; align-items: center; justify-content: center;">
+                            列 3<br><small>flex: 1</small>
+                        </div>
+                    </div>
+                    <p><strong>应用</strong>：三列等宽布局，每列都使用 <code>flex: 1</code>，自动平均分配宽度。</p>
+                </div>
+
+                <div class="demo-container">
+                    <h3>场景 4：flex: 1 与 flex: 2 的比例分配</h3>
+                    <div style="display: flex; height: 150px; border: 2px solid #d69e2e; border-radius: 8px; margin: 10px 0;">
+                        <div style="background: #fef5e7; padding: 10px; flex: 1; display: flex; align-items: center; justify-content: center; border-right: 1px solid #d69e2e;">
+                            侧边栏<br><small>flex: 1 (1份)</small>
+                        </div>
+                        <div style="background: #fbd38d; padding: 10px; flex: 2; display: flex; align-items: center; justify-content: center; border-right: 1px solid #d69e2e;">
+                            主内容<br><small>flex: 2 (2份)</small>
+                        </div>
+                        <div style="background: #f6e05e; padding: 10px; flex: 1; display: flex; align-items: center; justify-content: center;">
+                            右侧栏<br><small>flex: 1 (1份)</small>
+                        </div>
+                    </div>
+                    <p><strong>说明</strong>：主内容区域占据 2/4 的空间，两个侧边栏各占据 1/4 的空间。</p>
+                </div>
+
+                <div class="code-block">
+<span class="comment">/* 实际项目中的常见模式 */</span>
+
+<span class="comment">/* 1. 应用主布局 */</span>
+.app-layout {
+    <span class="property">height</span>: <span class="value">100vh</span>;
+    <span class="property">display</span>: <span class="value">flex</span>;
+    <span class="property">flex-direction</span>: <span class="value">column</span>;
+}
+
+.app-header {
+    <span class="property">flex-shrink</span>: <span class="value">0</span>; <span class="comment">/* 固定头部 */</span>
+}
+
+.app-content {
+    <span class="property">flex</span>: <span class="value">1</span>; <span class="comment">/* 占据剩余空间 */</span>
+    <span class="property">min-height</span>: <span class="value">0</span>; <span class="comment">/* 关键！ */</span>
+}
+
+.app-footer {
+    <span class="property">flex-shrink</span>: <span class="value">0</span>; <span class="comment">/* 固定底部 */</span>
+}
+
+<span class="comment">/* 2. 侧边栏布局 */</span>
+.sidebar-layout {
+    <span class="property">display</span>: <span class="value">flex</span>;
+    <span class="property">height</span>: <span class="value">100%</span>;
+}
+
+.sidebar {
+    <span class="property">width</span>: <span class="value">250px</span>;
+    <span class="property">flex-shrink</span>: <span class="value">0</span>;
+}
+
+.main-content {
+    <span class="property">flex</span>: <span class="value">1</span>;
+    <span class="property">min-width</span>: <span class="value">0</span>; <span class="comment">/* 防止内容溢出 */</span>
+}
+                </div>
+
+                <h2>5. flex: 1 关键要点总结</h2>
+                <div class="tip">
+                    <strong>💡 flex: 1 的核心作用</strong>
+                    <ul>
+                        <li><strong>自动占据剩余空间</strong>：在 flex 容器中，flex: 1 的元素会自动占据其他元素分配后剩余的所有空间</li>
+                        <li><strong>响应式布局</strong>：当容器大小改变时，flex: 1 的元素会自动调整大小</li>
+                        <li><strong>比例分配</strong>：多个 flex: 1 的元素会平均分配空间，flex: 2 的元素会占据 flex: 1 元素的两倍空间</li>
+                        <li><strong>替代固定尺寸</strong>：比使用 width: 100% 或 height: 100% 更灵活，不会导致溢出问题</li>
+                    </ul>
+                </div>
+
+                <div class="problem-section">
+                    <h3>❌ 常见错误理解</h3>
+                    <ul>
+                        <li><strong>认为 flex: 1 等于 width: 100%</strong>：实际上 flex: 1 是占据剩余空间，不是固定 100%</li>
+                        <li><strong>忽略 min-height: 0</strong>：在 flex 容器中，子元素默认不会收缩，需要 min-height: 0 才能正确工作</li>
+                        <li><strong>混合使用 flex 和固定尺寸</strong>：在同一容器中混合使用 flex 和固定尺寸可能导致布局问题</li>
+                    </ul>
+                </div>
+
+                <div class="solution-section">
+                    <h3>✅ 正确使用原则</h3>
+                    <ol>
+                        <li><strong>总是配合 min-height: 0 或 min-width: 0</strong>：确保 flex 子元素能正确收缩</li>
+                        <li><strong>理解 flex 三属性</strong>：flex: 1 = flex-grow: 1 + flex-shrink: 1 + flex-basis: 0%</li>
+                        <li><strong>合理设置 flex-shrink: 0</strong>：对于需要固定尺寸的元素，使用 flex-shrink: 0</li>
+                        <li><strong>测试不同屏幕尺寸</strong>：确保布局在各种设备上都能正常工作</li>
+                    </ol>
+                </div>
+
+                <h2>6. 滚动条优化</h2>
+                <div class="code-block">
+<span class="comment">/* 自定义滚动条样式 */</span>
+.scrollable {
+    <span class="property">overflow-y</span>: <span class="value">auto</span>;
+    <span class="property">scrollbar-width</span>: <span class="value">thin</span>;
+    <span class="property">scrollbar-color</span>: <span class="value">#cbd5e0 transparent</span>;
+}
+
+<span class="comment">/* Webkit 浏览器滚动条样式 */</span>
+.scrollable::-webkit-scrollbar {
+    <span class="property">width</span>: <span class="value">8px</span>;
+}
+
+.scrollable::-webkit-scrollbar-track {
+    <span class="property">background</span>: <span class="value">transparent</span>;
+}
+
+.scrollable::-webkit-scrollbar-thumb {
+    <span class="property">background</span>: <span class="value">#cbd5e0</span>;
+    <span class="property">border-radius</span>: <span class="value">4px</span>;
+}
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                🔧 具体解决方案
+            </div>
+            <div class="card-content">
+                <h2>问题 1：主界面滚动</h2>
+                <div class="problem-section">
+                    <h3>❌ 问题代码</h3>
+                    <div class="code-block">
+<span class="comment">/* 使用 container 类可能导致内容超出 */</span>
+&lt;div class="<span class="highlight">container mx-auto p-3</span> flex-1 flex flex-col"&gt;
+                    </div>
+                </div>
+
+                <div class="solution-section">
+                    <h3>✅ 解决方案</h3>
+                    <div class="code-block">
+<span class="comment">/* 移除 container，使用 flex-1 和 min-h-0 */</span>
+&lt;div class="<span class="highlight">flex-1 flex flex-col min-h-0</span>"&gt;
+                    </div>
+                </div>
+
+                <h2>问题 2：h-full 元素溢出</h2>
+                <div class="problem-section">
+                    <h3>❌ 问题代码</h3>
+                    <div class="code-block">
+&lt;div class="<span class="highlight">h-full</span>"&gt;
+    &lt;Card class="<span class="highlight">h-full flex flex-col</span>"&gt;
+                    </div>
+                </div>
+
+                <div class="solution-section">
+                    <h3>✅ 解决方案</h3>
+                    <div class="code-block">
+&lt;div class="<span class="highlight">flex flex-col min-h-0</span>"&gt;
+    &lt;Card class="<span class="highlight">flex flex-col h-full min-h-0</span>"&gt;
+                    </div>
+                </div>
+
+                <h2>问题 3：文件切换闪动</h2>
+                <div class="solution-section">
+                    <h3>✅ 优化策略</h3>
+                    <ol>
+                        <li><strong>使用 useCallback</strong>：缓存事件处理函数</li>
+                        <li><strong>使用 React.memo</strong>：防止不必要的组件重新渲染</li>
+                        <li><strong>重复选择检查</strong>：避免重复操作</li>
+                        <li><strong>状态更新优化</strong>：减少不必要的状态变化</li>
+                    </ol>
+                </div>
+
+                <h2>问题 4：加载状态管理</h2>
+                <div class="solution-section">
+                    <h3>✅ 优化策略</h3>
+                    <ol>
+                        <li><strong>立即显示加载状态</strong>：避免延迟显示</li>
+                        <li><strong>竞态条件处理</strong>：确保只有当前请求的结果被应用</li>
+                        <li><strong>超时机制</strong>：防止 API 调用永远不返回</li>
+                        <li><strong>状态清理</strong>：组件卸载时清理状态</li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                🎨 最佳实践总结
+            </div>
+            <div class="card-content">
+                <h2>Flexbox 布局最佳实践</h2>
+                <div class="grid-demo">
+                    <div>
+                        <h3>✅ 推荐做法</h3>
+                        <ul>
+                            <li>使用 <code>flex: 1</code> 而不是 <code>height: 100%</code></li>
+                            <li>总是添加 <code>min-height: 0</code></li>
+                            <li>使用 <code>flex-shrink: 0</code> 固定头部</li>
+                            <li>合理使用 <code>overflow: hidden</code></li>
+                        </ul>
+                    </div>
+                    <div>
+                        <h3>❌ 避免做法</h3>
+                        <ul>
+                            <li>不要直接使用 <code>h-full</code></li>
+                            <li>避免嵌套的固定高度</li>
+                            <li>不要忽略 <code>min-height: 0</code></li>
+                            <li>避免不必要的 <code>overflow: auto</code></li>
+                        </ul>
+                    </div>
+                </div>
+
+                <h2>React 性能优化最佳实践</h2>
+                <div class="code-block">
+<span class="comment">// 1. 使用 useCallback 缓存函数</span>
+<span class="property">const</span> handleClick = <span class="value">useCallback</span>((id) => {
+    <span class="comment">// 处理逻辑</span>
+}, [dependency]);
+
+<span class="comment">// 2. 使用 React.memo 优化组件</span>
+<span class="property">const</span> OptimizedComponent = <span class="value">memo</span>(({ data }) => {
+    <span class="comment">// 组件逻辑</span>
+}, (prevProps, nextProps) => {
+    <span class="comment">// 自定义比较逻辑</span>
+    <span class="property">return</span> prevProps.id === nextProps.id;
+});
+
+<span class="comment">// 3. 使用 useMemo 缓存计算结果</span>
+<span class="property">const</span> filteredData = <span class="value">useMemo</span>(() => {
+    <span class="property">return</span> data.filter(item => item.active);
+}, [data]);
+                </div>
+
+                <h2>调试技巧</h2>
+                <div class="tip">
+                    <strong>Chrome DevTools 技巧</strong>：
+                    <ul>
+                        <li>使用 <code>$0</code> 在控制台中引用选中的元素</li>
+                        <li>检查元素的 <code>computed styles</code> 查看实际应用的高度</li>
+                        <li>使用 <code>flexbox inspector</code> 可视化 flex 布局</li>
+                        <li>添加临时边框来调试布局问题</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                📖 学习资源
+            </div>
+            <div class="card-content">
+                <h2>推荐学习资源</h2>
+                <ul>
+                    <li><strong>CSS Flexbox 完全指南</strong>：<a href="https://css-tricks.com/snippets/css/a-guide-to-flexbox/" target="_blank">CSS-Tricks Flexbox Guide</a></li>
+                    <li><strong>React 性能优化</strong>：<a href="https://react.dev/learn/render-and-commit" target="_blank">React 官方文档</a></li>
+                    <li><strong>CSS Grid vs Flexbox</strong>：<a href="https://css-tricks.com/css-grid-vs-flexbox/" target="_blank">何时使用 Grid 还是 Flexbox</a></li>
+                    <li><strong>现代 CSS 布局</strong>：<a href="https://web.dev/learn/css/" target="_blank">Web.dev CSS 学习路径</a></li>
+                </ul>
+
+                <h2>实践建议</h2>
+                <ol>
+                    <li><strong>从简单开始</strong>：先掌握基本的 flex 属性</li>
+                    <li><strong>多练习</strong>：创建不同的布局练习</li>
+                    <li><strong>使用工具</strong>：利用浏览器开发者工具调试</li>
+                    <li><strong>阅读源码</strong>：学习优秀项目的布局实现</li>
+                </ol>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
