@@ -229,7 +229,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
   // 虚拟滚动相关状态
   const [visibleRange, setVisibleRange] = useState({ start: 0, end: 100 })
   const [itemHeight] = useState(24) // 每行的高度（像素）
-  const [containerHeight, setContainerHeight] = useState(384) // 容器高度（初始与旧值保持一致，后续由实际测量更新）
+  const [containerHeight, setContainerHeight] = useState(300) // 容器高度（初始值，后续由实际测量更新）
   const [showThumbnail, setShowThumbnail] = useState(true) // 是否显示缩略图
   
   
@@ -272,9 +272,10 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         const totalContentPx = Math.max(1, fileLines.length * itemHeight)
         const viewportPx = sc.clientHeight || containerHeight
         const scrollMax = Math.max(1, totalContentPx - viewportPx)
-        const containerH = rect.height
-        const ratio = scrollMax / Math.max(1, containerH)
-        const next = Math.max(0, Math.min(scrollMax, sc.scrollTop + e.deltaY * ratio))
+        // 固定滚动5行，方向正确
+        const fixedScrollAmount = 5 * itemHeight
+        const scrollDirection = e.deltaY > 0 ? 1 : -1 // 向下滚动为正，向上滚动为负
+        const next = Math.max(0, Math.min(scrollMax, sc.scrollTop + fixedScrollAmount * scrollDirection))
         sc.scrollTop = next
         
         // 更新可见范围
@@ -292,7 +293,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     if (!scrollContainer) return
 
     const handleWheel = (e: WheelEvent) => {
-      // 临时完全禁用 wheel 拦截，让所有事件正常冒泡
       // 检查事件是否来自缩略图区域
       const target = e.target as HTMLElement
       if (target.closest('.gitlite-thumb-container')) {
@@ -300,13 +300,18 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         return
       }
       
-      // 对于其他区域，也暂时不拦截，让原生滚动工作
-      // e.stopPropagation()
-      // e.preventDefault()
+      // 阻止默认滚动行为
+      e.preventDefault()
+      e.stopPropagation()
       
-      // 手动控制滚动
-      const scrollAmount = e.deltaY
-      scrollContainer.scrollTop += scrollAmount
+      // 手动控制滚动 - 固定滚动5行，方向正确
+      const scrollAmount = 5 * itemHeight // 固定滚动5行
+      const scrollDirection = e.deltaY > 0 ? 1 : -1 // 向下滚动为正，向上滚动为负
+      const newScrollTop = scrollContainer.scrollTop + (scrollAmount * scrollDirection)
+      
+      // 确保滚动位置在有效范围内
+      const maxScrollTop = scrollContainer.scrollHeight - scrollContainer.clientHeight
+      scrollContainer.scrollTop = Math.max(0, Math.min(newScrollTop, maxScrollTop))
       
       // 更新可见范围
       updateVisibleRange()
@@ -1195,9 +1200,10 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       const totalContentPx = Math.max(1, fileLines.length * itemHeight)
       const viewportPx = sc.clientHeight || containerHeight
       const scrollMax = Math.max(1, totalContentPx - viewportPx)
-      const containerH = containerRectRef.current?.height ?? el.getBoundingClientRect().height
-      const ratio = scrollMax / Math.max(1, containerH)
-      const next = Math.max(0, Math.min(scrollMax, sc.scrollTop + e.deltaY * ratio))
+      // 固定滚动5行，方向正确
+      const fixedScrollAmount = 5 * itemHeight
+      const scrollDirection = e.deltaY > 0 ? 1 : -1 // 向下滚动为正，向上滚动为负
+      const next = Math.max(0, Math.min(scrollMax, sc.scrollTop + fixedScrollAmount * scrollDirection))
       sc.scrollTop = next
       enqueueScrollTop(next)
       setCurrentScrollTop(next)
@@ -1323,9 +1329,10 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
            const totalContentPx = Math.max(1, fileLines.length * itemHeight)
            const viewportPx = sc.clientHeight || containerHeight
            const scrollMax = Math.max(1, totalContentPx - viewportPx)
-           const containerH = containerRectRef.current?.height ?? thumbnailContainerRef.current?.getBoundingClientRect().height ?? 0
-           const ratio = scrollMax / Math.max(1, containerH)
-           const next = Math.max(0, Math.min(scrollMax, sc.scrollTop + e.deltaY * ratio))
+           // 固定滚动5行，方向正确
+           const fixedScrollAmount = 5 * itemHeight
+           const scrollDirection = e.deltaY > 0 ? 1 : -1 // 向下滚动为正，向上滚动为负
+           const next = Math.max(0, Math.min(scrollMax, sc.scrollTop + fixedScrollAmount * scrollDirection))
            sc.scrollTop = next
            enqueueScrollTop(next)
            setCurrentScrollTop(next)
@@ -1380,7 +1387,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         </div>
         
         {/* Line Content */}
-        <div className="flex-1 min-w-0 w-full text-foreground" style={{ whiteSpace: 'pre' }}>
+        <div className="flex-1 min-w-0 text-foreground" style={{ whiteSpace: 'pre' }}>
           {line.segments ? (
             // 显示字符级别的差异
             <div className="inline">
@@ -1539,7 +1546,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
                     {item.type === 'modified' && <span className="text-red-600 dark:text-red-400 font-bold">-</span>}
                     {item.type === 'unchanged' && <span className="text-gray-400 dark:text-gray-500"> </span>}
                   </div>
-                  <div className="flex-1 min-w-0 w-full text-red-800 dark:text-red-200" style={{ whiteSpace: 'pre' }}>
+                  <div className="flex-1 min-w-0 text-red-800 dark:text-red-200" style={{ whiteSpace: 'pre' }}>
                     {item.type === 'modified' && item.originalLine?.segments ? (
                       <Tooltip
                         content={
@@ -1597,7 +1604,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
                     {item.type === 'modified' && <span className="text-green-600 dark:text-green-400 font-bold">+</span>}
                     {item.type === 'unchanged' && <span className="text-gray-400 dark:text-gray-500"> </span>}
                   </div>
-                  <div className="flex-1 min-w-0 w-full text-green-800 dark:text-green-200" style={{ whiteSpace: 'pre' }}>
+                  <div className="flex-1 min-w-0 text-green-800 dark:text-green-200" style={{ whiteSpace: 'pre' }}>
                     {item.type === 'modified' && item.originalLine?.segments ? (
                       <Tooltip
                         content={
@@ -1750,7 +1757,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         <div ref={outerContainerRef} className="relative h-full overflow-visible">
           <div 
             ref={scrollContainerRef} 
-            className={`overflow-y-auto bg-white dark:bg-gray-900 scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent`}
+            className={`overflow-y-auto overflow-x-auto bg-white dark:bg-gray-900 scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent`}
             style={{ height: `${containerHeight}px` }}
           >
             {(() => {

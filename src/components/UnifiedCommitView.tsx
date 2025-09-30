@@ -235,26 +235,26 @@ export function UnifiedCommitView({
         {/* 提交记录 */}
         <div className="h-full">
         <Card className="h-full flex flex-col">
-          <CardHeader className="py-1">
+          <CardHeader className="py-1 px-3">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-base">提交记录</CardTitle>
+              <CardTitle className="text-sm">提交记录</CardTitle>
               <div className="relative">
-                <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Search className="absolute left-2 top-2 h-3 w-3 text-muted-foreground" />
                 <Input
                   placeholder="搜索提交..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="pl-8 w-48"
+                  className="pl-6 w-40 h-7 text-xs"
                 />
               </div>
             </div>
           </CardHeader>
-          <CardContent className="flex-1 min-h-0 overflow-hidden py-2">
+          <CardContent className="flex-1 min-h-0 overflow-hidden py-1 px-3">
             <div className="space-y-0.5 h-full overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent">
               {filteredCommits.map((commit) => (
                 <div
                   key={commit.id}
-                  className={`border rounded p-1.5 cursor-pointer transition-colors ${
+                  className={`border rounded p-1 cursor-pointer transition-colors ${
                     selectedCommit?.id === commit.id
                       ? 'bg-accent border-primary'
                       : 'hover:bg-accent'
@@ -264,20 +264,20 @@ export function UnifiedCommitView({
                   <div className="space-y-0.5">
                     {/* 提交信息 */}
                     <div className="flex items-start justify-between">
-                      <p className="text-sm font-medium text-foreground line-clamp-1 flex-1 min-w-0 pr-2">
+                      <p className="text-xs font-medium text-foreground line-clamp-1 flex-1 min-w-0 pr-1">
                         {commit.message}
                       </p>
-                      <div className="flex items-center gap-1 flex-shrink-0">
+                      <div className="flex items-center gap-0.5 flex-shrink-0">
                         {pendingPushIds.has(commit.id) && (
-                          <Badge className="bg-blue-600 text-white hover:bg-blue-600/90 text-xs">待推送</Badge>
+                          <Badge className="bg-blue-600 text-white hover:bg-blue-600/90 text-[10px] px-1 py-0">待推送</Badge>
                         )}
-                        <Badge variant="outline" className="text-xs">{commit.short_id}</Badge>
+                        <Badge variant="outline" className="text-[10px] px-1 py-0">{commit.short_id}</Badge>
                       </div>
                     </div>
                     
                     {/* 作者和日期 */}
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
                         <span className="font-medium">{commit.author}</span>
                         <span>•</span>
                         <span>{commit.date}</span>
@@ -288,16 +288,16 @@ export function UnifiedCommitView({
               ))}
               
               {hasMore && (
-                <div className="flex justify-center pt-4 border-t">
+                <div className="flex justify-center pt-2 border-t">
                   <Button
                     onClick={onLoadMore}
                     disabled={loading}
                     variant="outline"
-                    className="flex items-center gap-2"
+                    className="flex items-center gap-1 h-7 text-xs"
                   >
                     {loading ? (
                       <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <Loader2 className="h-3 w-3 animate-spin" />
                         加载中...
                       </>
                     ) : (
@@ -313,9 +313,9 @@ export function UnifiedCommitView({
       </div>
 
       {/* 下方：文件变更和代码差异并列 */}
-      <div className="grid grid-cols-2 gap-4 flex-1 min-h-0">
+      <div className="grid grid-cols-2 gap-4 flex-1 min-h-0" style={{ gridTemplateColumns: 'minmax(300px, 1fr) minmax(400px, 1fr)' }}>
         {/* 文件变更 */}
-        <div className="flex flex-col min-h-0">
+        <div className="flex flex-col min-h-0 min-w-0">
         <Card className="flex flex-col h-full min-h-0">
           <CardHeader className="py-1 flex-shrink-0">
             <CardTitle className="flex items-center gap-2 text-base">
@@ -356,7 +356,7 @@ export function UnifiedCommitView({
         </div>
 
         {/* 代码差异 */}
-        <div className="flex flex-col min-h-0">
+        <div className="flex flex-col min-h-0 min-w-0">
         <Card className="flex flex-col h-full min-h-0">
           <CardHeader className="py-1 flex-shrink-0">
             <div className="flex items-center justify-between">
