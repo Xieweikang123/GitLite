@@ -772,18 +772,35 @@ async fn get_commit_files(repo_path: String, commit_id: String) -> Result<Vec<Fi
 // 获取单个文件的差异
 #[tauri::command]
 async fn get_single_file_diff(repo_path: String, commit_id: String, file_path: String) -> Result<String, String> {
+    use git2::{Repository, Oid, DiffOptions, DiffFormat};
+use std::fs::{OpenOptions, create_dir_all};
+use std::io::Write;
+use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn append_repo_log(repo_path: &str, message: &str) {
+    // 写入到 <repo>/.gitlite/logs/debug.log
+    let dir = Path::new(repo_path).join(".gitlite").join("logs");
+    if let Err(_) = create_dir_all(&dir) { return; }
+    let file_path = dir.join("gitlite.log");
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(file_path) {
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let _ = writeln!(f, "[{}] {}", ts, message);
+    }
+}
+
     let repo = Repository::open(&repo_path)
         .map_err(|e| format!("Failed to open repository: {}", e))?;
-    
+
     let oid = Oid::from_str(&commit_id)
         .map_err(|e| format!("Invalid commit ID: {}", e))?;
-    
+
     let commit = repo.find_commit(oid)
         .map_err(|e| format!("Failed to find commit: {}", e))?;
-    
+
     let tree = commit.tree()
         .map_err(|e| format!("Failed to get commit tree: {}", e))?;
-    
+
     let parent = if commit.parent_count() > 0 {
         Some(commit.parent(0)
             .map_err(|e| format!("Failed to get parent commit: {}", e))?
@@ -792,26 +809,76 @@ async fn get_single_file_diff(repo_path: String, commit_id: String, file_path: S
     } else {
         None
     };
-    
-    // 创建差异，然后过滤特定文件
-    let diff = repo.diff_tree_to_tree(parent.as_ref(), Some(&tree), None)
+
+    // 仅对目标文件生成差异，并输出完整 Patch（包含 diff header/hunk/行前缀）
+    let mut opts = DiffOptions::new();
+    opts.pathspec(&file_path);
+    let diff = repo
+        .diff_tree_to_tree(parent.as_ref(), Some(&tree), Some(&mut opts))
         .map_err(|e| format!("Failed to create diff: {}", e))?;
-    
-    let mut diff_text = String::new();
-    diff.print(git2::DiffFormat::Patch, |delta, _hunk, line| {
-        // 检查是否是目标文件
-        let current_file = delta.new_file().path()
-            .or_else(|| delta.old_file().path())
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        
-        if current_file == file_path {
-            diff_text.push_str(&format!("{}\n", std::str::from_utf8(line.content()).unwrap_or("")));
-        }
+
+    let mut text = String::new();
+    diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
+        text.push_str(&format!("{}\n", std::str::from_utf8(line.content()).unwrap_or("")));
         true
     }).map_err(|e| format!("Failed to print diff: {}", e))?;
-    
-    Ok(diff_text)
+    // 调试：打印 git2 生成的 patch 概要
+    {
+        let preview: String = text.chars().take(400).collect();
+        let lines_total = text.lines().count();
+        let plus_cnt = text.lines().filter(|l| l.starts_with('+')).count();
+        let minus_cnt = text.lines().filter(|l| l.starts_with('-')).count();
+        let space_cnt = text.lines().filter(|l| l.starts_with(' ')).count();
+        let at_cnt = text.lines().filter(|l| l.starts_with("@@")).count();
+        let msg = format!(
+            "[git2 to_buf] bytes: {}, lines: {}, +: {}, -: {}, space: {}, @@: {}, preview: {}",
+            text.len(), lines_total, plus_cnt, minus_cnt, space_cnt, at_cnt, preview
+        );
+        append_repo_log(&repo_path, &msg);
+    }
+
+    // Fallback: 如果含有 hunk 但几乎没有 +/- 行，尝试调用 git 原生命令生成统一补丁
+    let plus = text.lines().filter(|l| l.starts_with('+')).count();
+    let minus = text.lines().filter(|l| l.starts_with('-')).count();
+    let has_hunk = text.lines().any(|l| l.starts_with("@@"));
+    if has_hunk && (plus + minus) < 3 {
+        if commit.parent_count() > 0 {
+            use std::process::Command;
+            let parent_id = commit.parent_id(0).ok();
+            if let Some(pid) = parent_id {
+                let output = Command::new("git")
+                    .arg("-C").arg(&repo_path)
+                    .arg("diff")
+                    .arg(format!("{}", pid))
+                    .arg(format!("{}", commit_id))
+                    .arg("--")
+                    .arg(&file_path)
+                    .output();
+                if let Ok(out) = output {
+                    if out.status.success() {
+                        let t = String::from_utf8_lossy(&out.stdout).to_string();
+                        if !t.trim().is_empty() {
+                            // 调试：打印 git 原生命令生成的文本概要
+                            let lines_total = t.lines().count();
+                            let plus_cnt = t.lines().filter(|l| l.starts_with('+')).count();
+                            let minus_cnt = t.lines().filter(|l| l.starts_with('-')).count();
+                            let space_cnt = t.lines().filter(|l| l.starts_with(' ')).count();
+                            let at_cnt = t.lines().filter(|l| l.starts_with("@@")).count();
+                            let preview: String = t.chars().take(400).collect();
+                            let msg = format!(
+                                "[git diff fallback] bytes: {}, lines: {}, +: {}, -: {}, space: {}, @@: {}, preview: {}",
+                                t.len(), lines_total, plus_cnt, minus_cnt, space_cnt, at_cnt, preview
+                            );
+                            append_repo_log(&repo_path, &msg);
+                            text = t;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(text)
 }
 
 // 获取文件差异（保持向后兼容）

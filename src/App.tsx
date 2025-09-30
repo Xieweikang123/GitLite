@@ -7,8 +7,8 @@ import { TopToolbar } from './components/TopToolbar'
 import { MenuToolbar } from './components/MenuToolbar'
 import { OperationsPanel } from './components/OperationsPanel'
 import { CommitList } from './components/CommitList'
-// DiffViewer 暂时移除
 import { FileList } from './components/FileList'
+import { UnifiedCommitView } from './components/UnifiedCommitView'
 import { LogModal } from './components/LogModal'
 import { ProxyConfigModal } from './components/ProxyConfigModal'
 import { CommitInfo, FileChange } from './types/git'
@@ -27,6 +27,8 @@ function App() {
     checkoutBranch, 
     getCommitFiles, 
     getCommitsPaginated,
+    getFileDiff,
+    getSingleFileDiff,
     fetchChangesWithLogs,
     pushChangesWithRealtimeLogs,
     pullChangesWithLogs
@@ -399,39 +401,24 @@ function App() {
             />
           </div>
         ) : (
-          <div className="space-y-6">
-            {/* 提交列表 */}
-            <div>
-              {repoInfo ? (
-                <CommitList
-                  commits={allCommits}
-                  onCommitSelect={handleCommitSelect}
-                  onLoadMore={handleLoadMore}
-                  hasMore={hasMoreCommits}
-                  loading={loadingMore}
-                  aheadCount={repoInfo?.ahead ?? 0}
-                />
-              ) : (
-                <div className="text-center py-12">
-                  <p className="text-muted-foreground">请先选择一个 Git 仓库</p>
-                </div>
-              )}
-            </div>
-            {/* 文件列表（选中提交后显示） */}
-            <div>
-              {selectedCommit ? (
-                <FileList
-                  files={commitFiles}
-                  selectedFile={selectedFile}
-                  onFileSelect={handleFileSelect}
-                  loading={loading}
-                />
-              ) : (
-                <div className="text-center py-8">
-                  <p className="text-muted-foreground">选择一个提交以查看文件变更</p>
-                </div>
-              )}
-            </div>
+          <div>
+            {repoInfo ? (
+              <UnifiedCommitView
+                commits={allCommits}
+                onLoadMore={handleLoadMore}
+                hasMore={hasMoreCommits}
+                loading={loadingMore}
+                aheadCount={repoInfo?.ahead ?? 0}
+                onGetCommitFiles={getCommitFiles}
+                onGetDiff={getFileDiff}
+                onGetSingleFileDiff={getSingleFileDiff}
+                repoPath={repoInfo.path}
+              />
+            ) : (
+              <div className="text-center py-12">
+                <p className="text-muted-foreground">请先选择一个 Git 仓库</p>
+              </div>
+            )}
           </div>
         )}
       </div>

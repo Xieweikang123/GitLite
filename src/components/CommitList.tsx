@@ -68,25 +68,26 @@ export function CommitList({
               className="border rounded-lg p-4 hover:bg-accent cursor-pointer transition-colors"
               onClick={() => onCommitSelect?.(commit)}
             >
-              <div className="flex items-start justify-between">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-foreground line-clamp-2">
+              <div className="space-y-2">
+                {/* 第一行：提交信息 */}
+                <div className="flex items-start justify-between">
+                  <p className="text-sm font-medium text-foreground line-clamp-2 flex-1 min-w-0 pr-2">
                     {commit.message}
                   </p>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="text-xs text-muted-foreground">
-                      {commit.author}
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      {commit.date}
-                    </span>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {pendingPushIds.has(commit.id) && (
+                      <Badge className="bg-blue-600 text-white hover:bg-blue-600/90 text-xs">待推送</Badge>
+                    )}
+                    <Badge variant="outline" className="text-xs">{commit.short_id}</Badge>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 ml-2">
-                  {pendingPushIds.has(commit.id) && (
-                    <Badge className="bg-blue-600 text-white hover:bg-blue-600/90">待推送</Badge>
-                  )}
-                  <Badge variant="outline">{commit.short_id}</Badge>
+                
+                {/* 第二行：作者和日期 */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                    <span className="font-medium">{commit.author}</span>
+                    <span>{commit.date}</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -124,3 +125,4 @@ export function CommitList({
     </Card>
   )
 }
+

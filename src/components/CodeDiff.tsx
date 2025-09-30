@@ -223,6 +223,8 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
   const [changeCount, setChangeCount] = useState(0)
   const [viewMode, setViewMode] = useState<'unified' | 'side-by-side'>('unified')
   const scrollContainerRef = useRef<HTMLDivElement>(null)
+  // 新增：用于测量外层容器高度，避免用自身 clientHeight 造成递减
+  const outerContainerRef = useRef<HTMLDivElement>(null)
   
   // 虚拟滚动相关状态
   const [visibleRange, setVisibleRange] = useState({ start: 0, end: 100 })
@@ -330,8 +332,10 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
   // 检测容器高度变化
   useEffect(() => {
     const updateContainerHeight = () => {
-      if (scrollContainerRef.current) {
-        const height = scrollContainerRef.current.clientHeight
+      // 改为测量外层容器高度，避免“用自身高度写回”导致的累计缩小
+      const outer = outerContainerRef.current
+      if (outer) {
+        const height = outer.clientHeight
         setContainerHeight(height)
       }
     }
@@ -347,13 +351,13 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
   
 
   useEffect(() => {
+    console.info('[DiffFlow] CodeDiff mount/update', { hasDiff: !!diff, diffLength: diff?.length || 0, filePath ,diff })
+    
     if (diff) {
       setIsLoading(true) // 开始加载
       
-      const startTime = performance.now()
-      
       const parsedLines = parseDiffToFullFile(diff)
-      const parseTime = performance.now() - startTime
+      console.info('[DiffFlow] parsed', { lines: parsedLines.length, added: parsedLines.filter(l=>l.type==='added').length, deleted: parsedLines.filter(l=>l.type==='deleted').length, unchanged: parsedLines.filter(l=>l.type==='unchanged').length })
       
       // 为更改行添加索引
       const linesWithChangeIndex = addChangeIndices(parsedLines)
@@ -370,6 +374,26 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       
       // 批量更新状态，避免多次渲染
       const updateStates = (finalLines: FileLine[]) => {
+        // 打印最终差异行信息（精简表 + 完整对象，便于排查）
+        try {
+          const preview = finalLines.slice(0, 50).map(l => ({
+            lineNumber: l.lineNumber,
+            oldLineNumber: l.oldLineNumber,
+            type: l.type,
+            content: (l.content ?? '').slice(0, 120),
+            changeIndex: l.changeIndex
+          }))
+          console.info('[DiffFlow] final lines summary', {
+            total: finalLines.length,
+            added: finalLines.filter(x => x.type === 'added').length,
+            deleted: finalLines.filter(x => x.type === 'deleted').length,
+            unchanged: finalLines.filter(x => x.type === 'unchanged').length
+          })
+          console.table(preview)
+          console.groupCollapsed('[DiffFlow] final lines (full)')
+          console.log(finalLines)
+          console.groupEnd()
+        } catch {}
         setFileLines(finalLines)
         setChangeCount(newChangeCount)
         setCurrentChangeIndex(0)
@@ -428,12 +452,16 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
 
   const fillUnchangedLines = async (lines: FileLine[], filePath: string, repoPath: string): Promise<FileLine[]> => {
     try {
-      const startTime = performance.now()
+      // 关键日志：开始补全文件
+      console.info('[DiffFlow] fill unchanged lines', { filePath, repoPath, diffLinesCount: lines.length })
       const { invoke } = await import('@tauri-apps/api/tauri')
       const fileContent = await invoke('get_file_content', {
         repoPath,
         filePath
       }) as string
+      
+      // 关键日志：拿到文件内容
+      console.info('[DiffFlow] file content loaded', { length: fileContent.length, lines: fileContent.split('\n').length })
       
       const fileContentLines = fileContent.split('\n')
       
@@ -476,8 +504,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         }
       }
       
-      const processingTime = performance.now() - startTime
-      
+      console.info('[DiffFlow] fill done', { originalLines: lines.length, fullFileLines: fullFileLines.length })
       
       // 检查第一行的处理结果
       const firstLines = fullFileLines.filter(line => line.lineNumber === 1)
@@ -489,7 +516,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       // 返回处理后的行数据，而不是直接设置状态
       return fullFileLinesWithIndex
     } catch (err) {
-      
+      console.error('[DiffFlow] fill failed', err)
       // 如果读取失败，返回原始行数据
       return lines
     }
@@ -620,38 +647,64 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
   }
 
   const parseDiffToFullFile = (diffText: string): FileLine[] => {
+ 
     const lines = diffText.split('\n')
+    // 预扫描：统计以 + / - / 空格 开头的行数，帮助确定根因
+    try {
+      const plusCnt = lines.filter(l => l.startsWith('+')).length
+      const minusCnt = lines.filter(l => l.startsWith('-')).length
+      const spaceCnt = lines.filter(l => l.startsWith(' ')).length
+      const atCnt = lines.filter(l => l.startsWith('@@')).length
+      console.info('[DiffFlow] prescan', { lines: lines.length, plusCnt, minusCnt, spaceCnt, atCnt })
+    } catch {}
     const fileLines: FileLine[] = []
     let currentLineNumber = 1
     let oldLineNumber = 1
     let inHunk = false
 
-    if (import.meta.env.DEV) {
-      try {
-        console.log('[RawDiffTail]', lines.slice(-30))
-      } catch {}
-    }
+    // 仅保留必要日志
+    // console.info('[DiffFlow] raw diff lines', lines.length)
+
 
     
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]
+      if (i < 30) {
+        const ch0 = line.length ? line[0] : ''
+        const code0 = line.length ? line.charCodeAt(0) : -1
+        console.info('[DiffFlow] L', i, { ch0, code0, sample: line.substring(0, 120) })
+      }
+      // 规范化：去掉行首零宽字符/BOM与制表符以便识别 hunk/header；内容行仍使用原始字符处理
+      const head = line.replace(/^\uFEFF/, '').replace(/^\u200B+/, '').replace(/^\r/, '')
+      const t = head.trimStart()
       
+      if (i < 10) { // 只打印前10行的处理过程
+        console.log(`🔍 处理第${i}行:`, { 
+          line: line.substring(0, 50),
+          startsWithDiff: line.startsWith('diff --git'),
+          startsWithAt: line.startsWith('@@'),
+          startsWithPlus: line.startsWith('+'),
+          startsWithMinus: line.startsWith('-'),
+          startsWithSpace: line.startsWith(' ')
+        })
+      }
       
-      if (line.startsWith('diff --git')) {
+      if (t.startsWith('diff --git')) {
+        // header
         // 重置状态
         currentLineNumber = 1
         oldLineNumber = 1
         inHunk = false
         
         continue
-      } else if (line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')) {
+      } else if (t.startsWith('index ') || t.startsWith('---') || t.startsWith('+++')) {
         // 跳过这些header行
-        
+        // skip header
         continue
-      } else if (line.startsWith('@@')) {
+      } else if (t.startsWith('@@')) {
         // 解析hunk header获取起始行号
-        const match = line.match(/@@ -(\d+),?\d* \+(\d+),?\d* @@/)
+        const match = t.match(/@@ -(\d+),?\d* \+(\d+),?\d* @@/)
         if (match) {
           const hunkNewStart = parseInt(match[2])
           
@@ -660,14 +713,25 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           currentLineNumber = hunkNewStart
           oldLineNumber = parseInt(match[1])
           inHunk = true
+          console.info('[DiffFlow] enter hunk', { i, oldStart: oldLineNumber, newStart: currentLineNumber, header: line })
+          // 额外：探测此 hunk 后面的若干行的首字符与编码
+          try {
+            const probe: Array<{i: number; ch: string; code: number; s: string}> = []
+            for (let j = i + 1; j < Math.min(lines.length, i + 15); j++) {
+              const lj = lines[j]
+              probe.push({ i: j, ch: lj[0] || '', code: lj.length ? lj.charCodeAt(0) : -1, s: lj.slice(0, 80) })
+            }
+            console.table(probe)
+          } catch {}
           
         }
       } else if (inHunk) {
-        
-        
-        if (line.startsWith('+')) {
+        // 使用规范化首字符判断（去除可能的 BOM/零宽字符）
+        const normalized = line.replace(/^\uFEFF|^\u200B+/, '')
+        const ch = normalized.charAt(0)
+        if (ch === '+') {
           // 新增的行
-          const content = line.substring(1)
+          const content = normalized.substring(1)
           
           fileLines.push({
             lineNumber: currentLineNumber,
@@ -675,9 +739,9 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
             type: 'added'
           })
           currentLineNumber++
-        } else if (line.startsWith('-')) {
+        } else if (ch === '-') {
           // 删除的行
-          const content = line.substring(1)
+          const content = normalized.substring(1)
           
           fileLines.push({
             lineNumber: currentLineNumber,
@@ -687,9 +751,9 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           })
           // 删除行不增加 currentLineNumber，但增加 oldLineNumber
           oldLineNumber++
-        } else if (line.startsWith(' ')) {
+        } else if (ch === ' ') {
           // 未修改的行
-          const content = line.substring(1)
+          const content = normalized.substring(1)
           
           fileLines.push({
             lineNumber: currentLineNumber,
@@ -699,11 +763,11 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           })
           currentLineNumber++
           oldLineNumber++
-        } else if (line.trim() === '') {
+        } else if (normalized.trim() === '') {
           // 空行，跳过
           
           continue
-        } else if (line.trim() === '\\ No newline at end of file') {
+        } else if (normalized.trim() === '\\ No newline at end of file') {
           // Git diff 特殊标记：文件末尾无换行符。应忽略且保持在 hunk 模式，
           // 否则后续的 + 行可能会被错误地丢弃。
           
@@ -724,19 +788,13 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
     // const deletedCount = fileLines.filter(l => l.type === 'deleted').length
     // const unchangedCount = fileLines.filter(l => l.type === 'unchanged').length
     
+    // console.info('[DiffFlow] parse done', { lines: fileLines.length })
+    
     // 后处理：检测空白字符的变化
     const processedLines = detectWhitespaceChanges(fileLines)
+    
+    // console.info('[DiffFlow] processed', { totalLines: processedLines.length })
 
-    if (import.meta.env.DEV) {
-      try {
-        console.log('[ParseTailLines]', processedLines.slice(-12).map(l => ({
-          type: l.type,
-          lineNumber: l.lineNumber,
-          oldLineNumber: l.oldLineNumber,
-          content: (l.content || '').slice(0, 60)
-        })))
-      } catch {}
-    }
     
     // 特别检查第一行的处理结果
     // const firstLines = processedLines.filter(line => line.lineNumber === 1)
@@ -812,13 +870,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         topPx = Math.max(0, safeContainer - heightPx)
       }
 
-      if (import.meta.env.DEV) {
-        const okBounds = topPx >= 0 && topPx + heightPx <= safeContainer + 0.5
-        const okHeight = heightPx >= minHeightPx
-        if (!okBounds || !okHeight) {
-          throw new Error(`[ThumbnailInvariant] bounds=${okBounds} height=${okHeight} container=${safeContainer} top=${topPx} h=${heightPx}`)
-        }
-      }
       return { topPx, heightPx }
     }
 
@@ -855,18 +906,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       const trackHeight = Math.max(0, thumbnailHeight - indicatorHeightPx)
       const usedScrollTop = nextScrollTop ?? (scrollContainerRef.current?.scrollTop ?? 0)
       const scrollMax = Math.max(1, totalContentPx - viewportPx)
-      if (import.meta.env.DEV) {
-        console.log('[ThumbMetrics]', {
-          fileLinesLen: fileLines.length,
-          itemHeight,
-          viewportPx,
-          containerHeight,
-          thumbnailHeight,
-          indicatorHeightPx,
-          trackHeight,
-          totalContentPx
-        })
-      }
       // 将代码区滚动位置映射到缩略图轨道比例 [0,1]
       const p = Math.min(1, Math.max(0, usedScrollTop / scrollMax))
       // 指示块位移（像素）= 比例 × 轨道高度
@@ -1193,18 +1232,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       const bars: Array<{ startIdx: number; endIdx: number; type: FileLine['type']; changeIndex?: number }> = []
       let i = 0
 
-      if (import.meta.env.DEV) {
-        const changed = fileLines
-          .map((l, idx) => ({ idx, type: l.type, changeIndex: l.changeIndex, lineNumber: l.lineNumber }))
-          .filter(x => x.type === 'added' || x.type === 'deleted')
-        console.log('[TailChangedPreview]', changed.slice(-8))
-        console.log('[TailWindow]', fileLines.slice(-12).map((l, idx) => ({
-          idx: fileLines.length - 12 + idx,
-          type: l.type,
-          changeIndex: l.changeIndex,
-          lineNumber: l.lineNumber
-        })))
-      }
 
       while (i < fileLines.length) {
         const line = fileLines[i]
@@ -1226,9 +1253,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         const end = i
         bars.push({ startIdx: start, endIdx: end, type: thisType, changeIndex: thisChangeIndex })
         i++
-      }
-      if (import.meta.env.DEV) {
-        console.log('[BarsAfterGroup]', bars.map(b => ({ type: b.type, startIdx: b.startIdx, endIdx: b.endIdx, changeIndex: b.changeIndex })).slice(-6))
       }
       
 
@@ -1258,32 +1282,10 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           blockHeightPx,
           2
         )
-        if (import.meta.env.DEV && (idx === bars.length - 1 || idx === 0)) {
-          const startRatio = startTopPx / totalContentPx
-          const endRatio = Math.min(1, (startTopPx + blockHeightPx) / totalContentPx)
-          const bottomPx = topPx + heightPx
-          console.log('[ThumbBar]', {
-            idx,
-            type: bar.type,
-            changeIndex: bar.changeIndex,
-            startIdx: bar.startIdx,
-            endIdx: bar.endIdx,
-            startTopPx,
-            blockHeightPx,
-            startRatio,
-            endRatio,
-            topPx,
-            bottomPx,
-            heightPx
-          })
-        }
        
         return { idx, type: bar.type, changeIndex: bar.changeIndex, topPx, heightPx }
       })
 
-      if (import.meta.env.DEV) {
-        console.log('[ThumbBarsRaw]', barRecords.slice(0, 8), 'count=', barRecords.length)
-      }
       // 处理重叠：允许1px内的区间交叠也并排显示（覆盖你提供的案例：top 0/1 高度2/3）
       const overlapTolerance = 1 // px
       const hasOverlapOpposite = (a: any) => {
@@ -1302,8 +1304,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       }
       const elements = barRecords.map((rec) => {
         const overlapOpposite = hasOverlapOpposite(rec)
-        if (import.meta.env.DEV && overlapOpposite) {
-        }
         const cls = rec.type === 'added'
           ? 'bg-green-300 dark:bg-green-600'
           : 'bg-red-300 dark:bg-red-600'
@@ -1402,7 +1402,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
         </div>
         
         {/* Line Content */}
-        <div className="flex-1 min-w-0 w-full" style={{ whiteSpace: 'pre' }}>
+        <div className="flex-1 min-w-0 w-full text-foreground" style={{ whiteSpace: 'pre' }}>
           {line.segments ? (
             // 显示字符级别的差异
             <div className="inline">
@@ -1677,15 +1677,6 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setIsExpanded(!isExpanded)}
-            className="flex items-center gap-2"
-          >
-            {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-            {isExpanded ? '收起' : '展开'}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
             onClick={copyToClipboard}
             className="flex items-center gap-2"
           >
@@ -1698,38 +1689,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           {/* 打印关键尺寸信息 */}
           
           
-          {/* 缩略图切换按钮 */}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setShowThumbnail(!showThumbnail)}
-            className="flex items-center gap-2 text-xs"
-            title={showThumbnail ? "隐藏缩略图" : "显示缩略图"}
-          >
-            {showThumbnail ? "📊" : "📈"}
-          </Button>
           
-          {/* 视图模式切换 */}
-          <div className="flex items-center border border-gray-200 dark:border-gray-700 rounded-md overflow-hidden">
-            <Button
-              variant={viewMode === 'unified' ? 'default' : 'ghost'}
-              size="sm"
-              onClick={() => setViewMode('unified')}
-              className="rounded-none border-0 h-8 px-3"
-              title="统一视图"
-            >
-              <FileText className="h-4 w-4" />
-            </Button>
-            <Button
-              variant={viewMode === 'side-by-side' ? 'default' : 'ghost'}
-              size="sm"
-              onClick={() => setViewMode('side-by-side')}
-              className="rounded-none border-0 h-8 px-3"
-              title="并排视图"
-            >
-              <Sidebar className="h-4 w-4" />
-            </Button>
-          </div>
         </div>
         
         {/* 更改导航控件 */}
@@ -1809,26 +1769,33 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       </div>
       
       {isExpanded && (
-        <div className="relative max-h-96 overflow-visible">
+        <div ref={outerContainerRef} className="relative max-h-96 overflow-visible">
           <div 
             ref={scrollContainerRef} 
             className={`overflow-y-auto bg-white dark:bg-gray-900`}
             style={{ height: `${containerHeight}px` }}
           >
-            {isLoading ? (
-              <div className="p-4 text-center text-muted-foreground">
-                <div className="flex items-center justify-center gap-2">
-                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
-                  正在加载差异内容...
-                </div>
-              </div>
-            ) : fileLines.length === 0 ? (
-              <div className="p-4 text-center text-muted-foreground">
-                没有差异内容
-              </div>
-            ) : (
-              viewMode === 'side-by-side' ? renderSideBySideView() : renderUnifiedView()
-            )}
+            {(() => {
+              if (isLoading) {
+                return (
+                  <div className="p-4 text-center text-muted-foreground">
+                    <div className="flex items-center justify-center gap-2">
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
+                      正在加载差异内容...
+                    </div>
+                  </div>
+                )
+              } else if (fileLines.length === 0) {
+                return (
+                  <div className="p-4 text-center text-muted-foreground">
+                    没有差异内容
+                  </div>
+                )
+              } else {
+                console.info('[DiffFlow] render', { viewMode, lines: fileLines.length })
+                return viewMode === 'side-by-side' ? renderSideBySideView() : renderUnifiedView()
+              }
+            })()}
           </div>
           
           {/* 缩略图滚动条 */}
