@@ -761,22 +761,27 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
                     <div className="text-sm font-mono truncate" title={file}>{shortenPathMiddle(file, 56)}</div>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => viewFileDiff(file, 'untracked')}
-                      className="flex items-center gap-1"
-                    >
-                      <Eye className="h-3 w-3" />
-                      查看
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={() => stageFile(file)}
-                      disabled={loading}
-                    >
-                      添加
-                    </Button>
+                    {/* 只对文件显示按钮，文件夹不显示 */}
+                    {!file.endsWith('/') && (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => viewFileDiff(file, 'untracked')}
+                          className="flex items-center gap-1"
+                        >
+                          <Eye className="h-3 w-3" />
+                          查看
+                        </Button>
+                        <Button
+                          size="sm"
+                          onClick={() => stageFile(file)}
+                          disabled={loading}
+                        >
+                          添加
+                        </Button>
+                      </>
+                    )}
                   </div>
                 </div>
               ))}
