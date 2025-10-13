@@ -262,24 +262,38 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       
       // 检查鼠标是否在缩略图区域内
       if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
-        console.log('[Document wheel in thumb]', e.deltaY)
+        console.log('[Document wheel in thumb]', e.deltaY, e.deltaX)
         e.preventDefault()
         e.stopPropagation()
         
         const sc = scrollContainerRef.current
         if (!sc) return
         
-        const totalContentPx = Math.max(1, fileLines.length * itemHeight)
-        const viewportPx = sc.clientHeight || containerHeight
-        const scrollMax = Math.max(1, totalContentPx - viewportPx)
-        // 固定滚动5行，方向正确
-        const fixedScrollAmount = 5 * itemHeight
-        const scrollDirection = e.deltaY > 0 ? 1 : -1 // 向下滚动为正，向上滚动为负
-        const next = Math.max(0, Math.min(scrollMax, sc.scrollTop + fixedScrollAmount * scrollDirection))
-        sc.scrollTop = next
+        // 处理垂直滚动
+        if (e.deltaY !== 0) {
+          const totalContentPx = Math.max(1, fileLines.length * itemHeight)
+          const viewportPx = sc.clientHeight || containerHeight
+          const scrollMax = Math.max(1, totalContentPx - viewportPx)
+          // 固定滚动0.5行，方向正确
+          const fixedScrollAmount = 0.5 * itemHeight
+          const scrollDirection = e.deltaY > 0 ? 1 : -1 // 向下滚动为正，向上滚动为负
+          const next = Math.max(0, Math.min(scrollMax, sc.scrollTop + fixedScrollAmount * scrollDirection))
+          sc.scrollTop = next
+          
+          // 更新可见范围
+          updateVisibleRange()
+        }
         
-        // 更新可见范围
-        updateVisibleRange()
+        // 处理水平滚动
+        if (e.deltaX !== 0) {
+          const horizontalScrollAmount = 10 // 水平滚动像素数
+          const horizontalScrollDirection = e.deltaX > 0 ? 1 : -1
+          const newScrollLeft = sc.scrollLeft + (horizontalScrollAmount * horizontalScrollDirection)
+          
+          // 确保水平滚动位置在有效范围内
+          const maxScrollLeft = sc.scrollWidth - sc.clientWidth
+          sc.scrollLeft = Math.max(0, Math.min(newScrollLeft, maxScrollLeft))
+        }
       }
     }
     
@@ -304,17 +318,31 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       e.preventDefault()
       e.stopPropagation()
       
-      // 手动控制滚动 - 固定滚动5行，方向正确
-      const scrollAmount = 5 * itemHeight // 固定滚动5行
-      const scrollDirection = e.deltaY > 0 ? 1 : -1 // 向下滚动为正，向上滚动为负
-      const newScrollTop = scrollContainer.scrollTop + (scrollAmount * scrollDirection)
+      // 处理垂直滚动
+      if (e.deltaY !== 0) {
+        // 手动控制滚动 - 固定滚动0.5行，方向正确
+        const scrollAmount = 0.5 * itemHeight // 固定滚动0.5行
+        const scrollDirection = e.deltaY > 0 ? 1 : -1 // 向下滚动为正，向上滚动为负
+        const newScrollTop = scrollContainer.scrollTop + (scrollAmount * scrollDirection)
+        
+        // 确保滚动位置在有效范围内
+        const maxScrollTop = scrollContainer.scrollHeight - scrollContainer.clientHeight
+        scrollContainer.scrollTop = Math.max(0, Math.min(newScrollTop, maxScrollTop))
+        
+        // 更新可见范围
+        updateVisibleRange()
+      }
       
-      // 确保滚动位置在有效范围内
-      const maxScrollTop = scrollContainer.scrollHeight - scrollContainer.clientHeight
-      scrollContainer.scrollTop = Math.max(0, Math.min(newScrollTop, maxScrollTop))
-      
-      // 更新可见范围
-      updateVisibleRange()
+      // 处理水平滚动
+      if (e.deltaX !== 0) {
+        const horizontalScrollAmount = 10 // 水平滚动像素数
+        const horizontalScrollDirection = e.deltaX > 0 ? 1 : -1
+        const newScrollLeft = scrollContainer.scrollLeft + (horizontalScrollAmount * horizontalScrollDirection)
+        
+        // 确保水平滚动位置在有效范围内
+        const maxScrollLeft = scrollContainer.scrollWidth - scrollContainer.clientWidth
+        scrollContainer.scrollLeft = Math.max(0, Math.min(newScrollLeft, maxScrollLeft))
+      }
     }
 
     const handleScroll = () => {
@@ -1197,16 +1225,31 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
       if (!sc || !el) return
       e.preventDefault()
       e.stopPropagation()
-      const totalContentPx = Math.max(1, fileLines.length * itemHeight)
-      const viewportPx = sc.clientHeight || containerHeight
-      const scrollMax = Math.max(1, totalContentPx - viewportPx)
-      // 固定滚动5行，方向正确
-      const fixedScrollAmount = 5 * itemHeight
-      const scrollDirection = e.deltaY > 0 ? 1 : -1 // 向下滚动为正，向上滚动为负
-      const next = Math.max(0, Math.min(scrollMax, sc.scrollTop + fixedScrollAmount * scrollDirection))
-      sc.scrollTop = next
-      enqueueScrollTop(next)
-      setCurrentScrollTop(next)
+      
+      // 处理垂直滚动
+      if (e.deltaY !== 0) {
+        const totalContentPx = Math.max(1, fileLines.length * itemHeight)
+        const viewportPx = sc.clientHeight || containerHeight
+        const scrollMax = Math.max(1, totalContentPx - viewportPx)
+        // 固定滚动0.5行，方向正确
+        const fixedScrollAmount = 0.5 * itemHeight
+        const scrollDirection = e.deltaY > 0 ? 1 : -1 // 向下滚动为正，向上滚动为负
+        const next = Math.max(0, Math.min(scrollMax, sc.scrollTop + fixedScrollAmount * scrollDirection))
+        sc.scrollTop = next
+        enqueueScrollTop(next)
+        setCurrentScrollTop(next)
+      }
+      
+      // 处理水平滚动
+      if (e.deltaX !== 0) {
+        const horizontalScrollAmount = 10 // 水平滚动像素数
+        const horizontalScrollDirection = e.deltaX > 0 ? 1 : -1
+        const newScrollLeft = sc.scrollLeft + (horizontalScrollAmount * horizontalScrollDirection)
+        
+        // 确保水平滚动位置在有效范围内
+        const maxScrollLeft = sc.scrollWidth - sc.clientWidth
+        sc.scrollLeft = Math.max(0, Math.min(newScrollLeft, maxScrollLeft))
+      }
     }
 
     // 统一的渲染逻辑：始终渲染所有行，但通过透明度区分
@@ -1321,21 +1364,36 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
          onClick={undefined}
          onMouseDown={showThumbnail ? handleThumbnailMouseDown : undefined}
          onWheel={(e) => {
-           console.log('[React onWheel]', e.deltaY)
+           console.log('[React onWheel]', e.deltaY, e.deltaX)
            e.preventDefault()
            e.stopPropagation()
            const sc = scrollContainerRef.current
            if (!sc) return
-           const totalContentPx = Math.max(1, fileLines.length * itemHeight)
-           const viewportPx = sc.clientHeight || containerHeight
-           const scrollMax = Math.max(1, totalContentPx - viewportPx)
-           // 固定滚动5行，方向正确
-           const fixedScrollAmount = 5 * itemHeight
-           const scrollDirection = e.deltaY > 0 ? 1 : -1 // 向下滚动为正，向上滚动为负
-           const next = Math.max(0, Math.min(scrollMax, sc.scrollTop + fixedScrollAmount * scrollDirection))
-           sc.scrollTop = next
-           enqueueScrollTop(next)
-           setCurrentScrollTop(next)
+           
+           // 处理垂直滚动
+           if (e.deltaY !== 0) {
+             const totalContentPx = Math.max(1, fileLines.length * itemHeight)
+             const viewportPx = sc.clientHeight || containerHeight
+             const scrollMax = Math.max(1, totalContentPx - viewportPx)
+             // 固定滚动0.5行，方向正确
+             const fixedScrollAmount = 0.5 * itemHeight
+             const scrollDirection = e.deltaY > 0 ? 1 : -1 // 向下滚动为正，向上滚动为负
+             const next = Math.max(0, Math.min(scrollMax, sc.scrollTop + fixedScrollAmount * scrollDirection))
+             sc.scrollTop = next
+             enqueueScrollTop(next)
+             setCurrentScrollTop(next)
+           }
+           
+           // 处理水平滚动
+           if (e.deltaX !== 0) {
+             const horizontalScrollAmount = 10 // 水平滚动像素数
+             const horizontalScrollDirection = e.deltaX > 0 ? 1 : -1
+             const newScrollLeft = sc.scrollLeft + (horizontalScrollAmount * horizontalScrollDirection)
+             
+             // 确保水平滚动位置在有效范围内
+             const maxScrollLeft = sc.scrollWidth - sc.clientWidth
+             sc.scrollLeft = Math.max(0, Math.min(newScrollLeft, maxScrollLeft))
+           }
          }}
          title={showThumbnail ? "点击或拖拽跳转到对应位置" : undefined}
        >
