@@ -1732,7 +1732,43 @@ async fn push_changes_with_realtime_logs(
         "message": "正在设置认证..."
     }));
 
-    // 认证与 Push 选项
+    // 在 Repository 配置中设置代理（git2 需要从配置读取，而不仅仅是环境变量）
+    if proxy_config.enabled {
+        let proxy_url = if let (Some(username), Some(password)) = (&proxy_config.username, &proxy_config.password) {
+            format!("{}://{}:{}@{}:{}", 
+                    proxy_config.protocol, username, password, 
+                    proxy_config.host, proxy_config.port)
+        } else {
+            format!("{}://{}:{}", 
+                    proxy_config.protocol, proxy_config.host, proxy_config.port)
+        };
+        
+        if let Ok(mut config) = repo.config() {
+            // 设置 HTTP 和 HTTPS 代理到 Repository 配置
+            if let Err(e) = config.set_str("http.proxy", &proxy_url) {
+                let _ = window.emit("push-log", serde_json::json!({
+                    "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+                    "level": "WARN",
+                    "message": format!("设置 http.proxy 失败: {}", e)
+                }));
+            }
+            if let Err(e) = config.set_str("https.proxy", &proxy_url) {
+                let _ = window.emit("push-log", serde_json::json!({
+                    "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+                    "level": "WARN",
+                    "message": format!("设置 https.proxy 失败: {}", e)
+                }));
+            }
+            
+            let _ = window.emit("push-log", serde_json::json!({
+                "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+                "level": "DEBUG",
+                "message": format!("已在 Repository 配置中设置代理: {}", proxy_url)
+            }));
+        }
+    }
+
+    // 认证与 Push 选项（在设置代理后重新获取配置）
     let cfg = repo.config().ok();
     let mut callbacks = git2::RemoteCallbacks::new();
     callbacks.credentials(move |url, username_from_url, allowed| {
