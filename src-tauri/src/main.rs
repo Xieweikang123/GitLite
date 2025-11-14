@@ -1081,34 +1081,87 @@ async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, Stri
 // 暂存文件
 #[tauri::command]
 async fn stage_file(repo_path: String, file_path: String) -> Result<String, String> {
+    log_message("INFO", &format!("stage_file: attempt start | path={} file={}", repo_path, file_path));
+    
     let repo = Repository::open(&repo_path)
-        .map_err(|e| format!("Failed to open repository: {}", e))?;
+        .map_err(|e| {
+            let error_msg = format!("Failed to open repository: {}", e);
+            log_message("ERROR", &format!("stage_file: {} | path={}", error_msg, repo_path));
+            error_msg
+        })?;
     
-    let mut index = repo.index().map_err(|e| format!("Failed to get index: {}", e))?;
+    let mut index = repo.index()
+        .map_err(|e| {
+            let error_msg = format!("Failed to get index: {}", e);
+            log_message("ERROR", &format!("stage_file: {} | path={} file={}", error_msg, repo_path, file_path));
+            error_msg
+        })?;
     
-    index.add_path(Path::new(&file_path))
-        .map_err(|e| format!("Failed to add file to index: {}", e))?;
+    // 检查文件是否在工作区中存在
+    let full_path = Path::new(&repo_path).join(&file_path);
+    let file_exists = full_path.exists();
     
-    index.write().map_err(|e| format!("Failed to write index: {}", e))?;
+    if file_exists {
+        // 文件存在，使用 add_path 暂存
+        index.add_path(Path::new(&file_path))
+            .map_err(|e| {
+                let error_msg = format!("Failed to add file to index: {}", e);
+                log_message("ERROR", &format!("stage_file: {} | path={} file={}", error_msg, repo_path, file_path));
+                error_msg
+            })?;
+        log_message("DEBUG", &format!("stage_file: file exists, using add_path | path={} file={}", repo_path, file_path));
+    } else {
+        // 文件不存在，使用 remove_path 暂存删除
+        index.remove_path(Path::new(&file_path))
+            .map_err(|e| {
+                let error_msg = format!("Failed to remove file from index: {}", e);
+                log_message("ERROR", &format!("stage_file: {} | path={} file={}", error_msg, repo_path, file_path));
+                error_msg
+            })?;
+        log_message("DEBUG", &format!("stage_file: file deleted, using remove_path | path={} file={}", repo_path, file_path));
+    }
     
+    index.write()
+        .map_err(|e| {
+            let error_msg = format!("Failed to write index: {}", e);
+            log_message("ERROR", &format!("stage_file: {} | path={} file={}", error_msg, repo_path, file_path));
+            error_msg
+        })?;
+    
+    log_message("INFO", &format!("stage_file: success | path={} file={}", repo_path, file_path));
     Ok(format!("Successfully staged {}", file_path))
 }
 
 // 取消暂存文件
 #[tauri::command]
 async fn unstage_file(repo_path: String, file_path: String) -> Result<String, String> {
+    log_message("INFO", &format!("unstage_file: attempt start | path={} file={}", repo_path, file_path));
+    
     let repo = Repository::open(&repo_path)
-        .map_err(|e| format!("Failed to open repository: {}", e))?;
+        .map_err(|e| {
+            let error_msg = format!("Failed to open repository: {}", e);
+            log_message("ERROR", &format!("unstage_file: {} | path={}", error_msg, repo_path));
+            error_msg
+        })?;
 
     // 获取 HEAD 对象
     let head_obj = repo.revparse_single("HEAD")
-        .map_err(|e| format!("Failed to get HEAD object: {}", e))?;
+        .map_err(|e| {
+            let error_msg = format!("Failed to get HEAD object: {}", e);
+            log_message("ERROR", &format!("unstage_file: {} | path={} file={}", error_msg, repo_path, file_path));
+            error_msg
+        })?;
 
     // 使用 reset_default 方法取消暂存指定文件
     // 这等价于 git reset HEAD <file>，会将文件从暂存区移除但不会标记为删除
     repo.reset_default(Some(&head_obj), &[Path::new(&file_path)])
-        .map_err(|e| format!("Failed to unstage file: {}", e))?;
+        .map_err(|e| {
+            let error_msg = format!("Failed to unstage file: {}", e);
+            log_message("ERROR", &format!("unstage_file: {} | path={} file={}", error_msg, repo_path, file_path));
+            error_msg
+        })?;
     
+    log_message("INFO", &format!("unstage_file: success | path={} file={}", repo_path, file_path));
     Ok(format!("Successfully unstaged {}", file_path))
 }
 
