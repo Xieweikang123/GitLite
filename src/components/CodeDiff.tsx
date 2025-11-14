@@ -1444,7 +1444,7 @@ export function VSCodeDiff({ diff, filePath, repoPath, debugEnabled: debugFromPa
           {line.type === 'unchanged' && <span className="text-gray-400 dark:text-gray-500"> </span>}
         </div>
         
-        {/* Line Content */}
+        {/* Line Content */} 
         <div className="flex-1 min-w-0 text-foreground" style={{ whiteSpace: 'pre' }}>
           {line.segments ? (
             // 显示字符级别的差异
