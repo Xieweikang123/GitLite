@@ -395,6 +395,68 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
     }
   }
 
+  // 提交并同步（类似 VS Code 的提交并同步按钮）
+  // 工作流程：1. 提交暂存的文件 2. 拉取远程更新（如果有） 3. 推送本地提交
+  const commitAndSync = async () => {
+    if (!repoInfo) return
+    
+    try {
+      setLoading(true)
+      setError(null)
+      
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      
+      // 1. 如果有暂存的文件，先提交
+      if (workspaceStatus?.staged_files && workspaceStatus.staged_files.length > 0) {
+        if (!commitMessage.trim()) {
+          setError('请先输入提交信息')
+          setLoading(false)
+          return
+        }
+        
+        await invoke('commit_changes', {
+          repoPath: repoInfo.path,
+          message: commitMessage.trim(),
+        })
+        
+        setCommitMessage('')
+        await fetchWorkspaceStatus()
+        // 刷新仓库信息以更新 ahead 状态
+        onRefresh()
+      }
+      
+      // 2. 如果有远程更新，先拉取
+      if (repoInfo.behind > 0) {
+        await invoke('pull_changes', {
+          repoPath: repoInfo.path,
+        })
+        // 拉取后刷新仓库信息以更新 ahead/behind 状态
+        onRefresh()
+        await fetchWorkspaceStatus()
+      }
+      
+      // 3. 最后推送（检查是否有待推送的提交）
+      // 重新获取仓库信息以确保 ahead 状态是最新的
+      const updatedRepoInfo: any = await invoke('open_repository', {
+        path: repoInfo.path,
+      })
+      
+      if (updatedRepoInfo.ahead > 0) {
+        await invoke('push_changes', {
+          repoPath: repoInfo.path,
+        })
+      }
+      
+      // 刷新所有状态
+      await fetchWorkspaceStatus()
+      onRefresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '提交并同步失败')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   // 获取状态徽章颜色
   const getStatusBadgeVariant = (status: string) => {
     switch (status) {
@@ -541,6 +603,13 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
               disabled={!commitMessage.trim() || loading || !workspaceStatus?.staged_files?.length}
             >
               提交
+            </Button>
+            <Button 
+              onClick={commitAndSync}
+              disabled={loading || (!workspaceStatus?.staged_files?.length && (!repoInfo || (repoInfo.ahead <= 0 && repoInfo.behind <= 0)))}
+              variant="default"
+            >
+              提交并同步
             </Button>
             <div className="relative">
               <Button 
