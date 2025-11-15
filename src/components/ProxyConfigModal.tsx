@@ -8,7 +8,13 @@ import { Switch } from './ui/switch'
 import { Label } from './ui/label'
 import { ProxyConfig } from '../types/git'
 import { invoke } from '@tauri-apps/api/tauri'
-import { CheckCircle, XCircle, AlertCircle } from 'lucide-react'
+import { CheckCircle, XCircle, AlertCircle, RefreshCw } from 'lucide-react'
+
+interface GitConfigItem {
+  origin: string
+  key: string
+  value: string
+}
 
 interface ProxyConfigModalProps {
   isOpen: boolean
@@ -33,11 +39,14 @@ export function ProxyConfigModal({ isOpen, onClose }: ProxyConfigModalProps) {
   } | null>(null)
   
   const [isFromGitConfig, setIsFromGitConfig] = useState(false)
+  const [gitConfigInfo, setGitConfigInfo] = useState<GitConfigItem[]>([])
+  const [loadingConfigInfo, setLoadingConfigInfo] = useState(false)
 
   // 加载配置
   useEffect(() => {
     if (isOpen) {
       loadConfig()
+      loadGitConfigInfo()
     }
   }, [isOpen])
 
@@ -51,6 +60,19 @@ export function ProxyConfigModal({ isOpen, onClose }: ProxyConfigModalProps) {
       console.error('Failed to load proxy config:', error)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadGitConfigInfo = async () => {
+    setLoadingConfigInfo(true)
+    try {
+      const configItems = await invoke<GitConfigItem[]>('get_git_config_info')
+      setGitConfigInfo(configItems)
+    } catch (error) {
+      console.error('Failed to load git config info:', error)
+      setGitConfigInfo([])
+    } finally {
+      setLoadingConfigInfo(false)
     }
   }
 
@@ -114,9 +136,17 @@ export function ProxyConfigModal({ isOpen, onClose }: ProxyConfigModalProps) {
     }
   }
 
+  // 格式化配置信息为文本
+  const formatConfigText = () => {
+    if (gitConfigInfo.length === 0) {
+      return '未找到与代理、SSL 相关的 Git 配置'
+    }
+    return gitConfigInfo.map(item => `${item.origin}\t${item.key}=${item.value}`).join('\n')
+  }
+
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>代理配置</DialogTitle>
         </DialogHeader>
@@ -124,10 +154,10 @@ export function ProxyConfigModal({ isOpen, onClose }: ProxyConfigModalProps) {
         <div className="space-y-6">
           {/* Git配置状态提示 */}
           {isFromGitConfig && (
-            <div className="bg-blue-50 border border-blue-200 rounded-md p-3">
+            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-3">
               <div className="flex items-center space-x-2">
-                <CheckCircle className="h-4 w-4 text-blue-600" />
-                <span className="text-sm text-blue-700">
+                <CheckCircle className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                <span className="text-sm text-blue-700 dark:text-blue-300">
                   已自动读取Git全局代理配置
                 </span>
               </div>
@@ -237,8 +267,8 @@ export function ProxyConfigModal({ isOpen, onClose }: ProxyConfigModalProps) {
               {testResult && (
                 <div className={`flex items-center space-x-2 p-3 rounded-md ${
                   testResult.success 
-                    ? 'bg-green-50 text-green-700 border border-green-200' 
-                    : 'bg-red-50 text-red-700 border border-red-200'
+                    ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-800' 
+                    : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800'
                 }`}>
                   {testResult.success ? (
                     <CheckCircle className="h-4 w-4" />
@@ -268,11 +298,41 @@ export function ProxyConfigModal({ isOpen, onClose }: ProxyConfigModalProps) {
             </CardContent>
           </Card>
 
+          {/* 当前 Git 配置信息 */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-lg">当前 Git 配置信息</CardTitle>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={loadGitConfigInfo}
+                  disabled={loadingConfigInfo}
+                  className="h-8"
+                >
+                  <RefreshCw className={`h-4 w-4 mr-2 ${loadingConfigInfo ? 'animate-spin' : ''}`} />
+                  刷新
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {loadingConfigInfo ? (
+                <div className="text-center py-4 text-muted-foreground text-sm">
+                  加载中...
+                </div>
+              ) : (
+                <pre className="bg-gray-900 text-gray-100 p-4 rounded-md overflow-x-auto text-xs font-mono whitespace-pre-wrap break-all">
+                  {formatConfigText()}
+                </pre>
+              )}
+            </CardContent>
+          </Card>
+
           {/* 说明信息 */}
-          <div className="bg-blue-50 border border-blue-200 rounded-md p-4">
+          <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-4">
             <div className="flex items-start space-x-2">
-              <AlertCircle className="h-4 w-4 text-blue-600 mt-0.5" />
-              <div className="text-sm text-blue-700">
+              <AlertCircle className="h-4 w-4 text-blue-600 dark:text-blue-400 mt-0.5" />
+              <div className="text-sm text-blue-700 dark:text-blue-300">
                 <p className="font-medium mb-1">使用说明：</p>
                 <ul className="space-y-1 text-xs">
                   <li>• 自动读取Git全局代理配置（git config --global http.proxy）</li>

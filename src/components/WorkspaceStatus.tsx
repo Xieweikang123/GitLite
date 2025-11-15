@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
 import { FileChange } from '../types/git'
 import { FileDiffModal } from './FileDiffModal'
-import { Eye, Archive, ArchiveRestore, Trash2 } from 'lucide-react'
+import { Eye, Archive, ArchiveRestore, Trash2, CheckCircle, AlertCircle } from 'lucide-react'
 import { shortenPathMiddle } from '../lib/utils'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 
@@ -644,10 +644,13 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
 
       {/* 暂存的文件 */}
       {workspaceStatus?.staged_files && workspaceStatus.staged_files.length > 0 && (
-        <Card>
-          <CardHeader>
+        <Card className="border-l-4 border-l-green-500 dark:border-l-green-400">
+          <CardHeader className="bg-green-50/50 dark:bg-green-900/10">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-lg">已暂存的文件</CardTitle>
+              <CardTitle className="text-lg flex items-center gap-2 text-green-700 dark:text-green-300">
+                <CheckCircle className="h-5 w-5" />
+                已暂存的文件
+              </CardTitle>
               <Button
                 size="sm"
                 variant="outline"
@@ -662,7 +665,7 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
           <CardContent>
             <div className="space-y-2">
               {workspaceStatus.staged_files.map((file, index) => (
-                <div key={index} className="flex items-start gap-2 p-2 border rounded">
+                <div key={index} className="flex items-start gap-2 p-2 rounded bg-green-50/30 dark:bg-green-900/5 hover:bg-green-50/50 dark:hover:bg-green-900/10 transition-colors">
                   <Badge variant={getStatusBadgeVariant(file.status)} className="flex-shrink-0">
                     {getStatusText(file.status)}
                   </Badge>
@@ -697,10 +700,13 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
 
       {/* 未暂存的文件 */}
       {workspaceStatus?.unstaged_files && workspaceStatus.unstaged_files.length > 0 && (
-        <Card>
-          <CardHeader>
+        <Card className="border-l-4 border-l-orange-500 dark:border-l-orange-400">
+          <CardHeader className="bg-orange-50/50 dark:bg-orange-900/10">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-lg">未暂存的文件</CardTitle>
+              <CardTitle className="text-lg flex items-center gap-2 text-orange-700 dark:text-orange-300">
+                <AlertCircle className="h-5 w-5" />
+                未暂存的文件
+              </CardTitle>
               <Button
                 size="sm"
                 variant="outline"
@@ -714,7 +720,7 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
           <CardContent>
             <div className="space-y-2">
               {workspaceStatus.unstaged_files.map((file, index) => (
-                <div key={index} className="flex items-start gap-2 p-2 border rounded">
+                <div key={index} className="flex items-start gap-2 p-2 rounded bg-orange-50/30 dark:bg-orange-900/5 hover:bg-orange-50/50 dark:hover:bg-orange-900/10 transition-colors">
                   <Badge variant={getStatusBadgeVariant(file.status)} className="flex-shrink-0">
                     {getStatusText(file.status)}
                   </Badge>

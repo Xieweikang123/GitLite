@@ -363,6 +363,84 @@ async fn save_proxy_config(config: ProxyConfig) -> Result<(), String> {
     Ok(())
 }
 
+// Git 配置项
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GitConfigItem {
+    pub origin: String,
+    pub key: String,
+    pub value: String,
+}
+
+// 获取 Git 配置信息（与代理、SSL 相关）
+#[tauri::command]
+async fn get_git_config_info() -> Result<Vec<GitConfigItem>, String> {
+    // 执行 git config --list --show-origin
+    let output = match std::process::Command::new("git")
+        .args(&["config", "--list", "--show-origin"])
+        .output()
+    {
+        Ok(output) => {
+            if output.status.success() {
+                String::from_utf8_lossy(&output.stdout).to_string()
+            } else {
+                return Ok(vec![]); // 如果命令失败，返回空列表
+            }
+        },
+        Err(e) => {
+            return Err(format!("Failed to execute git config command: {}", e));
+        }
+    };
+    
+    // 过滤与代理、SSL 相关的配置
+    let keywords = ["proxy", "ssl", "cainfo", "cacert", "backend", "schannel"];
+    let mut config_items = Vec::new();
+    
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        
+        // 解析格式: file:path/to/config	key=value (使用制表符分隔)
+        // 或者: file:path/to/config key=value (使用空格分隔，较少见)
+        let parts: Vec<&str> = if line.contains('\t') {
+            // 优先使用制表符分隔（标准格式）
+            line.splitn(2, '\t').collect()
+        } else {
+            // 如果没有制表符，尝试使用空格分隔
+            line.splitn(2, ' ').collect()
+        };
+        
+        if parts.len() != 2 {
+            continue;
+        }
+        
+        let origin = parts[0].trim().to_string();
+        let key_value = parts[1].trim();
+        
+        // 解析 key=value
+        let kv_parts: Vec<&str> = key_value.splitn(2, '=').collect();
+        if kv_parts.len() != 2 {
+            continue;
+        }
+        
+        let key = kv_parts[0];
+        let value = kv_parts[1].to_string();
+        
+        // 检查是否包含关键词（不区分大小写）
+        let key_lower = key.to_lowercase();
+        if keywords.iter().any(|&keyword| key_lower.contains(keyword)) {
+            config_items.push(GitConfigItem {
+                origin,
+                key: key.to_string(),
+                value,
+            });
+        }
+    }
+    
+    Ok(config_items)
+}
+
 // 构建代理 URL（仅用于 libgit2，不设置环境变量）
 fn build_proxy_url(proxy_config: &ProxyConfig) -> Result<String, String> {
     if !proxy_config.enabled {
@@ -2899,7 +2977,8 @@ fn main() {
             apply_stash,
             delete_stash,
             get_proxy_config,
-            save_proxy_config
+            save_proxy_config,
+            get_git_config_info
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
