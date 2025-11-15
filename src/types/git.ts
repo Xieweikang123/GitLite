@@ -48,5 +48,5 @@ export interface ProxyConfig {
   port: number
   username?: string
   password?: string
-  protocol: string // "http", "https", "socks5"
+  protocol: string // "http", "socks5" (不支持 "https")
 }

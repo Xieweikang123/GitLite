@@ -162,12 +162,10 @@ export function ProxyConfigModal({ isOpen, onClose }: ProxyConfigModalProps) {
                     >
                       <SelectTrigger>
                         {config.protocol === 'http' && 'HTTP'}
-                        {config.protocol === 'https' && 'HTTPS'}
                         {config.protocol === 'socks5' && 'SOCKS5'}
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="http">HTTP</SelectItem>
-                        <SelectItem value="https">HTTPS</SelectItem>
                         <SelectItem value="socks5">SOCKS5</SelectItem>
                       </SelectContent>
                     </Select>
@@ -278,10 +276,10 @@ export function ProxyConfigModal({ isOpen, onClose }: ProxyConfigModalProps) {
                 <p className="font-medium mb-1">使用说明：</p>
                 <ul className="space-y-1 text-xs">
                   <li>• 自动读取Git全局代理配置（git config --global http.proxy）</li>
-                  <li>• 代理配置将应用于所有Git网络操作（推送、拉取、获取等）</li>
-                  <li>• 支持HTTP、HTTPS和SOCKS5协议</li>
+                  <li>• GitLite 使用系统 Git 配置中的代理设置</li>
+                  <li>• 支持HTTP和SOCKS5协议（不支持HTTPS协议）</li>
                   <li>• 如果不需要认证，用户名和密码可以留空</li>
-                  <li>• 配置会在Git操作完成后自动清除，不会影响其他Git工具</li>
+                  <li>• 代理配置不会写入 git config，不影响其他Git工具</li>
                 </ul>
               </div>
             </div>
