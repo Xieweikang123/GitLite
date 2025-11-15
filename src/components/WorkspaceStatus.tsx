@@ -754,34 +754,32 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {workspaceStatus.untracked_files.map((file, index) => (
+              {workspaceStatus.untracked_files
+                .filter(file => !file.endsWith('/')) // 过滤掉文件夹
+                .map((file, index) => (
                 <div key={index} className="flex items-start gap-2 p-2 border rounded">
+                  
                   <Badge variant="outline" className="flex-shrink-0">未跟踪</Badge>
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-mono truncate" title={file}>{shortenPathMiddle(file, 56)}</div>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
-                    {/* 只对文件显示按钮，文件夹不显示 */}
-                    {!file.endsWith('/') && (
-                      <>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => viewFileDiff(file, 'untracked')}
-                          className="flex items-center gap-1"
-                        >
-                          <Eye className="h-3 w-3" />
-                          查看
-                        </Button>
-                        <Button
-                          size="sm"
-                          onClick={() => stageFile(file)}
-                          disabled={loading}
-                        >
-                          添加
-                        </Button>
-                      </>
-                    )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => viewFileDiff(file, 'untracked')}
+                      className="flex items-center gap-1"
+                    >
+                      <Eye className="h-3 w-3" />
+                      查看
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={() => stageFile(file)}
+                      disabled={loading}
+                    >
+                      添加
+                    </Button>
                   </div>
                 </div>
               ))}
