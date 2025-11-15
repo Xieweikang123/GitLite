@@ -60,6 +60,22 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(({
 }, ref) => {
   if (!isOpen) return null
 
+  // 处理 ESC 键关闭
+  React.useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isOpen) {
+        onOpenChange?.(false)
+      }
+    }
+
+    if (isOpen) {
+      document.addEventListener('keydown', handleEscape)
+      return () => {
+        document.removeEventListener('keydown', handleEscape)
+      }
+    }
+  }, [isOpen, onOpenChange])
+
   return (
     <>
       {/* Overlay */}
