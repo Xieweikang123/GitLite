@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
 import { FileChange } from '../types/git'
 import { FileDiffModal } from './FileDiffModal'
-import { Eye, Archive, ArchiveRestore, Trash2, CheckCircle, AlertCircle } from 'lucide-react'
+import { Eye, Archive, ArchiveRestore, Trash2, CheckCircle, AlertCircle, GitPullRequest, Download, RefreshCw } from 'lucide-react'
 import { shortenPathMiddle } from '../lib/utils'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 
@@ -13,6 +13,8 @@ interface WorkspaceStatusProps {
   repoInfo: any
   onRefresh: () => void
   onPushChanges?: () => void
+  onPullChanges?: () => void
+  onFetchChanges?: () => void
 }
 
 interface WorkspaceStatusData {
@@ -29,7 +31,9 @@ interface StashInfo {
 }
 
 export function WorkspaceStatus({  repoInfo,  onRefresh,
-  onPushChanges
+  onPushChanges,
+  onPullChanges,
+  onFetchChanges
 }: WorkspaceStatusProps) {
   const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatusData | null>(null)
   const [commitMessage, setCommitMessage] = useState('')
@@ -568,6 +572,86 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
       {error && (
         <div className="p-3 bg-destructive/10 border border-destructive/20 rounded-lg">
           <p className="text-destructive text-sm">{error}</p>
+        </div>
+      )}
+
+      {/* 远程同步区域 */}
+      {repoInfo && (
+        <div className="flex items-center justify-between p-3 bg-muted/30 rounded-md border border-border">
+          <div className="flex items-center gap-3 text-sm">
+            {typeof repoInfo.behind === 'number' && repoInfo.behind > 0 && (
+              <div className="flex items-center gap-1.5">
+                <AlertCircle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+                <span className="text-amber-700 dark:text-amber-300">
+                  <span className="font-medium">{repoInfo.behind}</span> 待拉取
+                </span>
+              </div>
+            )}
+            {typeof repoInfo.ahead === 'number' && repoInfo.ahead > 0 && (
+              <div className="flex items-center gap-1.5">
+                <CheckCircle className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
+                <span className="text-blue-700 dark:text-blue-300">
+                  <span className="font-medium">{repoInfo.ahead}</span> 待推送
+                </span>
+              </div>
+            )}
+            {(!repoInfo.behind || repoInfo.behind === 0) && (!repoInfo.ahead || repoInfo.ahead === 0) && (
+              <div className="flex items-center gap-1.5 text-muted-foreground">
+                <CheckCircle className="h-3.5 w-3.5" />
+                <span>已同步</span>
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {onFetchChanges && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onFetchChanges}
+                disabled={loading}
+                className="h-7 px-2 text-xs"
+                title="获取远程仓库的最新信息（不合并到本地）"
+              >
+                <Download className="h-3.5 w-3.5 mr-1" />
+                获取
+              </Button>
+            )}
+            {onPullChanges && typeof repoInfo.behind === 'number' && repoInfo.behind > 0 && (
+              <Button
+                size="sm"
+                onClick={onPullChanges}
+                disabled={loading}
+                className="h-7 px-2 text-xs"
+                title="拉取并合并远程更改到当前分支"
+              >
+                <GitPullRequest className="h-3.5 w-3.5 mr-1" />
+                拉取 ({repoInfo.behind})
+              </Button>
+            )}
+            {onPullChanges && (!repoInfo.behind || repoInfo.behind === 0) && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onPullChanges}
+                disabled={loading}
+                className="h-7 px-2 text-xs"
+                title="拉取远程更改（即使没有待拉取的提交）"
+              >
+                <GitPullRequest className="h-3.5 w-3.5 mr-1" />
+                拉取
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onRefresh}
+              disabled={loading}
+              className="h-7 w-7 p-0"
+              title="刷新远程状态"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+            </Button>
+          </div>
         </div>
       )}
 

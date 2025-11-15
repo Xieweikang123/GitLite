@@ -388,6 +388,8 @@ function App() {
               repoInfo={repoInfo}
               onRefresh={handleRefresh}
               onPushChanges={handlePushChangesRealtime}
+              onPullChanges={handlePullChanges}
+              onFetchChanges={handleFetchChanges}
             />
           </div>
         ) : (
