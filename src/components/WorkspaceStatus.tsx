@@ -13,7 +13,6 @@ interface WorkspaceStatusProps {
   repoInfo: any
   onRefresh: () => void
   onPushChanges?: () => void
-  onGitDiagnostics?: () => void
 }
 
 interface WorkspaceStatusData {
@@ -30,8 +29,7 @@ interface StashInfo {
 }
 
 export function WorkspaceStatus({  repoInfo,  onRefresh,
-  onPushChanges,
-  onGitDiagnostics
+  onPushChanges
 }: WorkspaceStatusProps) {
   const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatusData | null>(null)
   const [commitMessage, setCommitMessage] = useState('')
@@ -558,14 +556,6 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
                 </span>
               )}
             </div>
-            <Button 
-              variant="outline"
-              onClick={onGitDiagnostics}
-              disabled={loading}
-              className="text-xs"
-            >
-              诊断
-            </Button>
           </div>
         </CardContent>
       </Card>

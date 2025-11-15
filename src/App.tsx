@@ -295,15 +295,6 @@ function App() {
     }
   }
 
-  // Git诊断处理函数
-  const handleGitDiagnostics = async () => {
-    await handleGitOperationWithLogs(
-      () => invoke('git_diagnostics', { repoPath: repoInfo?.path }),
-      'Git诊断',
-      false
-    )
-  }
-
   // 监听实时日志事件
   useEffect(() => {
     const unlisten = listen('push-log', (event) => {
@@ -397,7 +388,6 @@ function App() {
               repoInfo={repoInfo}
               onRefresh={handleRefresh}
               onPushChanges={handlePushChangesRealtime}
-              onGitDiagnostics={handleGitDiagnostics}
             />
           </div>
         ) : (
