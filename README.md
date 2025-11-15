@@ -1,5 +1,5 @@
 # GitLite
-
+ 1
 一个基于 Tauri 的轻量级 Git GUI 客户端，作为 SourceTree 的开源替代品。
 
 ## 特性
