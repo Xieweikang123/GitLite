@@ -39,8 +39,6 @@ export function MenuToolbar({
           <div className="flex items-center gap-2 text-muted-foreground">
             <GitBranch className="h-3 w-3" />
             <span>{repoInfo.current_branch}</span>
-            <span>•</span>
-            <span>{repoInfo.commits.length} 提交</span>
             {typeof repoInfo.ahead === 'number' && repoInfo.ahead > 0 && (
               <>
                 <span>•</span>

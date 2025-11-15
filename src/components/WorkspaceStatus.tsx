@@ -606,7 +606,11 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
             </Button>
             <Button 
               onClick={commitAndSync}
-              disabled={loading || (!workspaceStatus?.staged_files?.length && (!repoInfo || (repoInfo.ahead <= 0 && repoInfo.behind <= 0)))}
+              disabled={
+                loading || 
+                ((workspaceStatus?.staged_files?.length ?? 0) > 0 && !commitMessage.trim()) ||
+                ((workspaceStatus?.staged_files?.length ?? 0) === 0 && (!repoInfo || (repoInfo.ahead <= 0 && repoInfo.behind <= 0)))
+              }
               variant="default"
             >
               提交并同步

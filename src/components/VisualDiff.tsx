@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react' 
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Button } from './ui/button'
-import { Copy, ChevronDown, ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 
 interface DiffLine {
   type: 'context' | 'added' | 'deleted' | 'header'
@@ -90,14 +90,6 @@ export function VisualDiff({ diff, fileName, commitInfo }: VisualDiffProps) {
     return hunks
   }
 
-  const copyToClipboard = async () => {
-    try {
-      await navigator.clipboard.writeText(diff)
-    } catch (err) {
-      console.error('Failed to copy:', err)
-    }
-  }
-
   const toggleHunk = (index: number) => {
     setHunks(prev => prev.map((hunk, i) => 
       i === index ? { ...hunk, isExpanded: !hunk.isExpanded } : hunk
@@ -148,15 +140,6 @@ export function VisualDiff({ diff, fileName, commitInfo }: VisualDiffProps) {
             >
               {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
               {isExpanded ? '收起' : '展开'}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={copyToClipboard}
-              className="flex items-center gap-2"
-            >
-              <Copy className="h-4 w-4" />
-              复制
             </Button>
           </div>
         </div>
