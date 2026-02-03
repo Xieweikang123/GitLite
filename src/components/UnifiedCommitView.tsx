@@ -279,11 +279,9 @@ export function UnifiedCommitView({
 
   return (
     <div className="flex flex-col h-full gap-4 min-h-0">
-      {/* 上方：提交记录单独一列 */}
-      <div className="flex-shrink-0" style={{height: '75%', maxHeight: '720px'}}>
-        {/* 提交记录 */}
-        <div className="h-full">
-        <Card className="h-full flex flex-col">
+      {/* 上方：提交记录单独一行，占大块高度 */}
+      <div className="flex-shrink-0 min-h-0" style={{ height: '55%', maxHeight: '640px' }}>
+        <Card className="h-full flex flex-col min-h-0">
           <CardHeader className="py-1 px-3">
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <CardTitle className="text-sm">提交记录</CardTitle>
@@ -395,57 +393,56 @@ export function UnifiedCommitView({
             </div>
           </CardContent>
         </Card>
-        </div>
       </div>
 
-      {/* 下方：文件变更和代码差异并列 */}
-      <div className="grid grid-cols-2 gap-4 flex-1 min-h-0" style={{ gridTemplateColumns: 'minmax(300px, 1fr) minmax(400px, 1fr)' }}>
+      {/* 下方：文件变更 | 代码差异 两列 */}
+      <div className="grid grid-cols-2 gap-4 flex-1 min-h-0" style={{ gridTemplateColumns: 'minmax(260px, 1fr) minmax(360px, 1.2fr)' }}>
         {/* 文件变更 */}
         <div className="flex flex-col min-h-0 min-w-0">
-        <Card className="flex flex-col h-full min-h-0">
-          <CardHeader className="py-1 flex-shrink-0">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <FileText className="h-4 w-4" />
-              文件变更
-              {commitFiles.length > 0 && ` (${commitFiles.length})`}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="flex-1 min-h-0 py-1 overflow-hidden">
-            {loadingFiles ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="h-6 w-6 animate-spin" />
-                <span className="ml-2">加载中...</span>
-              </div>
-            ) : commitFiles.length === 0 ? (
-              <div className="text-center py-8">
-                <p className="text-muted-foreground">
-                  {selectedCommit ? '此提交没有文件变更' : '选择一个提交以查看文件变更'}
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-1 h-full overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent">
-                {commitFiles.map((file) => (
-                  <FileItem
-                    key={file.path}
-                    file={file}
-                    isSelected={selectedFile === file.path}
-                    onSelect={handleFileSelect}
-                    getStatusIcon={getStatusIcon}
-                    getStatusColor={getStatusColor}
-                    getStatusText={getStatusText}
-                  />
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+          <Card className="flex flex-col h-full min-h-0">
+            <CardHeader className="py-1 flex-shrink-0">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <FileText className="h-4 w-4" />
+                文件变更
+                {commitFiles.length > 0 && ` (${commitFiles.length})`}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="flex-1 min-h-0 py-1 overflow-hidden">
+              {loadingFiles ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="h-6 w-6 animate-spin" />
+                  <span className="ml-2">加载中...</span>
+                </div>
+              ) : commitFiles.length === 0 ? (
+                <div className="text-center py-8">
+                  <p className="text-muted-foreground">
+                    {selectedCommit ? '此提交没有文件变更' : '选择一个提交以查看文件变更'}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-1 h-full overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent">
+                  {commitFiles.map((file) => (
+                    <FileItem
+                      key={file.path}
+                      file={file}
+                      isSelected={selectedFile === file.path}
+                      onSelect={handleFileSelect}
+                      getStatusIcon={getStatusIcon}
+                      getStatusColor={getStatusColor}
+                      getStatusText={getStatusText}
+                    />
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </div>
 
         {/* 代码差异 */}
         <div className="flex flex-col min-h-0 min-w-0">
-        <Card className="flex flex-col h-full min-h-0">
-          <CardHeader className="py-1 flex-shrink-0">
-            <div className="flex items-center justify-between">
+          <Card className="flex flex-col h-full min-h-0">
+            <CardHeader className="py-1 flex-shrink-0">
+              <div className="flex items-center justify-between">
               {/* <CardTitle className="text-base">
                 {selectedFile ? `差异: ${selectedFile}` : '代码差异'}
               </CardTitle> */}
