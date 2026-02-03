@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
-import { Search, Loader2, FileText, Plus, Edit, Trash2, GitBranch } from 'lucide-react'
+import { Search, Loader2, FileText, Plus, Edit, Trash2, GitBranch, Calendar } from 'lucide-react'
 import { CommitInfo, FileChange } from '../types/git'
 import { VSCodeDiff } from './CodeDiff'
 
@@ -31,6 +31,9 @@ export function UnifiedCommitView({
   repoPath
 }: UnifiedCommitViewProps) {
   const [searchTerm, setSearchTerm] = useState('')
+  // 自定义日期范围，格式 YYYY-MM-DD，空字符串表示不限制
+  const [dateRangeStart, setDateRangeStart] = useState('')
+  const [dateRangeEnd, setDateRangeEnd] = useState('')
   const [selectedCommit, setSelectedCommit] = useState<CommitInfo | null>(null)
   const [commitFiles, setCommitFiles] = useState<FileChange[]>([])
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
@@ -39,17 +42,63 @@ export function UnifiedCommitView({
   const [loadingDiff, setLoadingDiff] = useState(false)
   const loadingTimeoutRef = useRef<number | null>(null)
   const currentLoadingFileRef = useRef<string | null>(null)
+  const commitListScrollRef = useRef<HTMLDivElement>(null)
+  const loadMoreSentinelRef = useRef<HTMLDivElement>(null)
+  const hasMoreRef = useRef(hasMore)
+  const loadingRef = useRef(loading)
+  const onLoadMoreRef = useRef(onLoadMore)
+  hasMoreRef.current = hasMore
+  loadingRef.current = loading
+  onLoadMoreRef.current = onLoadMore
 
-  // 过滤提交 - 使用 useMemo 优化
+  // 滚动到底部自动加载更多
+  useEffect(() => {
+    if (!hasMore) return
+    const root = commitListScrollRef.current
+    const sentinel = loadMoreSentinelRef.current
+    if (!root || !sentinel || !onLoadMoreRef.current) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0]
+        if (!entry?.isIntersecting) return
+        if (loadingRef.current || !hasMoreRef.current) return
+        onLoadMoreRef.current?.()
+      },
+      { root, rootMargin: '100px', threshold: 0 }
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [hasMore])
+
+  // 解析提交日期（后端格式 "YYYY-MM-DD HH:mm:ss"）为 Date，取当天 0 点便于比较
+  const getCommitDate = useCallback((dateStr: string) => {
+    const [datePart] = dateStr.split(' ')
+    const [y, m, d] = (datePart || '').split('-').map(Number)
+    if (!y || !m || !d) return null
+    return new Date(y, m - 1, d)
+  }, [])
+
+  // 过滤提交 - 关键词 + 自定义日期范围
   const filteredCommits = useMemo(() => {
     return commits.filter(commit => {
+      const commitDate = getCommitDate(commit.date)
+      if (commitDate) {
+        if (dateRangeStart) {
+          const start = new Date(dateRangeStart + 'T00:00:00')
+          if (commitDate < start) return false
+        }
+        if (dateRangeEnd) {
+          const end = new Date(dateRangeEnd + 'T23:59:59.999')
+          if (commitDate > end) return false
+        }
+      }
       if (!searchTerm.trim()) return true
       const term = searchTerm.toLowerCase()
       return commit.message.toLowerCase().includes(term) ||
              commit.author.toLowerCase().includes(term) ||
              commit.short_id.toLowerCase().includes(term)
     })
-  }, [commits, searchTerm])
+  }, [commits, searchTerm, dateRangeStart, dateRangeEnd, getCommitDate])
 
   // 计算待推送提交集合 - 使用 useMemo 优化
   const pendingPushIds = useMemo(() => {
@@ -231,26 +280,63 @@ export function UnifiedCommitView({
   return (
     <div className="flex flex-col h-full gap-4 min-h-0">
       {/* 上方：提交记录单独一列 */}
-      <div className="flex-shrink-0" style={{height: '65%', maxHeight: '600px'}}>
+      <div className="flex-shrink-0" style={{height: '75%', maxHeight: '720px'}}>
         {/* 提交记录 */}
         <div className="h-full">
         <Card className="h-full flex flex-col">
           <CardHeader className="py-1 px-3">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
               <CardTitle className="text-sm">提交记录</CardTitle>
-              <div className="relative">
-                <Search className="absolute left-2 top-2 h-3 w-3 text-muted-foreground" />
-                <Input
-                  placeholder="搜索提交..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="pl-6 w-40 h-7 text-xs"
-                />
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5">
+                  <Calendar className="h-3 w-3 text-muted-foreground shrink-0" />
+                  <input
+                    type="date"
+                    value={dateRangeStart}
+                    onChange={(e) => setDateRangeStart(e.target.value)}
+                    className="h-7 text-xs border rounded-md px-2 bg-background text-foreground"
+                    title="开始日期"
+                  />
+                  <span className="text-xs text-muted-foreground">至</span>
+                  <input
+                    type="date"
+                    value={dateRangeEnd}
+                    onChange={(e) => setDateRangeEnd(e.target.value)}
+                    className="h-7 text-xs border rounded-md px-2 bg-background text-foreground"
+                    title="结束日期"
+                  />
+                  {(dateRangeStart || dateRangeEnd) && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => {
+                        setDateRangeStart('')
+                        setDateRangeEnd('')
+                      }}
+                    >
+                      清除
+                    </Button>
+                  )}
+                </div>
+                <div className="relative">
+                  <Search className="absolute left-2 top-2 h-3 w-3 text-muted-foreground" />
+                  <Input
+                    placeholder="搜索提交..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="pl-6 w-40 h-7 text-xs"
+                  />
+                </div>
               </div>
             </div>
           </CardHeader>
           <CardContent className="flex-1 min-h-0 overflow-hidden py-1 px-3">
-            <div className="space-y-0.5 h-full overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent">
+            <div
+              ref={commitListScrollRef}
+              className="space-y-0.5 h-full overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent"
+            >
               {filteredCommits.map((commit) => (
                 <div
                   key={commit.id}
@@ -286,7 +372,7 @@ export function UnifiedCommitView({
                   </div>
                 </div>
               ))}
-              
+              {hasMore && <div ref={loadMoreSentinelRef} className="h-2 flex-shrink-0" aria-hidden="true" />}
               {hasMore && (
                 <div className="flex justify-center pt-2 border-t">
                   <Button
