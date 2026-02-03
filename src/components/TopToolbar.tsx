@@ -37,10 +37,10 @@ export function TopToolbar({
   }
   return (
     <div className="flex items-center justify-between bg-card border-b px-6 py-3">
-      {/* 左侧：应用标题 */}
-      <div>
-        <h1 className="text-2xl font-bold text-foreground">GitLite</h1>
-        <p className="text-sm text-muted-foreground">
+      {/* 左侧：应用标题（紧凑） */}
+      <div className="flex-shrink-0">
+        <h1 className="text-lg font-bold text-foreground">GitLite</h1>
+        <p className="text-xs text-muted-foreground">
           轻量级 Git GUI 客户端
         </p>
       </div>
@@ -78,8 +78,8 @@ export function TopToolbar({
               )}
             </div>
             <div
-              className="text-xs text-muted-foreground max-w-xs truncate cursor-pointer hover:underline"
-              title="点击打开本地文件夹"
+              className="text-xs text-muted-foreground max-w-[280px] truncate cursor-pointer hover:text-foreground hover:underline transition-colors"
+              title={`${repoInfo.path}\n\n点击打开本地文件夹`}
               onClick={handleOpenFolder}
             >
               {repoInfo.path}

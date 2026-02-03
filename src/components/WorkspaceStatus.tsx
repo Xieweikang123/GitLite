@@ -744,19 +744,36 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
             {stashList.length > 0 ? (
               <div className="space-y-2">
                 {stashList.map((stash) => (
-                  <div key={stash.id} className="flex items-start gap-2 p-2 border rounded">
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium">{stash.message}</div>
-                      <div className="text-xs text-muted-foreground">
+                  <div
+                    key={stash.id}
+                    className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 p-2 border rounded"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium break-words" title={stash.message}>
+                        {stash.message}
+                      </div>
+                      <div className="text-xs text-muted-foreground break-words">
                         {stash.branch} • {new Date(stash.timestamp).toLocaleString()}
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      <Button size="sm" variant="outline" onClick={() => applyStash(stash.id)} disabled={loading} className="flex items-center gap-1">
+                    <div className="flex items-center gap-2 justify-end">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => applyStash(stash.id)}
+                        disabled={loading}
+                        className="flex items-center gap-1"
+                      >
                         <ArchiveRestore className="h-3 w-3" />
                         应用
                       </Button>
-                      <Button size="sm" variant="outline" onClick={() => askDeleteStash(stash.id)} disabled={loading} className="flex items-center gap-1 text-destructive hover:text-destructive">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => askDeleteStash(stash.id)}
+                        disabled={loading}
+                        className="flex items-center gap-1 text-destructive hover:text-destructive"
+                      >
                         <Trash2 className="h-3 w-3" />
                         删除
                       </Button>

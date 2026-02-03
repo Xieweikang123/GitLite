@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
-import { Search, Loader2, FileText, Plus, Edit, Trash2, GitBranch, Calendar } from 'lucide-react'
+import { Search, Loader2, FileText, Plus, Edit, Trash2, GitBranch, Calendar, GitCompare } from 'lucide-react'
 import { CommitInfo, FileChange } from '../types/git'
 import { VSCodeDiff } from './CodeDiff'
 
@@ -235,11 +235,11 @@ export function UnifiedCommitView({
         }`}
         onClick={handleClick}
       >
-        <div className="flex items-start justify-between">
+            <div className="flex items-start justify-between">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1">
               {getStatusIcon(file.status)}
-              <span className="text-sm font-medium truncate">
+              <span className="text-sm font-medium truncate" title={file.path}>
                 {file.path}
               </span>
             </div>
@@ -278,10 +278,10 @@ export function UnifiedCommitView({
   })
 
   return (
-    <div className="flex flex-col h-full gap-4 min-h-0">
+    <div className="flex flex-col h-full gap-3 min-h-0">
       {/* 上方：提交记录单独一行，占大块高度 */}
       <div className="flex-shrink-0 min-h-0" style={{ height: '55%', maxHeight: '640px' }}>
-        <Card className="h-full flex flex-col min-h-0">
+        <Card className="h-full flex flex-col min-h-0 border-border/80">
           <CardHeader className="py-1 px-3">
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <CardTitle className="text-sm">提交记录</CardTitle>
@@ -348,7 +348,10 @@ export function UnifiedCommitView({
                   <div className="space-y-0.5">
                     {/* 提交信息 */}
                     <div className="flex items-start justify-between">
-                      <p className="text-xs font-medium text-foreground line-clamp-1 flex-1 min-w-0 pr-1">
+                      <p
+                        className="text-xs font-medium text-foreground line-clamp-2 flex-1 min-w-0 pr-1"
+                        title={commit.message}
+                      >
                         {commit.message}
                       </p>
                       <div className="flex items-center gap-0.5 flex-shrink-0">
@@ -399,7 +402,7 @@ export function UnifiedCommitView({
       <div className="grid grid-cols-2 gap-4 flex-1 min-h-0" style={{ gridTemplateColumns: 'minmax(260px, 1fr) minmax(360px, 1.2fr)' }}>
         {/* 文件变更 */}
         <div className="flex flex-col min-h-0 min-w-0">
-          <Card className="flex flex-col h-full min-h-0">
+          <Card className="flex flex-col h-full min-h-0 border-border/80">
             <CardHeader className="py-1 flex-shrink-0">
               <CardTitle className="flex items-center gap-2 text-base">
                 <FileText className="h-4 w-4" />
@@ -440,13 +443,13 @@ export function UnifiedCommitView({
 
         {/* 代码差异 */}
         <div className="flex flex-col min-h-0 min-w-0">
-          <Card className="flex flex-col h-full min-h-0">
+          <Card className="flex flex-col h-full min-h-0 border-border/80">
             <CardHeader className="py-1 flex-shrink-0">
-              <div className="flex items-center justify-between">
-              {/* <CardTitle className="text-base">
-                {selectedFile ? `差异: ${selectedFile}` : '代码差异'}
-              </CardTitle> */}
-              {/* {selectedFile && commitFiles.length > 1 && (
+              <div className="flex items-center justify-between min-w-0">
+                <CardTitle className="text-base truncate" title={selectedFile || undefined}>
+                  {selectedFile ? selectedFile : '代码差异'}
+                </CardTitle>
+                {/* {selectedFile && commitFiles.length > 1 && (
                 <div className="flex items-center gap-2">
                   <Button
                     variant="outline"
@@ -483,12 +486,16 @@ export function UnifiedCommitView({
           </CardHeader>
           <CardContent className="flex-1 min-h-0 py-1 overflow-hidden">
             {!selectedCommit ? (
-              <div className="text-center py-8">
-                <p className="text-muted-foreground">选择一个提交以查看差异</p>
+              <div className="flex flex-col items-center justify-center h-full min-h-[200px] text-muted-foreground">
+                <GitCompare className="h-12 w-12 mb-3 opacity-40" />
+                <p className="text-sm font-medium mb-1">选择提交查看变更</p>
+                <p className="text-xs opacity-80">在左侧列表中点击任意提交记录</p>
               </div>
             ) : !selectedFile ? (
-              <div className="text-center py-8">
-                <p className="text-muted-foreground">选择一个文件以查看差异</p>
+              <div className="flex flex-col items-center justify-center h-full min-h-[200px] text-muted-foreground">
+                <FileText className="h-12 w-12 mb-3 opacity-40" />
+                <p className="text-sm font-medium mb-1">选择文件查看差异</p>
+                <p className="text-xs opacity-80">在「文件变更」列表中点击要查看的文件</p>
               </div>
             ) : loadingDiff ? (
               <div className="flex-1 overflow-hidden bg-white dark:bg-gray-900 relative min-h-0">

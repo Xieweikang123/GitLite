@@ -62,26 +62,27 @@ export function MenuToolbar({
                 variant="ghost"
                 onClick={() => onRepoSelect(repo.path)}
                 disabled={loading}
-                className="h-6 px-2 text-xs hover:bg-muted"
+                className="h-6 px-2 text-xs hover:bg-muted max-w-[140px]"
+                title={repo.path}
               >
-                {repo.name}
+                <span className="truncate">{repo.name}</span>
               </Button>
             ))}
           </div>
         </div>
       )}
 
-      {/* 右侧：操作按钮 */}
+      {/* 右侧：操作按钮（打开仓库在主工具栏，此处仅保留快捷功能） */}
       <div className="flex items-center gap-2">
         <Button
           variant="ghost"
           size="sm"
           onClick={onOpenRepository}
           disabled={loading}
-          className="h-6 px-2 text-xs"
+          className="h-6 w-6 p-0"
+          title="打开仓库"
         >
-          <FolderOpen className="h-3 w-3 mr-1" />
-          打开仓库
+          <FolderOpen className="h-3 w-3" />
         </Button>
 
         <Button

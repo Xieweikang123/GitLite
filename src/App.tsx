@@ -360,11 +360,13 @@ function App() {
         )}
 
         {/* 顶部 Tab 切换 */}
-        <div className="flex-shrink-0 px-4 py-2 border-b border-border flex items-center gap-2">
+        <div className="flex-shrink-0 px-4 pt-2 border-b border-border flex items-center gap-1">
           <button
             type="button"
-            className={`px-3 py-2 text-sm rounded-t-md border-b-2 ${
-              activeTab === 'workspace' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
+            className={`px-4 py-2.5 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
+              activeTab === 'workspace'
+                ? 'border-primary text-primary bg-background'
+                : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'
             }`}
             onClick={() => setActiveTab('workspace')}
           >
@@ -372,8 +374,10 @@ function App() {
           </button>
           <button
             type="button"
-            className={`px-3 py-2 text-sm rounded-t-md border-b-2 ${
-              activeTab === 'commits' ? 'border-primary text-primary' : 'border-transparent text-muted-foreground hover:text-foreground'
+            className={`px-4 py-2.5 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
+              activeTab === 'commits'
+                ? 'border-primary text-primary bg-background'
+                : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'
             }`}
             onClick={() => setActiveTab('commits')}
           >
