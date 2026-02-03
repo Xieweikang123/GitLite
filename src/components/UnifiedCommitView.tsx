@@ -231,7 +231,7 @@ export function UnifiedCommitView({
   return (
     <div className="flex flex-col h-full gap-4 min-h-0">
       {/* 上方：提交记录单独一列 */}
-      <div className="flex-shrink-0" style={{height: '35%', maxHeight: '300px'}}>
+      <div className="flex-shrink-0" style={{height: '65%', maxHeight: '600px'}}>
         {/* 提交记录 */}
         <div className="h-full">
         <Card className="h-full flex flex-col">

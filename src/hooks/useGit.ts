@@ -92,7 +92,13 @@ export function useGit() {
       })
       setRepoInfo(updatedRepoInfo)
     } catch (err) {
-      setError(err instanceof Error ? err.message : '切换分支失败')
+      const msg =
+        typeof err === 'string'
+          ? err
+          : err instanceof Error
+            ? err.message
+            : '切换分支失败'
+      setError(msg)
     } finally {
       setLoading(false)
     }

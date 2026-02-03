@@ -792,23 +792,37 @@ async fn get_commits_paginated(repo_path: String, limit: Option<usize>, offset: 
 #[tauri::command]
 async fn checkout_branch(repo_path: String, branch_name: String) -> Result<String, String> {
     let repo = Repository::open(&repo_path)
-        .map_err(|e| format!("Failed to open repository: {}", e))?;
-    
+        .map_err(|e| format!("无法打开仓库: {}", e))?;
+
     let (object, reference) = repo.revparse_ext(&branch_name)
-        .map_err(|e| format!("Failed to find branch: {}", e))?;
-    
-    repo.checkout_tree(&object, None)
-        .map_err(|e| format!("Failed to checkout tree: {}", e))?;
-    
+        .map_err(|e| {
+            let msg = e.message();
+            if msg.contains("reference") || msg.contains("unknown") {
+                format!("未找到分支「{}」，请检查分支名或先拉取远程分支", branch_name)
+            } else {
+                format!("无法解析分支: {}", msg)
+            }
+        })?;
+
+    if let Err(e) = repo.checkout_tree(&object, None) {
+        let msg = e.message();
+        return Err(if msg.contains("overwrite") || msg.contains("would be overwritten") || msg.contains("conflict") {
+            "有未提交的修改，无法切换分支。请先提交或暂存后再切换。".to_string()
+        } else {
+            format!("检出失败: {}", msg)
+        });
+    }
+
     if let Some(reference) = reference {
-        repo.set_head(reference.name().unwrap())
-            .map_err(|e| format!("Failed to set HEAD: {}", e))?;
+        let ref_name = reference.name().unwrap_or("refs/heads/unknown");
+        repo.set_head(ref_name)
+            .map_err(|e| format!("设置当前分支失败: {}", e.message()))?;
     } else {
         repo.set_head_detached(object.id())
-            .map_err(|e| format!("Failed to set HEAD detached: {}", e))?;
+            .map_err(|e| format!("设置分离头指针失败: {}", e.message()))?;
     }
-    
-    Ok(format!("Successfully checked out to {}", branch_name))
+
+    Ok(format!("已切换到 {}", branch_name))
 }
 
 // 获取提交的文件列表
