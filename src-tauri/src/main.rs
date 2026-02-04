@@ -788,6 +788,62 @@ async fn get_commits_paginated(repo_path: String, limit: Option<usize>, offset: 
     Ok(commits)
 }
 
+// 全仓库历史搜索：按关键词匹配 message / author / short_id，返回最多 limit 条
+fn get_commit_history_search(repo: &Repository, query: &str, limit: usize) -> Result<Vec<CommitInfo>> {
+    let query_lower = query.to_lowercase();
+    if query_lower.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut revwalk = repo.revwalk()
+        .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
+    revwalk.push_head()
+        .map_err(|e| anyhow::anyhow!("Failed to push HEAD: {}", e))?;
+    let mut commits = Vec::new();
+    for oid_result in revwalk {
+        if commits.len() >= limit {
+            break;
+        }
+        let oid = oid_result
+            .map_err(|e| anyhow::anyhow!("Failed to get OID: {}", e))?;
+        let commit = repo.find_commit(oid)
+            .map_err(|e| anyhow::anyhow!("Failed to find commit: {}", e))?;
+        let author = commit.author();
+        let author_name = author.name().unwrap_or("Unknown").to_string();
+        let message = commit.message().unwrap_or("No message").to_string();
+        let first_line = message.lines().next().unwrap_or("").to_string();
+        let short_id = format!("{:.7}", oid);
+        let date = chrono::DateTime::from_timestamp(commit.time().seconds(), 0)
+            .unwrap_or_default()
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let matches = first_line.to_lowercase().contains(&query_lower)
+            || author_name.to_lowercase().contains(&query_lower)
+            || short_id.to_lowercase().contains(&query_lower)
+            || oid.to_string().to_lowercase().contains(&query_lower);
+        if matches {
+            commits.push(CommitInfo {
+                id: oid.to_string(),
+                short_id,
+                message: first_line,
+                author: author_name,
+                email: author.email().unwrap_or("").to_string(),
+                date,
+            });
+        }
+    }
+    Ok(commits)
+}
+
+#[tauri::command]
+async fn search_commits(repo_path: String, query: String, limit: Option<usize>) -> Result<Vec<CommitInfo>, String> {
+    let limit = limit.unwrap_or(500);
+    let repo = Repository::open(&repo_path)
+        .map_err(|e| format!("Failed to open repository: {}", e))?;
+    let commits = get_commit_history_search(&repo, query.trim(), limit)
+        .map_err(|e| format!("Search failed: {}", e))?;
+    Ok(commits)
+}
+
 // 切换分支
 #[tauri::command]
 async fn checkout_branch(repo_path: String, branch_name: String) -> Result<String, String> {
@@ -2961,6 +3017,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             open_repository,
             get_commits_paginated,
+            search_commits,
             checkout_branch,
             get_file_diff,
             get_commit_files,

@@ -161,6 +161,20 @@ export function useGit() {
     }
   }, [repoInfo])
 
+  const searchCommits = useCallback(async (query: string, limit?: number) => {
+    try {
+      if (!repoInfo) throw new Error('No repository selected')
+      return await invoke<CommitInfo[]>('search_commits', {
+        repoPath: repoInfo.path,
+        query: query.trim(),
+        limit: limit ?? 500,
+      })
+    } catch (error) {
+      console.error('Failed to search commits:', error)
+      throw error
+    }
+  }, [repoInfo])
+
   const getWorkspaceStatus = useCallback(async (): Promise<WorkspaceStatus> => {
     if (!repoInfo) throw new Error('No repository open')
     
@@ -359,6 +373,7 @@ export function useGit() {
     getCommitFiles,
     getSingleFileDiff,
     getCommitsPaginated,
+    searchCommits,
     getWorkspaceStatus,
     stageFile,
     unstageFile,

@@ -27,6 +27,7 @@ function App() {
     checkoutBranch, 
     getCommitFiles, 
     getCommitsPaginated,
+    searchCommits,
     getFileDiff,
     getSingleFileDiff,
     fetchChangesWithLogs,
@@ -41,6 +42,8 @@ function App() {
   const [allCommits, setAllCommits] = useState<CommitInfo[]>([])
   const [loadingMore, setLoadingMore] = useState(false)
   const [hasMoreCommits, setHasMoreCommits] = useState(true)
+  const [searchResults, setSearchResults] = useState<CommitInfo[] | null>(null)
+  const [searchLoading, setSearchLoading] = useState(false)
   
   // 日志弹窗状态
   const [logModalOpen, setLogModalOpen] = useState(false)
@@ -82,6 +85,25 @@ function App() {
     setSelectedFile(null)
     setAllCommits([])
     setHasMoreCommits(true)
+    setSearchResults(null)
+  }
+
+  const handleSearchFullRepo = async (term: string) => {
+    if (!term.trim() || searchLoading) return
+    setSearchLoading(true)
+    setSearchResults(null)
+    try {
+      const list = await searchCommits(term, 500)
+      setSearchResults(list)
+    } catch (e) {
+      console.error('全仓库搜索失败:', e)
+    } finally {
+      setSearchLoading(false)
+    }
+  }
+
+  const handleClearSearchMode = () => {
+    setSearchResults(null)
   }
 
   const handleLoadMore = async () => {
@@ -312,7 +334,7 @@ function App() {
     }
   }, [])
 
-  // 当仓库信息更新时，重置提交列表
+  // 当仓库信息更新时，重置提交列表并退出全仓库搜索模式
   React.useEffect(() => {
     if (repoInfo) {
       setAllCommits(repoInfo.commits)
@@ -321,6 +343,7 @@ function App() {
       setAllCommits([])
       setHasMoreCommits(true)
     }
+    setSearchResults(null)
   }, [repoInfo])
 
   const [activeTab, setActiveTab] = useState<'workspace' | 'commits'>('workspace')
@@ -400,10 +423,14 @@ function App() {
           <div className="flex-1 flex flex-col min-h-0 px-4">
             {repoInfo ? (
               <UnifiedCommitView
-                commits={allCommits}
+                commits={searchResults ?? allCommits}
                 onLoadMore={handleLoadMore}
-                hasMore={hasMoreCommits}
+                hasMore={!searchResults && hasMoreCommits}
                 loading={loadingMore}
+                searchLoading={searchLoading}
+                isSearchMode={searchResults !== null}
+                onSearchFullRepo={handleSearchFullRepo}
+                onClearSearchMode={handleClearSearchMode}
                 aheadCount={repoInfo?.ahead ?? 0}
                 onGetCommitFiles={getCommitFiles}
                 onGetDiff={getFileDiff}

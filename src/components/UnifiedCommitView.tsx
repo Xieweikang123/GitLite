@@ -12,6 +12,10 @@ interface UnifiedCommitViewProps {
   onLoadMore?: () => void
   hasMore?: boolean
   loading?: boolean
+  searchLoading?: boolean
+  isSearchMode?: boolean
+  onSearchFullRepo?: (term: string) => void
+  onClearSearchMode?: () => void
   aheadCount?: number
   onGetCommitFiles: (commitId: string) => Promise<FileChange[]>
   onGetDiff: (commitId: string) => Promise<string>
@@ -24,6 +28,10 @@ export function UnifiedCommitView({
   onLoadMore,
   hasMore = false,
   loading = false,
+  searchLoading = false,
+  isSearchMode = false,
+  onSearchFullRepo,
+  onClearSearchMode,
   aheadCount = 0,
   onGetCommitFiles,
   onGetDiff,
@@ -78,7 +86,14 @@ export function UnifiedCommitView({
     return new Date(y, m - 1, d)
   }, [])
 
-  // 过滤提交 - 关键词 + 自定义日期范围
+  // 全仓库搜索模式下清空关键词时退出搜索模式
+  useEffect(() => {
+    if (isSearchMode && !searchTerm.trim()) {
+      onClearSearchMode?.()
+    }
+  }, [isSearchMode, searchTerm, onClearSearchMode])
+
+  // 过滤提交 - 非搜索模式下按关键词过滤；始终按自定义日期范围过滤
   const filteredCommits = useMemo(() => {
     return commits.filter(commit => {
       const commitDate = getCommitDate(commit.date)
@@ -92,13 +107,13 @@ export function UnifiedCommitView({
           if (commitDate > end) return false
         }
       }
-      if (!searchTerm.trim()) return true
+      if (isSearchMode || !searchTerm.trim()) return true
       const term = searchTerm.toLowerCase()
       return commit.message.toLowerCase().includes(term) ||
              commit.author.toLowerCase().includes(term) ||
              commit.short_id.toLowerCase().includes(term)
     })
-  }, [commits, searchTerm, dateRangeStart, dateRangeEnd, getCommitDate])
+  }, [commits, searchTerm, dateRangeStart, dateRangeEnd, getCommitDate, isSearchMode])
 
   // 计算待推送提交集合 - 使用 useMemo 优化
   const pendingPushIds = useMemo(() => {
@@ -318,14 +333,54 @@ export function UnifiedCommitView({
                     </Button>
                   )}
                 </div>
-                <div className="relative">
-                  <Search className="absolute left-2 top-2 h-3 w-3 text-muted-foreground" />
-                  <Input
-                    placeholder="搜索提交..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="pl-6 w-40 h-7 text-xs"
-                  />
+                <div className="flex items-center gap-1.5">
+                  <div className="relative">
+                    <Search className="absolute left-2 top-2 h-3 w-3 text-muted-foreground" />
+                    <Input
+                      placeholder="搜索提交..."
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      className="pl-6 w-40 h-7 text-xs"
+                    />
+                  </div>
+                  {searchTerm.trim() && !isSearchMode && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs flex-shrink-0"
+                      disabled={searchLoading}
+                      onClick={() => onSearchFullRepo?.(searchTerm.trim())}
+                    >
+                      {searchLoading ? (
+                        <>
+                          <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                          搜索中...
+                        </>
+                      ) : (
+                        '在全仓库中搜索'
+                      )}
+                    </Button>
+                  )}
+                  {isSearchMode && (
+                    <>
+                      <span className="text-[10px] text-muted-foreground whitespace-nowrap">
+                        全仓库结果
+                      </span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs flex-shrink-0"
+                        onClick={() => {
+                          setSearchTerm('')
+                          onClearSearchMode?.()
+                        }}
+                      >
+                        恢复列表
+                      </Button>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
