@@ -117,12 +117,6 @@ export function TopToolbar({
               </Select>
             </div>
             <div className="flex items-center gap-3 text-sm">
-              <span
-                className="text-muted-foreground cursor-default"
-                title="当前已加载的最近提交条数，不是仓库总提交数。提交较多时请在「提交」标签页中继续向下滚动加载更多。"
-              >
-                最近 {repoInfo.commits.length} 条
-              </span>
               {typeof repoInfo.ahead === 'number' && repoInfo.ahead > 0 && (
                 <span className="text-xs rounded bg-blue-600/10 text-blue-600 px-2 py-0.5">{repoInfo.ahead} 待推送</span>
               )}

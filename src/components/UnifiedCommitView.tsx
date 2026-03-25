@@ -6,6 +6,7 @@ import { Input } from './ui/input'
 import { Search, Loader2, FileText, Plus, Edit, Trash2, GitBranch, Calendar, GitCompare } from 'lucide-react'
 import { CommitInfo, FileChange } from '../types/git'
 import { VSCodeDiff } from './CodeDiff'
+import { invoke } from '@tauri-apps/api/tauri'
 
 function formatLocalYmd(d: Date): string {
   const y = d.getFullYear()
@@ -28,6 +29,8 @@ interface UnifiedCommitViewProps {
   onGetDiff: (commitId: string) => Promise<string>
   onGetSingleFileDiff: (commitId: string, filePath: string) => Promise<string>
   repoPath?: string
+  /** 与路径一起用于在切换分支后重新统计提交总数 */
+  currentBranch?: string
 }
 
 export function UnifiedCommitView({
@@ -43,9 +46,12 @@ export function UnifiedCommitView({
   onGetCommitFiles,
   onGetDiff,
   onGetSingleFileDiff,
-  repoPath
+  repoPath,
+  currentBranch
 }: UnifiedCommitViewProps) {
   const [searchTerm, setSearchTerm] = useState('')
+  const [headCommitTotal, setHeadCommitTotal] = useState<number | null>(null)
+  const [headCommitTotalLoading, setHeadCommitTotalLoading] = useState(false)
   // 自定义日期范围，格式 YYYY-MM-DD，空字符串表示不限制
   const [dateRangeStart, setDateRangeStart] = useState('')
   const [dateRangeEnd, setDateRangeEnd] = useState('')
@@ -65,6 +71,34 @@ export function UnifiedCommitView({
   hasMoreRef.current = hasMore
   loadingRef.current = loading
   onLoadMoreRef.current = onLoadMore
+
+  // 当前分支 HEAD 历史提交总数（切换仓库/分支时重新查询）
+  useEffect(() => {
+    if (!repoPath) {
+      setHeadCommitTotal(null)
+      setHeadCommitTotalLoading(false)
+      return
+    }
+    let cancelled = false
+    setHeadCommitTotal(null)
+    setHeadCommitTotalLoading(true)
+    invoke<number>('get_commit_count_head', { repoPath })
+      .then((n) => {
+        if (!cancelled) {
+          setHeadCommitTotal(n)
+          setHeadCommitTotalLoading(false)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setHeadCommitTotal(null)
+          setHeadCommitTotalLoading(false)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [repoPath, currentBranch])
 
   // 滚动到底部自动加载更多
   useEffect(() => {
@@ -304,7 +338,7 @@ export function UnifiedCommitView({
       {/* 上方：提交记录单独一行，占大块高度 */}
       <div className="flex-shrink-0 min-h-0" style={{ height: '55%', maxHeight: '640px' }}>
         <Card className="h-full flex flex-col min-h-0 border-border/80">
-          <CardHeader className="py-1 px-3">
+          <CardHeader className="py-1 px-3 space-y-1">
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <CardTitle className="text-sm">提交记录</CardTitle>
               <div className="flex items-center gap-2 flex-wrap">
@@ -420,6 +454,32 @@ export function UnifiedCommitView({
                 </div>
               </div>
             </div>
+            <p
+              className="text-[11px] text-muted-foreground leading-snug px-0.5 pb-0.5"
+              title="「已加载」为当前列表中的条数，可向下滚动继续加载。「当前分支」总数为 HEAD 可达提交数（与 git rev-list --count HEAD 一致），含合并带来的历史。"
+            >
+              {isSearchMode ? (
+                <>
+                  全仓库搜索到 {commits.length} 条
+                  {headCommitTotalLoading && ' · 统计分支总数中…'}
+                  {!headCommitTotalLoading && headCommitTotal !== null && (
+                    <> · 当前分支共 {headCommitTotal} 个提交</>
+                  )}
+                </>
+              ) : (
+                <>
+                  已加载 {commits.length} 条
+                  {hasMore && '（列表可继续下拉加载）'}
+                  {headCommitTotalLoading && ' · 统计分支总数中…'}
+                  {!headCommitTotalLoading && headCommitTotal !== null && (
+                    <> · 当前分支共 {headCommitTotal} 个提交</>
+                  )}
+                  {filteredCommits.length !== commits.length && (
+                    <> · 筛选后显示 {filteredCommits.length} 条</>
+                  )}
+                </>
+              )}
+            </p>
           </CardHeader>
           <CardContent className="flex-1 min-h-0 overflow-hidden py-1 px-3">
             <div

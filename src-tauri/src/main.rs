@@ -880,6 +880,29 @@ fn get_commit_history_paginated(repo: &Repository, limit: Option<usize>, offset:
     Ok(commits)
 }
 
+/// HEAD 可达的提交总数，等价于 `git rev-list --count HEAD`（当前检出分支/HEAD 的历史长度）。
+fn count_commits_head(repo: &Repository) -> Result<usize> {
+    let mut revwalk = repo
+        .revwalk()
+        .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
+    revwalk
+        .push_head()
+        .map_err(|e| anyhow::anyhow!("Failed to push HEAD: {}", e))?;
+    let mut n = 0usize;
+    for oid_result in revwalk {
+        oid_result.map_err(|e| anyhow::anyhow!("Failed to walk commits: {}", e))?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+#[tauri::command]
+async fn get_commit_count_head(repo_path: String) -> Result<u64, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+    let n = count_commits_head(&repo).map_err(|e| format!("Failed to count commits: {}", e))?;
+    Ok(n as u64)
+}
+
 // 获取分页提交历史
 #[tauri::command]
 async fn get_commits_paginated(repo_path: String, limit: Option<usize>, offset: Option<usize>) -> Result<Vec<CommitInfo>, String> {
@@ -3292,6 +3315,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             open_repository,
             get_commits_paginated,
+            get_commit_count_head,
             search_commits,
             checkout_branch,
             get_file_diff,
