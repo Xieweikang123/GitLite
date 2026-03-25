@@ -346,10 +346,10 @@ export function UnifiedCommitView({
   })
 
   return (
-    <div className="flex flex-col h-full gap-3 min-h-0">
-      {/* 上方：提交记录单独一行，占大块高度 */}
-      <div className="flex-shrink-0 min-h-0" style={{ height: '55%', maxHeight: '640px' }}>
-        <Card className="h-full flex flex-col min-h-0 border-border/80">
+    <div className="flex flex-1 min-h-0 h-full flex-row gap-3">
+      {/* 左侧：提交记录全高 */}
+      <div className="flex h-full min-h-0 w-[clamp(16rem,32vw,26rem)] shrink-0 flex-col">
+        <Card className="flex h-full min-h-0 flex-col border-border/80">
           <CardHeader className="py-1 px-3 space-y-1">
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <CardTitle className="text-sm">提交记录</CardTitle>
@@ -422,7 +422,7 @@ export function UnifiedCommitView({
                       placeholder="搜索提交..."
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
-                      className="pl-6 w-40 h-7 text-xs"
+                      className="h-7 min-w-0 flex-1 pl-6 text-xs sm:w-40 sm:flex-none"
                     />
                   </div>
                   {searchTerm.trim() && !isSearchMode && (
@@ -571,8 +571,11 @@ export function UnifiedCommitView({
         </Card>
       </div>
 
-      {/* 下方：文件变更 | 代码差异 两列 */}
-      <div className="grid grid-cols-2 gap-4 flex-1 min-h-0" style={{ gridTemplateColumns: 'minmax(260px, 1fr) minmax(360px, 1.2fr)' }}>
+      {/* 右侧：文件变更 | 代码差异 */}
+      <div
+        className="grid min-h-0 min-w-0 flex-1 gap-3"
+        style={{ gridTemplateColumns: 'minmax(200px, 1fr) minmax(280px, 1.25fr)' }}
+      >
         {/* 文件变更 */}
         <div className="flex flex-col min-h-0 min-w-0">
           <Card className="flex flex-col h-full min-h-0 border-border/80">
