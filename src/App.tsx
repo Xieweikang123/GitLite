@@ -31,6 +31,7 @@ function App() {
     removeRecentRepo,
     updateRecentRepoEntry,
     checkoutBranch,
+    createBranch,
     resetToCommit,
     getCommitFiles, 
     getCommitsPaginated,
@@ -84,6 +85,16 @@ function App() {
     setSelectedCommit(null) // 清除选中的提交
     setCommitFiles([])
     setSelectedFile(null)
+  }
+
+  const handleCreateBranch = async (branchName: string, checkout: boolean) => {
+    const ok = await createBranch(branchName, checkout)
+    if (ok && checkout) {
+      setSelectedCommit(null)
+      setCommitFiles([])
+      setSelectedFile(null)
+    }
+    return ok
   }
 
   const handleRecentRepoSelect = async (path: string) => {
@@ -376,6 +387,7 @@ function App() {
       {/* 顶部工具栏 */}
       <TopToolbar
         onBranchSelect={handleBranchSelect}
+        onCreateBranch={handleCreateBranch}
         onOpenRemoteRepository={handleOpenRemoteRepository}
         onPullChanges={handlePullChanges}
         loading={loading}

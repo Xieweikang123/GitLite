@@ -130,6 +130,35 @@ export function useGit() {
     }
   }, [repoInfo])
 
+  const createBranch = useCallback(
+    async (branchName: string, checkout: boolean = true): Promise<boolean> => {
+      if (!repoInfo) return false
+
+      try {
+        setLoading(true)
+        setError(null)
+
+        await invoke('create_branch', {
+          repoPath: repoInfo.path,
+          branchName: branchName.trim(),
+          checkout,
+        })
+
+        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
+          path: repoInfo.path,
+        })
+        setRepoInfo(updatedRepoInfo)
+        return true
+      } catch (err) {
+        setError(formatTauriInvokeError(err, '创建分支失败'))
+        return false
+      } finally {
+        setLoading(false)
+      }
+    },
+    [repoInfo]
+  )
+
   const resetToCommit = useCallback(
     async (commitId: string, mode: GitResetMode) => {
       if (!repoInfo) return
@@ -425,6 +454,7 @@ export function useGit() {
     removeRecentRepo,
     updateRecentRepoEntry,
     checkoutBranch,
+    createBranch,
     resetToCommit,
     getFileDiff,
     getCommitFiles,

@@ -1806,6 +1806,56 @@ async fn checkout_branch(repo_path: String, branch_name: String) -> Result<Strin
     Ok(format!("已切换到 {}", branch_name))
 }
 
+/// 从当前 HEAD 创建本地分支；`checkout` 为 true 时等价于 `git checkout -b`。
+#[tauri::command]
+async fn create_branch(repo_path: String, branch_name: String, checkout: bool) -> Result<String, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
+
+    let name = branch_name.trim();
+    if name.is_empty() {
+        return Err("分支名不能为空".to_string());
+    }
+
+    if repo.find_branch(name, git2::BranchType::Local).is_ok() {
+        return Err(format!("分支「{}」已存在", name));
+    }
+
+    let head = repo.head().map_err(|e| format!("无法获取 HEAD: {}", e))?;
+    let commit = head
+        .peel_to_commit()
+        .map_err(|e| format!("无法解析当前提交: {}", e))?;
+
+    repo.branch(name, &commit, false)
+        .map_err(|e| format!("创建分支失败: {}", e.message()))?;
+
+    if checkout {
+        let (object, reference) = repo.revparse_ext(name).map_err(|e| {
+            format!("检出新分支失败: {}", e.message())
+        })?;
+
+        if let Err(e) = repo.checkout_tree(&object, None) {
+            let msg = e.message();
+            return Err(if msg.contains("overwrite") || msg.contains("would be overwritten") || msg.contains("conflict") {
+                "有未提交的修改，无法切换分支。请先提交或暂存后再切换。".to_string()
+            } else {
+                format!("检出失败: {}", msg)
+            });
+        }
+
+        if let Some(reference) = reference {
+            let ref_name = reference.name().unwrap_or("refs/heads/unknown");
+            repo.set_head(ref_name)
+                .map_err(|e| format!("设置当前分支失败: {}", e.message()))?;
+        } else {
+            repo.set_head_detached(object.id())
+                .map_err(|e| format!("设置分离头指针失败: {}", e.message()))?;
+        }
+        Ok(format!("已创建并切换到 {}", name))
+    } else {
+        Ok(format!("已创建分支 {}", name))
+    }
+}
+
 /// 将当前分支（或分离 HEAD）重置到指定提交，行为与 `git reset --soft|--mixed|--hard` 一致。
 #[tauri::command]
 async fn reset_to_commit(repo_path: String, commit_id: String, mode: String) -> Result<String, String> {
@@ -4252,6 +4302,7 @@ fn main() {
             get_head_file_paths,
             get_branch_ref_tips,
             checkout_branch,
+            create_branch,
             reset_to_commit,
             get_file_diff,
             get_commit_files,

@@ -1,13 +1,19 @@
+import { useState } from 'react'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import { invoke } from '@tauri-apps/api/tauri'
 import { Select, SelectContent, SelectItem, SelectTrigger } from './ui/select'
-import { GitBranch, Moon, Sun, GitPullRequest } from 'lucide-react'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
+import { Input } from './ui/input'
+import { Label } from './ui/label'
+import { Switch } from './ui/switch'
+import { GitBranch, Moon, Sun, GitPullRequest, Plus } from 'lucide-react'
 import { BranchInfo } from '../types/git'
 import { cn } from '../lib/utils'
 
 interface TopToolbarProps {
   onBranchSelect: (branchName: string) => void
+  onCreateBranch?: (branchName: string, checkout: boolean) => Promise<boolean>
   onOpenRemoteRepository?: () => void
   onPullChanges?: () => void
   loading: boolean
@@ -18,6 +24,7 @@ interface TopToolbarProps {
 
 export function TopToolbar({
   onBranchSelect,
+  onCreateBranch,
   onOpenRemoteRepository,
   onPullChanges,
   loading,
@@ -25,6 +32,25 @@ export function TopToolbar({
   isDark,
   onToggleDarkMode
 }: TopToolbarProps) {
+  const [createBranchOpen, setCreateBranchOpen] = useState(false)
+  const [newBranchName, setNewBranchName] = useState('')
+  const [checkoutAfterCreate, setCheckoutAfterCreate] = useState(true)
+
+  const handleOpenCreateBranch = () => {
+    setNewBranchName('')
+    setCheckoutAfterCreate(true)
+    setCreateBranchOpen(true)
+  }
+
+  const handleSubmitCreateBranch = async () => {
+    const name = newBranchName.trim()
+    if (!name || !onCreateBranch) return
+    const ok = await onCreateBranch(name, checkoutAfterCreate)
+    if (ok) {
+      setCreateBranchOpen(false)
+      setNewBranchName('')
+    }
+  }
   const handleOpenFolder = async () => {
     try {
       if (repoInfo?.path) {
@@ -111,6 +137,19 @@ export function TopToolbar({
                   })}
                 </SelectContent>
               </Select>
+              {onCreateBranch && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8 shrink-0"
+                  title="新建分支"
+                  disabled={loading}
+                  onClick={handleOpenCreateBranch}
+                >
+                  <Plus className="h-4 w-4" />
+                </Button>
+              )}
             </div>
             <div className="flex items-center gap-3 text-sm">
               {typeof repoInfo.ahead === 'number' && repoInfo.ahead > 0 && (
@@ -160,6 +199,60 @@ export function TopToolbar({
           </Button>
         )}
       </div>
+
+      <Dialog open={createBranchOpen} onOpenChange={setCreateBranchOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>新建分支</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 pt-1">
+            <p className="text-sm text-muted-foreground">
+              从当前提交创建本地分支；名称需符合 Git 规范且不能与已有本地分支重名。
+            </p>
+            <div className="space-y-2">
+              <Label htmlFor="new-branch-name">分支名</Label>
+              <Input
+                id="new-branch-name"
+                value={newBranchName}
+                onChange={(e) => setNewBranchName(e.target.value)}
+                placeholder="例如 feature/login"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void handleSubmitCreateBranch()
+                }}
+                autoFocus
+              />
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
+              <Label htmlFor="checkout-after-create" className="cursor-pointer text-sm font-normal">
+                创建后切换到新分支
+              </Label>
+              <Switch
+                id="checkout-after-create"
+                checked={checkoutAfterCreate}
+                onCheckedChange={setCheckoutAfterCreate}
+                disabled={loading}
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setCreateBranchOpen(false)}
+                disabled={loading}
+              >
+                取消
+              </Button>
+              <Button
+                type="button"
+                onClick={() => void handleSubmitCreateBranch()}
+                disabled={loading || !newBranchName.trim()}
+              >
+                创建
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
