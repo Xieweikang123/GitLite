@@ -84,7 +84,7 @@ export function TopToolbar({
                         >
                           {branch.name}
                         </span>
-                        <span className="flex shrink-0 flex-col items-end gap-1">
+                        <span className="flex shrink-0 flex-row flex-wrap items-center justify-end gap-1">
                           {branch.is_current && (
                             <Badge
                               variant={isCheckout ? 'outline' : 'default'}

@@ -73,6 +73,12 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
   const [stashDialogOpen, setStashDialogOpen] = useState(false)
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
+  /** 删除未跟踪：确认弹窗 */
+  const [untrackedDeleteConfirm, setUntrackedDeleteConfirm] = useState<
+    null | { kind: 'one'; path: string } | { kind: 'all' }
+  >(null)
+  const [deletingUntrackedPath, setDeletingUntrackedPath] = useState<string | null>(null)
+  const [deletingAllUntracked, setDeletingAllUntracked] = useState(false)
 
   // 获取工作区状态（silent：后台定时刷新，不占满屏 loading，减轻卡顿）
   const fetchWorkspaceStatus = async (options?: { silent?: boolean }) => {
@@ -251,6 +257,44 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
   const askDeleteStash = (stashId: string) => {
     setPendingDeleteId(stashId)
     setConfirmDeleteOpen(true)
+  }
+
+  const askRemoveOneUntracked = (path: string) => {
+    setUntrackedDeleteConfirm({ kind: 'one', path })
+  }
+
+  const askRemoveAllUntracked = () => {
+    setUntrackedDeleteConfirm({ kind: 'all' })
+  }
+
+  const runUntrackedDeleteConfirm = async () => {
+    if (!repoInfo || !untrackedDeleteConfirm) return
+    workspaceStatusFetchGenRef.current++
+    try {
+      setError(null)
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      if (untrackedDeleteConfirm.kind === 'one') {
+        const norm = normalizeFilePathForGit(untrackedDeleteConfirm.path)
+        setDeletingUntrackedPath(norm)
+        await invoke('remove_untracked_path', {
+          repoPath: repoInfo.path,
+          filePath: norm,
+        })
+      } else {
+        setDeletingAllUntracked(true)
+        await invoke('remove_all_untracked_paths', {
+          repoPath: repoInfo.path,
+        })
+      }
+      setUntrackedDeleteConfirm(null)
+      await fetchWorkspaceStatus({ silent: true })
+    } catch (err) {
+      setError(formatTauriInvokeError(err, '删除未跟踪文件失败'))
+      await fetchWorkspaceStatus({ silent: true })
+    } finally {
+      setDeletingUntrackedPath(null)
+      setDeletingAllUntracked(false)
+    }
   }
 
   // 工作区 + stash 拉取（与 open_repository 等 effect 合并，避免重复 IPC）
@@ -888,6 +932,36 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
         </DialogContent>
       </Dialog>
 
+      <Dialog
+        open={untrackedDeleteConfirm !== null}
+        onOpenChange={(open) => {
+          if (!open) setUntrackedDeleteConfirm(null)
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>删除未跟踪文件</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="text-sm text-muted-foreground">
+              {untrackedDeleteConfirm?.kind === 'all'
+                ? '将永久删除当前列表中的所有未跟踪文件与目录（对应 git clean）。此操作不可撤销，是否继续？'
+                : untrackedDeleteConfirm?.kind === 'one'
+                  ? `将永久删除未跟踪项「${shortenPathMiddle(untrackedDeleteConfirm.path, 48)}」。此操作不可撤销，是否继续？`
+                  : ''}
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => setUntrackedDeleteConfirm(null)}>
+                取消
+              </Button>
+              <Button size="sm" variant="destructive" onClick={() => void runUntrackedDeleteConfirm()}>
+                确认删除
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* 暂存的文件 */}
       {workspaceStatus?.staged_files && workspaceStatus.staged_files.length > 0 && (
         <Card className="border-l-4 border-l-green-500 dark:border-l-green-400">
@@ -1037,9 +1111,36 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
       {workspaceStatus?.untracked_files && workspaceStatus.untracked_files.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">
-              未跟踪的文件（{untrackedDisplayCount}）
-            </CardTitle>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <CardTitle className="text-lg">
+                未跟踪的文件（{untrackedDisplayCount}）
+              </CardTitle>
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-destructive hover:text-destructive shrink-0"
+                onClick={askRemoveAllUntracked}
+                disabled={
+                  loading ||
+                  unstagingLoading ||
+                  stagingLoading ||
+                  deletingAllUntracked ||
+                  deletingUntrackedPath !== null
+                }
+              >
+                {deletingAllUntracked ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+                    处理中…
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-3 w-3 mr-1" />
+                    删除全部
+                  </>
+                )}
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
@@ -1065,7 +1166,13 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
                     <Button
                       size="sm"
                       onClick={() => stageFile(file)}
-                      disabled={loading || unstagingLoading || stagingLoading}
+                      disabled={
+                        loading ||
+                        unstagingLoading ||
+                        stagingLoading ||
+                        deletingUntrackedPath !== null ||
+                        deletingAllUntracked
+                      }
                       className="min-w-[4.5rem] flex items-center justify-center gap-1.5"
                     >
                       {stagingTargetPath === normalizeFilePathForGit(file) ? (
@@ -1076,6 +1183,32 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
                         </>
                       ) : (
                         '添加'
+                      )}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-destructive hover:text-destructive min-w-[4.5rem] flex items-center justify-center gap-1.5"
+                      onClick={() => askRemoveOneUntracked(file)}
+                      disabled={
+                        loading ||
+                        unstagingLoading ||
+                        stagingLoading ||
+                        deletingUntrackedPath !== null ||
+                        deletingAllUntracked
+                      }
+                    >
+                      {deletingUntrackedPath === normalizeFilePathForGit(file) ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                          <span className="sr-only">正在删除</span>
+                          <span aria-hidden>处理中</span>
+                        </>
+                      ) : (
+                        <>
+                          <Trash2 className="h-3 w-3 shrink-0" />
+                          删除
+                        </>
                       )}
                     </Button>
                   </div>

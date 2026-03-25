@@ -1209,12 +1209,8 @@ async fn get_file_diff(repo_path: String, commit_id: String) -> Result<String, S
     Ok(diff_text)
 }
 
-// 获取工作区状态
-#[tauri::command]
-async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, String> {
-    let repo = Repository::open(&repo_path)
-        .map_err(|e| format!("Failed to open repository: {}", e))?;
-    
+// 收集工作区状态（供 get_workspace_status / 删除未跟踪 等复用）
+fn collect_workspace_status(repo: &Repository) -> Result<WorkspaceStatus, String> {
     let mut staged_files = Vec::new();
     let mut unstaged_files = Vec::new();
     let mut untracked_files = Vec::new();
@@ -1384,6 +1380,136 @@ async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, Stri
         unstaged_files,
         untracked_files,
     })
+}
+
+#[tauri::command]
+async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, String> {
+    let repo = Repository::open(&repo_path)
+        .map_err(|e| format!("Failed to open repository: {}", e))?;
+    collect_workspace_status(&repo)
+}
+
+/// 解析仓库工作区内相对路径为绝对路径，并确保不逃出仓库根目录。
+fn resolve_repo_workdir_path(repo_path: &str, relative: &str) -> Result<std::path::PathBuf, String> {
+    let rel = relative.trim_end_matches('/').trim_end_matches('\\');
+    if rel.is_empty() {
+        return Err("Empty path after normalize".to_string());
+    }
+    let repo_canon = fs::canonicalize(Path::new(repo_path))
+        .map_err(|e| format!("Failed to canonicalize repository: {}", e))?;
+    let joined = Path::new(repo_path).join(rel);
+    let target = fs::canonicalize(&joined)
+        .map_err(|e| format!("Cannot access path (moved or deleted?): {}", e))?;
+    if !target.starts_with(&repo_canon) {
+        return Err("Path is outside repository".to_string());
+    }
+    Ok(target)
+}
+
+#[tauri::command]
+async fn remove_untracked_path(repo_path: String, file_path: String) -> Result<String, String> {
+    let file_path = normalize_repo_rel_path(&file_path);
+    if file_path.is_empty() {
+        return Err("Empty file path".to_string());
+    }
+    let key = file_path.trim_end_matches('/').to_string();
+    log_message(
+        "INFO",
+        &format!(
+            "remove_untracked_path: start | repo={} file={}",
+            repo_path, file_path
+        ),
+    );
+
+    let repo = Repository::open(&repo_path)
+        .map_err(|e| format!("Failed to open repository: {}", e))?;
+    let ws = collect_workspace_status(&repo)?;
+    let is_untracked = ws.untracked_files.iter().any(|p| {
+        normalize_repo_rel_path(p).trim_end_matches('/') == key
+    });
+    if !is_untracked {
+        log_message(
+            "WARN",
+            &format!(
+                "remove_untracked_path: not untracked | repo={} file={}",
+                repo_path, file_path
+            ),
+        );
+        return Err("Path is not listed as untracked; refusing to delete".to_string());
+    }
+
+    let target = resolve_repo_workdir_path(&repo_path, &key)?;
+    if target.is_dir() {
+        fs::remove_dir_all(&target).map_err(|e| format!("Failed to remove directory: {}", e))?;
+    } else {
+        fs::remove_file(&target).map_err(|e| format!("Failed to remove file: {}", e))?;
+    }
+    log_message(
+        "INFO",
+        &format!(
+            "remove_untracked_path: success | repo={} file={}",
+            repo_path, file_path
+        ),
+    );
+    Ok(format!("Removed {}", file_path))
+}
+
+#[tauri::command]
+async fn remove_all_untracked_paths(repo_path: String) -> Result<String, String> {
+    log_message(
+        "INFO",
+        &format!("remove_all_untracked_paths: start | repo={}", repo_path),
+    );
+    let repo = Repository::open(&repo_path)
+        .map_err(|e| format!("Failed to open repository: {}", e))?;
+    let ws = collect_workspace_status(&repo)?;
+    let mut keys: Vec<String> = ws
+        .untracked_files
+        .iter()
+        .map(|p| normalize_repo_rel_path(p).trim_end_matches('/').to_string())
+        .filter(|k| !k.is_empty())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    keys.sort_by_key(|k| std::cmp::Reverse(k.len()));
+
+    let mut removed: u32 = 0;
+    for key in keys {
+        let ws = collect_workspace_status(&repo)?;
+        let still_untracked = ws.untracked_files.iter().any(|p| {
+            normalize_repo_rel_path(p).trim_end_matches('/') == key
+        });
+        if !still_untracked {
+            continue;
+        }
+        let target = match resolve_repo_workdir_path(&repo_path, &key) {
+            Ok(t) => t,
+            Err(e) => {
+                log_message(
+                    "WARN",
+                    &format!(
+                        "remove_all_untracked_paths: skip {} | {}",
+                        key, e
+                    ),
+                );
+                continue;
+            }
+        };
+        if target.is_dir() {
+            fs::remove_dir_all(&target).map_err(|e| format!("Failed to remove directory: {}", e))?;
+        } else {
+            fs::remove_file(&target).map_err(|e| format!("Failed to remove file: {}", e))?;
+        }
+        removed += 1;
+    }
+    log_message(
+        "INFO",
+        &format!(
+            "remove_all_untracked_paths: done | repo={} removed={}",
+            repo_path, removed
+        ),
+    );
+    Ok(format!("Removed {} path(s)", removed))
 }
 
 // 暂存文件
@@ -3177,6 +3303,8 @@ fn main() {
             rename_recent_repo,
             update_recent_repo_entry,
             get_workspace_status,
+            remove_untracked_path,
+            remove_all_untracked_paths,
             stage_file,
             unstage_file,
             commit_changes,
