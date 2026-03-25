@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo, memo, useRef, useEffect, type PointerEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -184,9 +185,17 @@ export function UnifiedCommitView({
   >(null)
   const [commitListCopied, setCommitListCopied] = useState(false)
   const [resetDialogOpen, setResetDialogOpen] = useState(false)
+  /** 重置弹窗目标（可与列表选中项不同，例如仅右键未左键选中时） */
+  const [resetTargetCommit, setResetTargetCommit] = useState<CommitInfo | null>(null)
   const [resetMode, setResetMode] = useState<GitResetMode>('mixed')
   const [resetSubmitting, setResetSubmitting] = useState(false)
   const [resetDialogError, setResetDialogError] = useState<string | null>(null)
+  const [commitContextMenu, setCommitContextMenu] = useState<{
+    x: number
+    y: number
+    commit: CommitInfo
+  } | null>(null)
+  const commitContextMenuRef = useRef<HTMLDivElement>(null)
   const aiSummaryBusyRef = useRef(false)
   /** 流式 chunk 缓冲：打破 React 18 批处理，否则会等到本轮事件结束才单次渲染，看起来像「无实时输出」 */
   const aiSummaryStreamBufRef = useRef('')
@@ -336,6 +345,29 @@ export function UnifiedCommitView({
       cancelled = true
     }
   }, [repoPath])
+
+  // 提交列表右键菜单：点击外部、滚动、Esc 关闭
+  useEffect(() => {
+    if (!commitContextMenu) return
+    const close = () => setCommitContextMenu(null)
+    const onPointerDown = (e: Event) => {
+      const el = commitContextMenuRef.current
+      const t = e.target
+      if (el && t instanceof Node && !el.contains(t)) close()
+    }
+    const onScroll = () => close()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close()
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    window.addEventListener('scroll', onScroll, true)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true)
+      window.removeEventListener('scroll', onScroll, true)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [commitContextMenu])
 
   const branchNamesByCommit = useMemo(() => {
     const m = new Map<string, string[]>()
@@ -617,19 +649,21 @@ export function UnifiedCommitView({
     [headShortNormalized]
   )
 
-  const openResetDialog = useCallback(() => {
+  const openResetDialogForCommit = useCallback((commit: CommitInfo) => {
+    setResetTargetCommit(commit)
     setResetMode('mixed')
     setResetDialogError(null)
     setResetDialogOpen(true)
   }, [])
 
   const handleConfirmReset = useCallback(async () => {
-    if (!onResetToCommit || !selectedCommit) return
+    if (!onResetToCommit || !resetTargetCommit) return
     setResetDialogError(null)
     setResetSubmitting(true)
     try {
-      await onResetToCommit(selectedCommit.id, resetMode)
+      await onResetToCommit(resetTargetCommit.id, resetMode)
       setResetDialogOpen(false)
+      setResetTargetCommit(null)
       setSelectedCommit(null)
       setCommitFiles([])
       setSelectedFile(null)
@@ -639,7 +673,7 @@ export function UnifiedCommitView({
     } finally {
       setResetSubmitting(false)
     }
-  }, [onResetToCommit, selectedCommit, resetMode])
+  }, [onResetToCommit, resetTargetCommit, resetMode])
 
   // 处理提交选择 - 使用 useCallback 优化
   const handleCommitSelect = useCallback(async (commit: CommitInfo) => {
@@ -1053,6 +1087,12 @@ export function UnifiedCommitView({
                       : 'hover:bg-accent'
                   )}
                   onClick={() => handleCommitSelect(commit)}
+                  onContextMenu={(e) => {
+                    if (!onResetToCommit) return
+                    e.preventDefault()
+                    e.stopPropagation()
+                    setCommitContextMenu({ x: e.clientX, y: e.clientY, commit })
+                  }}
                 >
                   <div className="min-h-0 space-y-0.5">
                     {/* 提交信息 */}
@@ -1146,7 +1186,7 @@ export function UnifiedCommitView({
               <GitCompare className="h-14 w-14 shrink-0 opacity-40" />
               <p className="text-sm font-medium text-foreground">选择提交查看变更</p>
               <p className="max-w-sm text-xs leading-relaxed opacity-80">
-                在左侧提交记录中点击任意一条，即可查看该提交的文件列表与代码差异。
+                在左侧提交记录中点击任意一条，即可查看该提交的文件列表与代码差异。在提交项上右键可选择「重置到此提交」。
               </p>
             </CardContent>
           </Card>
@@ -1158,34 +1198,12 @@ export function UnifiedCommitView({
               className="flex min-h-0 shrink-0 flex-col overflow-hidden"
             >
               <Card className="flex h-full min-h-0 flex-col border-border/80">
-                <CardHeader className="flex-shrink-0 space-y-0 py-1">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <CardTitle className="flex items-center gap-2 text-base">
-                      <FileText className="h-4 w-4" />
-                      文件变更
-                      {commitFiles.length > 0 && ` (${commitFiles.length})`}
-                    </CardTitle>
-                    {onResetToCommit && selectedCommit && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-7 shrink-0 gap-1 text-xs"
-                        onClick={openResetDialog}
-                        disabled={
-                          syncBusy || resetSubmitting || isCommitCheckedOut(selectedCommit)
-                        }
-                        title={
-                          isCommitCheckedOut(selectedCommit)
-                            ? '工作区已在此提交，无需重置'
-                            : '将分支重置到当前选中的提交'
-                        }
-                      >
-                        <RotateCcw className="h-3 w-3" />
-                        重置到此提交
-                      </Button>
-                    )}
-                  </div>
+                <CardHeader className="flex-shrink-0 py-1">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <FileText className="h-4 w-4" />
+                    文件变更
+                    {commitFiles.length > 0 && ` (${commitFiles.length})`}
+                  </CardTitle>
                 </CardHeader>
                 <CardContent className="min-h-0 flex-1 overflow-hidden py-1">
                   {loadingFiles ? (
@@ -1310,6 +1328,40 @@ export function UnifiedCommitView({
           </div>
         )}
       </div>
+
+      {commitContextMenu &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            ref={commitContextMenuRef}
+            role="menu"
+            className="fixed z-[200] min-w-[11rem] rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md outline-none"
+            style={{
+              left: Math.min(Math.max(6, commitContextMenu.x), window.innerWidth - 220),
+              top: Math.min(Math.max(6, commitContextMenu.y), window.innerHeight - 56),
+            }}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={syncBusy || isCommitCheckedOut(commitContextMenu.commit)}
+              title={
+                isCommitCheckedOut(commitContextMenu.commit)
+                  ? '工作区已在此提交'
+                  : '将分支重置到该提交（与 git reset 一致）'
+              }
+              onClick={() => {
+                openResetDialogForCommit(commitContextMenu.commit)
+                setCommitContextMenu(null)
+              }}
+            >
+              <RotateCcw className="h-3.5 w-3.5 shrink-0" />
+              重置到此提交
+            </button>
+          </div>,
+          document.body
+        )}
 
       <Dialog
         open={summaryOpen}
@@ -1437,19 +1489,22 @@ export function UnifiedCommitView({
         open={resetDialogOpen}
         onOpenChange={(open) => {
           setResetDialogOpen(open)
-          if (!open) setResetDialogError(null)
+          if (!open) {
+            setResetDialogError(null)
+            setResetTargetCommit(null)
+          }
         }}
       >
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>重置到该提交</DialogTitle>
           </DialogHeader>
-          {selectedCommit && (
+          {resetTargetCommit && (
             <div className="space-y-4 text-sm">
               <div className="rounded-md border border-border bg-muted/30 px-3 py-2">
-                <p className="font-mono text-xs text-muted-foreground">{selectedCommit.short_id}</p>
-                <p className="mt-1 line-clamp-2 text-foreground" title={selectedCommit.message}>
-                  {selectedCommit.message.split('\n')[0]}
+                <p className="font-mono text-xs text-muted-foreground">{resetTargetCommit.short_id}</p>
+                <p className="mt-1 line-clamp-2 text-foreground" title={resetTargetCommit.message}>
+                  {resetTargetCommit.message.split('\n')[0]}
                 </p>
               </div>
               <p className="text-xs text-muted-foreground leading-relaxed">

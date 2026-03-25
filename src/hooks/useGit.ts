@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { open } from '@tauri-apps/api/dialog'
-import { RepoInfo, CommitInfo, FileChange, RecentRepo, WorkspaceStatus } from '../types/git'
+import { RepoInfo, CommitInfo, FileChange, RecentRepo, WorkspaceStatus, GitResetMode } from '../types/git'
 import { formatTauriInvokeError } from '../utils/tauriError'
 
 export function useGit() {
@@ -129,6 +129,34 @@ export function useGit() {
       setLoading(false)
     }
   }, [repoInfo])
+
+  const resetToCommit = useCallback(
+    async (commitId: string, mode: GitResetMode) => {
+      if (!repoInfo) return
+
+      try {
+        setLoading(true)
+        setError(null)
+
+        await invoke('reset_to_commit', {
+          repoPath: repoInfo.path,
+          commitId,
+          mode,
+        })
+
+        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
+          path: repoInfo.path,
+        })
+        setRepoInfo(updatedRepoInfo)
+      } catch (err) {
+        setError(formatTauriInvokeError(err, '重置失败'))
+        throw err
+      } finally {
+        setLoading(false)
+      }
+    },
+    [repoInfo]
+  )
 
   const getCommitFiles = useCallback(async (commitId: string): Promise<FileChange[]> => {
     if (!repoInfo) throw new Error('No repository open')
@@ -397,6 +425,7 @@ export function useGit() {
     removeRecentRepo,
     updateRecentRepoEntry,
     checkoutBranch,
+    resetToCommit,
     getFileDiff,
     getCommitFiles,
     getSingleFileDiff,
