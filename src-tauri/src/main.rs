@@ -4,11 +4,73 @@
 use git2::{Repository, Oid};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::fs;
-use anyhow::Result; 
-use std::io::Write;
+use anyhow::Result;
+use std::io::{BufRead, BufReader, Write};
+use std::sync::{Mutex, Once, OnceLock};
 use tauri::{Manager, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem, CustomMenuItem, GlobalWindowEvent};
+
+/// AI 总结排查日志路径：调试构建写入仓库 `logs/ai-summary.log`；发布构建写入本机 `%LOCALAPPDATA%/GitLite/logs/`。可用环境变量 `GITLITE_AI_SUMMARY_LOG` 覆盖为绝对路径。
+fn ai_summary_log_file_path() -> PathBuf {
+    static CACHE: OnceLock<PathBuf> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            if let Ok(p) = std::env::var("GITLITE_AI_SUMMARY_LOG") {
+                return PathBuf::from(p.trim());
+            }
+            if cfg!(debug_assertions) {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../logs/ai-summary.log")
+            } else {
+                dirs::data_local_dir()
+                    .unwrap_or_else(std::env::temp_dir)
+                    .join("GitLite")
+                    .join("logs")
+                    .join("ai-summary.log")
+            }
+        })
+        .clone()
+}
+
+static AI_SUMMARY_LOG_HEADER: Once = Once::new();
+static AI_SUMMARY_LOG_MUTEX: Mutex<()> = Mutex::new(());
+
+fn ai_summary_log_line(message: &str) {
+    let path = ai_summary_log_file_path();
+    AI_SUMMARY_LOG_HEADER.call_once(|| {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let header = format!(
+            "\n======== {} [ai-summary] 日志文件: {} ========\n",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+            path.display()
+        );
+        if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = f.write_all(header.as_bytes());
+            let _ = f.flush();
+        }
+        eprintln!(
+            "[ai-summary] 详情已写入文件: {}",
+            path.display()
+        );
+    });
+    if let Ok(_g) = AI_SUMMARY_LOG_MUTEX.lock() {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let line = format!(
+            "{} {}\n",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+            message
+        );
+        if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = f.write_all(line.as_bytes());
+            let _ = f.flush();
+        }
+    }
+    eprintln!("{}", message);
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CommitInfo {
@@ -18,6 +80,8 @@ pub struct CommitInfo {
     pub email: String,
     pub date: String,
     pub short_id: String,
+    /// 父提交完整哈希（顺序与 Git 一致：首父、次父…），用于分支图
+    pub parent_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -25,6 +89,13 @@ pub struct BranchInfo {
     pub name: String,
     pub is_current: bool,
     pub is_remote: bool,
+}
+
+/// 分支/远程引用指向的提交，用于在提交列表上标注分支名
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BranchRefTip {
+    pub name: String,
+    pub commit_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -292,6 +363,227 @@ fn openai_chat_completion_text(
     Ok(content.to_string())
 }
 
+/// 从 OpenAI 兼容的 SSE `data:` JSON 中取本帧增量文本（不同网关/模型字段不一致）。
+fn openai_sse_delta_piece(v: &serde_json::Value) -> Option<String> {
+    if let Some(delta) = v.pointer("/choices/0/delta") {
+        if delta.is_object() {
+            // 最常见：delta.content 字符串
+            if let Some(s) = delta.get("content").and_then(|c| c.as_str()) {
+                if !s.is_empty() {
+                    return Some(s.to_string());
+                }
+            }
+            // 新版/网关：delta.content 为数组，元素含 text
+            if let Some(arr) = delta.get("content").and_then(|c| c.as_array()) {
+                let mut out = String::new();
+                for item in arr {
+                    if let Some(t) = item.get("text").and_then(|x| x.as_str()) {
+                        out.push_str(t);
+                    } else if let Some(t) = item.get("content").and_then(|x| x.as_str()) {
+                        out.push_str(t);
+                    } else if let Some(t) = item.as_str() {
+                        out.push_str(t);
+                    }
+                }
+                if !out.is_empty() {
+                    return Some(out);
+                }
+            }
+            // 部分兼容层使用 delta.text
+            if let Some(s) = delta.get("text").and_then(|c| c.as_str()) {
+                if !s.is_empty() {
+                    return Some(s.to_string());
+                }
+            }
+            // 推理模型常见：reasoning_content（无 content 时仍展示推理过程）
+            if let Some(s) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
+                if !s.is_empty() {
+                    return Some(s.to_string());
+                }
+            }
+        }
+    }
+    // completion 流或缺少 delta：choices[0].text
+    if let Some(s) = v.pointer("/choices/0/text").and_then(|c| c.as_str()) {
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    None
+}
+
+/// OpenAI 兼容 `stream: true` 的 chat/completions；增量文本经 `tx` 送出，由异步任务调用 `window.emit`（勿在 `spawn_blocking` 内直接 emit，否则前端事件会积压到请求结束才显示）。
+fn stream_openai_chat_sse(
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+    config: &AiConfig,
+    messages: Vec<serde_json::Value>,
+    max_tokens: u32,
+) -> Result<(), String> {
+    let base_url = config.base_url.trim().trim_end_matches('/').to_string();
+    if base_url.is_empty() {
+        return Err("请填写 API 地址".to_string());
+    }
+    let model = config.model.trim().to_string();
+    if model.is_empty() {
+        return Err("请填写模型名称".to_string());
+    }
+    let api_key = config
+        .api_key
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let url = format!("{}/chat/completions", base_url);
+    let body = serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.3,
+        "stream": true
+    });
+
+    let resp = std::thread::spawn(move || {
+        let req = ureq::post(&url).set("Content-Type", "application/json");
+        let req = if let Some(ref key) = api_key {
+            req.set("Authorization", &format!("Bearer {}", key))
+        } else {
+            req
+        };
+        req.send_json(body)
+    })
+    .join()
+    .map_err(|_| "请求线程异常".to_string())?;
+
+    let resp = resp.map_err(|e| format!("请求失败: {}", e))?;
+    let status = resp.status();
+    if status >= 400 {
+        let text = resp.into_string().unwrap_or_default();
+        let short: String = text.chars().take(800).collect();
+        return Err(format!("HTTP {} — {}", status, short));
+    }
+
+    ai_summary_log_line(&format!(
+        "[ai-summary] sse HTTP {} 已开始读响应体（首字延迟取决于模型与 {} 字符左右的用户消息）",
+        status,
+        messages
+            .get(1)
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+            .map(|s| s.chars().count())
+            .unwrap_or(0)
+    ));
+
+    let reader = resp.into_reader();
+    let mut buf_reader = BufReader::new(reader);
+    let mut line_buf = String::new();
+    let mut got_any_content = false;
+    let mut delta_chunk_count: usize = 0;
+    let mut delta_char_count: usize = 0;
+    let mut json_parse_skips: usize = 0;
+    let mut non_data_line_logs: usize = 0;
+    let mut line_count: usize = 0;
+    let mut no_delta_shape_logs: usize = 0;
+    let t_sse = std::time::Instant::now();
+    loop {
+        line_buf.clear();
+        let n = buf_reader
+            .read_line(&mut line_buf)
+            .map_err(|e| format!("读取流失败: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        line_count += 1;
+        if line_count == 1 {
+            ai_summary_log_line(&format!(
+                "[ai-summary] sse 首行已到达 (距读流开始 {:?})",
+                t_sse.elapsed()
+            ));
+        }
+        let line = line_buf.trim_end();
+        if line.is_empty() {
+            continue;
+        }
+        if !line.starts_with("data:") {
+            if non_data_line_logs < 6 {
+                non_data_line_logs += 1;
+                let short: String = line.chars().take(160).collect();
+                ai_summary_log_line(&format!(
+                    "[ai-summary] sse 非 data: 行（跳过）#{}: {:?}",
+                    non_data_line_logs, short
+                ));
+            }
+            continue;
+        }
+        let rest = line[5..].trim_start();
+        if rest == "[DONE]" {
+            break;
+        }
+        let v: serde_json::Value = match serde_json::from_str(rest) {
+            Ok(v) => v,
+            Err(_) => {
+                if json_parse_skips < 3 {
+                    let short: String = rest.chars().take(160).collect();
+                    ai_summary_log_line(&format!(
+                        "[ai-summary] sse 非 JSON 行（跳过）: {:?}",
+                        short
+                    ));
+                }
+                json_parse_skips += 1;
+                continue;
+            }
+        };
+        if let Some(err) = v.get("error") {
+            let msg = err
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown");
+            return Err(format!("API 错误: {}", msg));
+        }
+        if let Some(content) = openai_sse_delta_piece(&v) {
+            if !content.is_empty() {
+                got_any_content = true;
+                delta_chunk_count += 1;
+                delta_char_count += content.chars().count();
+                if delta_chunk_count <= 4 || delta_chunk_count % 50 == 0 {
+                    let preview: String = content.chars().take(40).collect();
+                    ai_summary_log_line(&format!(
+                        "[ai-summary] sse delta #{} len={} total_chars={} preview={:?}",
+                        delta_chunk_count,
+                        content.chars().count(),
+                        delta_char_count,
+                        preview
+                    ));
+                }
+                tx.send(content)
+                    .map_err(|_| "UI 广播通道已关闭".to_string())?;
+            }
+        } else if no_delta_shape_logs < 3 && v.get("choices").is_some() {
+            let short: String = serde_json::to_string(&v)
+                .unwrap_or_default()
+                .chars()
+                .take(500)
+                .collect();
+            ai_summary_log_line(&format!(
+                "[ai-summary] sse 有 choices 但未解析出增量文本，样例: {}",
+                short
+            ));
+            no_delta_shape_logs += 1;
+        }
+    }
+    ai_summary_log_line(&format!(
+        "[ai-summary] sse 结束 raw_lines≈{} delta_chunks={} delta_chars={} json_parse_skips={} non_data_skip_logs={}",
+        line_count,
+        delta_chunk_count,
+        delta_char_count,
+        json_parse_skips,
+        non_data_line_logs
+    ));
+    if !got_any_content {
+        return Err("模型未返回有效内容（流式响应为空），请重试或检查模型是否支持 stream".to_string());
+    }
+    Ok(())
+}
+
 /// 根据暂存区 diff 调用已配置的模型生成一行中文提交说明。
 #[tauri::command]
 async fn generate_commit_message_ai(repo_path: String) -> Result<String, String> {
@@ -332,10 +624,128 @@ async fn generate_commit_message_ai(repo_path: String) -> Result<String, String>
     Ok(msg)
 }
 
+/// 提交页「AI 总结」传入的单条记录（与前端 CommitInfo 字段对齐，无需整仓库路径）。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CommitLineForAi {
+    pub short_id: String,
+    pub message: String,
+    pub author: String,
+    pub date: String,
+}
+
+fn parse_commit_line_date(s: &str) -> Option<chrono::NaiveDateTime> {
+    chrono::NaiveDateTime::parse_from_str(s.trim(), "%Y-%m-%d %H:%M:%S").ok()
+}
+
+/// 根据当前筛选范围内的提交记录流式生成中文工作总结（经 `ai-summary-chunk` 推送增量）。
+#[tauri::command]
+async fn summarize_commits_ai_stream(
+    window: tauri::Window,
+    commits: Vec<CommitLineForAi>,
+) -> Result<(), String> {
+    let config = get_ai_config().await?;
+    if !config.enabled {
+        return Err("请先在菜单「AI」中启用并保存配置".to_string());
+    }
+    if commits.is_empty() {
+        return Err("当前筛选范围内没有可总结的提交".to_string());
+    }
+
+    ai_summary_log_line(&format!(
+        "[ai-summary] summarize_commits_ai_stream 开始 commits={}",
+        commits.len()
+    ));
+
+    let mut rows = commits;
+    rows.sort_by(|a, b| {
+        let da = parse_commit_line_date(&a.date);
+        let db = parse_commit_line_date(&b.date);
+        match (da, db) {
+            (Some(x), Some(y)) => x.cmp(&y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+    });
+
+    const MAX_ITEMS: usize = 500;
+    const MAX_CHARS: usize = 100_000;
+    let mut block = String::new();
+    for (i, c) in rows.iter().take(MAX_ITEMS).enumerate() {
+        let line = format!(
+            "{}. {} | {} | {} | {}\n",
+            i + 1,
+            c.date,
+            c.short_id,
+            c.author,
+            c.message
+        );
+        if block.len() + line.len() > MAX_CHARS {
+            block.push_str("…（提交列表过长已截断）\n");
+            break;
+        }
+        block.push_str(&line);
+    }
+
+    let system = "你是 Git 版本历史助手。用户会给出若干条提交记录（按时间从旧到新）。\
+请用简洁的中文总结这些提交主要完成了什么工作：分主题或按时间脉络组织；用要点列表；不要逐条机械复述；若只能依据提交说明推断，可简要说明。";
+    let user = format!("以下为当前筛选范围内的提交记录：\n\n{}", block.trim_end());
+
+    let messages = vec![
+        serde_json::json!({"role": "system", "content": system}),
+        serde_json::json!({"role": "user", "content": user}),
+    ];
+
+    let _ = window.emit(
+        "ai-summary-conversation",
+        serde_json::json!({
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user", "content": user },
+            ]
+        }),
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let window_emit = window.clone();
+    let emit_task = tokio::spawn(async move {
+        let mut emit_n = 0usize;
+        while let Some(text) = rx.recv().await {
+            emit_n += 1;
+            let tlen = text.chars().count();
+            if emit_n <= 4 || emit_n % 50 == 0 {
+                ai_summary_log_line(&format!(
+                    "[ai-summary] window.emit ai-summary-chunk #{} len={}",
+                    emit_n, tlen
+                ));
+            }
+            let _ = window_emit.emit(
+                "ai-summary-chunk",
+                serde_json::json!({ "text": text }),
+            );
+        }
+    });
+
+    let config = config.clone();
+    let read_result = tokio::task::spawn_blocking(move || stream_openai_chat_sse(tx, &config, messages, 2048))
+        .await
+        .map_err(|e| format!("流式任务异常: {}", e))?;
+
+    read_result?;
+    emit_task
+        .await
+        .map_err(|e| format!("流式广播任务异常: {}", e))?;
+
+    ai_summary_log_line("[ai-summary] summarize_commits_ai_stream 完成（invoke 将返回）");
+    Ok(())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RepoInfo {
     pub path: String,
     pub current_branch: String,
+    /// HEAD 指向的提交短哈希（约 7 字符），空仓库或无提交时为 None
+    pub head_short_id: Option<String>,
     pub branches: Vec<BranchInfo>,
     pub commits: Vec<CommitInfo>,
     pub ahead: u32,   // 本地比远端超前的提交数（待推送）
@@ -832,31 +1242,9 @@ async fn get_git_config_info() -> Result<Vec<GitConfigItem>, String> {
     Ok(config_items)
 }
 
-// 构建代理 URL（仅用于 libgit2，不设置环境变量）
-fn build_proxy_url(proxy_config: &ProxyConfig) -> Result<String, String> {
-    if !proxy_config.enabled {
-        return Err("代理未启用".to_string());
-    }
-    
-    // 验证协议
-    validate_proxy_protocol(&proxy_config.protocol)?;
-    
-    let proxy_url = if let (Some(username), Some(password)) = (&proxy_config.username, &proxy_config.password) {
-        format!("{}://{}:{}@{}:{}", 
-                proxy_config.protocol, username, password, 
-                proxy_config.host, proxy_config.port)
-    } else {
-        format!("{}://{}:{}", 
-                proxy_config.protocol, proxy_config.host, proxy_config.port)
-    };
-    
-    Ok(proxy_url)
+fn local_proxy_override_file_exists() -> bool {
+    get_config_dir().join("proxy_config.json").exists()
 }
-
-// 注意：根据要求，我们不设置环境变量，也不写入 git config
-// libgit2 会使用系统已有的 Git 配置（用户已设置的 http://127.0.0.1:10809）
-// 我们只需要确保不会生成错误的 https:// 代理 URL 并写入配置
-// 如果用户需要在 GitLite 中使用不同的代理，应该通过 Git 全局配置来设置
 
 // 清理仓库中的错误代理配置（https://...）
 fn cleanup_invalid_proxy_config(repo: &Repository) -> Result<Vec<String>, String> {
@@ -1050,6 +1438,14 @@ fn get_repository_info(repo: &Repository, path: &str) -> Result<RepoInfo> {
     // 获取当前分支
     let head = repo.head().map_err(|e| anyhow::anyhow!("Failed to get HEAD: {}", e))?;
     let current_branch = head.shorthand().unwrap_or("detached").to_string();
+    let head_short_id = head.peel_to_commit().ok().map(|c| {
+        let s = c.id().to_string();
+        if s.len() > 7 {
+            s[..7].to_string()
+        } else {
+            s
+        }
+    });
     
     // 获取分支列表
     let mut branches = Vec::new();
@@ -1102,6 +1498,7 @@ fn get_repository_info(repo: &Repository, path: &str) -> Result<RepoInfo> {
     Ok(RepoInfo {
         path: path.to_string(),
         current_branch,
+        head_short_id,
         branches,
         commits,
         ahead,
@@ -1115,11 +1512,21 @@ fn get_commit_history(repo: &Repository) -> Result<Vec<CommitInfo>> {
     get_commit_history_paginated(repo, Some(50), Some(0))
 }
 
+fn commit_parent_ids(commit: &git2::Commit) -> Vec<String> {
+    (0..commit.parent_count())
+        .filter_map(|i| commit.parent_id(i).ok())
+        .map(|oid| oid.to_string())
+        .collect()
+}
+
 // 获取分页提交历史
 fn get_commit_history_paginated(repo: &Repository, limit: Option<usize>, offset: Option<usize>) -> Result<Vec<CommitInfo>> {
     let mut revwalk = repo.revwalk()
         .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
-    
+    revwalk
+        .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+        .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
+
     revwalk.push_head()
         .map_err(|e| anyhow::anyhow!("Failed to push HEAD: {}", e))?;
     
@@ -1159,6 +1566,7 @@ fn get_commit_history_paginated(repo: &Repository, limit: Option<usize>, offset:
             author: author.name().unwrap_or("Unknown").to_string(),
             email: author.email().unwrap_or("").to_string(),
             date,
+            parent_ids: commit_parent_ids(&commit),
         });
         
         count += 1;
@@ -1242,6 +1650,7 @@ fn get_commit_history_search(repo: &Repository, query: &str, limit: usize) -> Re
                 author: author_name,
                 email: author.email().unwrap_or("").to_string(),
                 date,
+                parent_ids: commit_parent_ids(&commit),
             });
         }
     }
@@ -1256,6 +1665,97 @@ async fn search_commits(repo_path: String, query: String, limit: Option<usize>) 
     let commits = get_commit_history_search(&repo, query.trim(), limit)
         .map_err(|e| format!("Search failed: {}", e))?;
     Ok(commits)
+}
+
+fn walk_tree_collect_paths(
+    repo: &Repository,
+    tree: &git2::Tree,
+    prefix: &str,
+    out: &mut Vec<String>,
+    max: usize,
+) -> Result<(), String> {
+    if out.len() >= max {
+        return Ok(());
+    }
+    for entry in tree.iter() {
+        if out.len() >= max {
+            break;
+        }
+        let name = entry.name().unwrap_or("");
+        let path = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{}/{}", prefix, name)
+        };
+        match entry.kind() {
+            Some(git2::ObjectType::Tree) => {
+                let obj = entry.to_object(repo).map_err(|e| e.to_string())?;
+                let sub = obj
+                    .into_tree()
+                    .map_err(|_| "子树解析失败".to_string())?;
+                walk_tree_collect_paths(repo, &sub, &path, out, max)?;
+            }
+            Some(git2::ObjectType::Blob) => {
+                out.push(path);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// 列出当前 HEAD 提交树中的文件路径（扁平、已排序），用于文件树视图
+#[tauri::command]
+async fn get_head_file_paths(repo_path: String, max_entries: Option<usize>) -> Result<Vec<String>, String> {
+    let max = max_entries.unwrap_or(5000).min(50_000);
+    let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+    let head = repo.head().map_err(|e| format!("无法读取 HEAD: {}", e))?;
+    let oid = head
+        .target()
+        .ok_or_else(|| "无法解析 HEAD 目标".to_string())?;
+    let commit = repo
+        .find_commit(oid)
+        .map_err(|e| format!("无法读取提交: {}", e))?;
+    let tree = commit.tree().map_err(|e| format!("无法读取树: {}", e))?;
+    let mut paths = Vec::new();
+    walk_tree_collect_paths(&repo, &tree, "", &mut paths, max)?;
+    paths.sort();
+    Ok(paths)
+}
+
+#[tauri::command]
+async fn get_branch_ref_tips(repo_path: String) -> Result<Vec<BranchRefTip>, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+    let mut tips = Vec::new();
+    let refs = repo.references().map_err(|e| format!("references: {}", e))?;
+    for reference in refs {
+        let reference = reference.map_err(|e| format!("ref: {}", e))?;
+        let Some(name) = reference.name() else {
+            continue;
+        };
+        if name == "HEAD" || name.ends_with("/HEAD") {
+            continue;
+        }
+        if !(name.starts_with("refs/heads/") || name.starts_with("refs/remotes/")) {
+            continue;
+        }
+        let Ok(resolved) = reference.resolve() else {
+            continue;
+        };
+        let Some(oid) = resolved.target() else {
+            continue;
+        };
+        let short_name = name
+            .strip_prefix("refs/heads/")
+            .or_else(|| name.strip_prefix("refs/remotes/"))
+            .unwrap_or(name)
+            .to_string();
+        tips.push(BranchRefTip {
+            name: short_name,
+            commit_id: oid.to_string(),
+        });
+    }
+    Ok(tips)
 }
 
 // 切换分支
@@ -1293,6 +1793,53 @@ async fn checkout_branch(repo_path: String, branch_name: String) -> Result<Strin
     }
 
     Ok(format!("已切换到 {}", branch_name))
+}
+
+/// 将当前分支（或分离 HEAD）重置到指定提交，行为与 `git reset --soft|--mixed|--hard` 一致。
+#[tauri::command]
+async fn reset_to_commit(repo_path: String, commit_id: String, mode: String) -> Result<String, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
+
+    let oid = Oid::from_str(commit_id.trim()).map_err(|e| format!("无效的提交 ID: {}", e))?;
+
+    let commit = repo
+        .find_commit(oid)
+        .map_err(|e| format!("找不到该提交: {}", e))?;
+
+    let reset_type = match mode.trim().to_lowercase().as_str() {
+        "soft" => git2::ResetType::Soft,
+        "mixed" => git2::ResetType::Mixed,
+        "hard" => git2::ResetType::Hard,
+        _ => return Err("重置模式须为 soft、mixed 或 hard".to_string()),
+    };
+
+    let object = commit.as_object();
+    repo.reset(object, reset_type, None).map_err(|e| {
+        let msg = e.message();
+        if msg.contains("overwrite") || msg.contains("conflict") || msg.contains("Failed to") {
+            format!(
+                "无法完成重置：{}。若工作区有未提交修改，可先提交或贮藏，或尝试「软重置/混合重置」而非硬重置。",
+                msg
+            )
+        } else {
+            format!("重置失败: {}", msg)
+        }
+    })?;
+
+    let mode_cn = match reset_type {
+        git2::ResetType::Soft => "软",
+        git2::ResetType::Mixed => "混合",
+        git2::ResetType::Hard => "硬",
+    };
+
+    let id_disp = commit_id.trim();
+    let short = if id_disp.len() > 7 {
+        id_disp[..7].to_string()
+    } else {
+        id_disp.to_string()
+    };
+
+    Ok(format!("已执行「{}」重置，当前指向 {}", mode_cn, short))
 }
 
 // 获取提交的文件列表
@@ -2011,6 +2558,7 @@ async fn commit_changes(repo_path: String, message: String) -> Result<String, St
 #[tauri::command]
 async fn push_changes(repo_path: String) -> Result<String, String> {
     log_message("INFO", &format!("push: attempt start | path={}", repo_path));
+
     let repo = match Repository::open(&repo_path) {
         Ok(r) => r,
         Err(e) => {
@@ -2059,6 +2607,7 @@ async fn push_changes(repo_path: String) -> Result<String, String> {
 #[tauri::command]
 async fn pull_changes(repo_path: String) -> Result<String, String> {
     log_message("INFO", &format!("pull: attempt start | path={}", repo_path));
+
     let repo = match Repository::open(&repo_path) {
         Ok(r) => r,
         Err(e) => {
@@ -2249,6 +2798,7 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
 #[tauri::command]
 async fn fetch_changes_with_logs(repo_path: String) -> Result<Vec<(String, String, String)>, String> {
     let mut logs = Vec::new();
+
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     
     logs.push((timestamp, "INFO".to_string(), format!("fetch: attempt start | path={}", repo_path)));
@@ -2382,6 +2932,7 @@ async fn push_changes_with_realtime_logs(
         "message": "正在应用代理配置..."
     }));
 
+    let has_local_proxy_file = local_proxy_override_file_exists();
     let proxy_config = match get_proxy_config().await {
         Ok((config, is_from_git)) => {
             // 配置来源
@@ -2436,8 +2987,22 @@ async fn push_changes_with_realtime_logs(
         let _ = window.emit("push-log", serde_json::json!({
             "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
             "level": "INFO",
-            "message": format!("注意：GitLite 使用系统 Git 配置中的代理设置，当前代理配置（{}://{}:{}）仅用于参考", 
-                proxy_config.protocol, proxy_config.host, proxy_config.port)
+            "message": format!(
+                "libgit2 将经代理连接远程：{}://{}:{}",
+                proxy_config.protocol, proxy_config.host, proxy_config.port
+            )
+        }));
+    } else if !has_local_proxy_file {
+        let _ = window.emit("push-log", serde_json::json!({
+            "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+            "level": "INFO",
+            "message": "libgit2 将从 Git 配置自动检测代理（http.proxy / https.proxy）；未配置则不使用代理"
+        }));
+    } else {
+        let _ = window.emit("push-log", serde_json::json!({
+            "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+            "level": "INFO",
+            "message": "libgit2：不使用代理（应用内已关闭，且存在 proxy_config.json）"
         }));
     }
 
@@ -2618,6 +3183,7 @@ async fn push_changes_with_realtime_logs(
 #[tauri::command]
 async fn push_changes_with_logs(repo_path: String) -> Result<Vec<(String, String, String)>, String> {
     let mut logs = Vec::new();
+
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     
     logs.push((timestamp, "INFO".to_string(), format!("push: attempt start | path={}", repo_path)));
@@ -2848,6 +3414,7 @@ async fn git_diagnostics(repo_path: String) -> Result<Vec<(String, String, Strin
 #[tauri::command]
 async fn pull_changes_with_logs(repo_path: String) -> Result<Vec<(String, String, String)>, String> {
     let mut logs = Vec::new();
+
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     
     logs.push((timestamp, "INFO".to_string(), format!("pull: attempt start | path={}", repo_path)));
@@ -3645,7 +4212,10 @@ fn main() {
             get_commits_paginated,
             get_commit_count_head,
             search_commits,
+            get_head_file_paths,
+            get_branch_ref_tips,
             checkout_branch,
+            reset_to_commit,
             get_file_diff,
             get_commit_files,
             get_single_file_diff,
@@ -3685,6 +4255,7 @@ fn main() {
             save_ai_config,
             test_ai_connection,
             generate_commit_message_ai,
+            summarize_commits_ai_stream,
             get_git_config_info
         ])
         .run(tauri::generate_context!())

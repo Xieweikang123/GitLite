@@ -2,12 +2,11 @@ import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import { invoke } from '@tauri-apps/api/tauri'
 import { Select, SelectContent, SelectItem, SelectTrigger } from './ui/select'
-import { FolderOpen, GitBranch, Moon, Sun, GitPullRequest } from 'lucide-react'
+import { GitBranch, Moon, Sun, GitPullRequest } from 'lucide-react'
 import { BranchInfo } from '../types/git'
 import { cn } from '../lib/utils'
 
 interface TopToolbarProps {
-  onOpenRepository: () => void
   onBranchSelect: (branchName: string) => void
   onOpenRemoteRepository?: () => void
   onPullChanges?: () => void
@@ -18,7 +17,6 @@ interface TopToolbarProps {
 }
 
 export function TopToolbar({
-  onOpenRepository,
   onBranchSelect,
   onOpenRemoteRepository,
   onPullChanges,
@@ -161,16 +159,6 @@ export function TopToolbar({
             拉取 ({repoInfo.behind})
           </Button>
         )}
-        
-        {/* 移除单独的“打开远程仓库”按钮，改为点击 GitBranch 图标触发 */}
-        <Button
-          onClick={onOpenRepository}
-          disabled={loading}
-          className="flex items-center gap-2"
-        >
-          <FolderOpen className="h-4 w-4" />
-          {loading ? '打开中...' : '打开仓库'}
-        </Button>
       </div>
     </div>
   )

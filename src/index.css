@@ -1,3 +1,5 @@
+@import "react-day-picker/style.css";
+
 @tailwind base; 
 @tailwind components;
 @tailwind utilities;
@@ -24,6 +26,12 @@
     --input: 214.3 31.8% 91.4%;
     --ring: 221.2 83.2% 53.3%;
     --radius: 0.5rem;
+  }
+
+  /* react-day-picker：与主题主色对齐，避免默认蓝色突兀 */
+  .rdp-root {
+    --rdp-accent-color: hsl(var(--primary));
+    --rdp-today-color: hsl(var(--primary));
   }
 
   .dark {

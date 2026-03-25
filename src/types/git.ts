@@ -5,6 +5,14 @@ export interface CommitInfo {
   email: string
   date: string
   short_id: string
+  /** 父提交完整哈希（与 Git 顺序一致），用于分支图 */
+  parent_ids?: string[]
+}
+
+/** 分支/远程引用指向的提交，用于在提交列表上标注 */
+export interface BranchRefTip {
+  name: string
+  commit_id: string
 }
 
 export interface BranchInfo {
@@ -35,12 +43,17 @@ export interface WorkspaceStatus {
 export interface RepoInfo {
   path: string
   current_branch: string
+  /** HEAD 当前提交的短哈希（约 7 字符），空仓库等情况下可能为空 */
+  head_short_id?: string | null
   branches: BranchInfo[]
   commits: CommitInfo[]
   ahead: number // 本地比远端超前（待推送）
   behind: number // 本地比远端落后（待拉取）
   remote_url?: string // 远程仓库URL
 }
+
+/** 与 `git reset` 一致：soft / mixed / hard */
+export type GitResetMode = 'soft' | 'mixed' | 'hard'
 
 export interface ProxyConfig {
   enabled: boolean
