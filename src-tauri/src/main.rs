@@ -2237,7 +2237,7 @@ async fn fetch_changes_with_logs(repo_path: String) -> Result<Vec<(String, Strin
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     logs.push((timestamp, "INFO".to_string(), "正在查找远程仓库 origin...".to_string()));
 
-    let mut remote = match repo.find_remote("origin") {
+    let remote = match repo.find_remote("origin") {
         Ok(r) => {
             let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
             logs.push((timestamp, "INFO".to_string(), "找到远程仓库 origin".to_string()));
@@ -2250,55 +2250,57 @@ async fn fetch_changes_with_logs(repo_path: String) -> Result<Vec<(String, Strin
         }
     };
 
+    let url = remote.url().unwrap_or("").to_string();
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    logs.push((timestamp, "INFO".to_string(), "正在设置认证...".to_string()));
-
-    // 认证与 Fetch 选项
-    let cfg = repo.config().ok();
-    let mut callbacks = git2::RemoteCallbacks::new();
-    callbacks.credentials(move |url, username_from_url, allowed| {
-        if allowed.contains(git2::CredentialType::DEFAULT) {
-            return git2::Cred::default();
-        }
-        if allowed.contains(git2::CredentialType::SSH_KEY) {
-            return git2::Cred::ssh_key_from_agent(username_from_url.unwrap_or("git"));
-        }
-        if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
-            if let Some(cfg) = cfg.as_ref() {
-                if let Ok(cred) = git2::Cred::credential_helper(cfg, url, username_from_url) {
-                    return Ok(cred);
-                }
-            }
-        }
-        Err(git2::Error::from_str("No authentication method available"))
-    });
-
-    let mut fetch_opts = git2::FetchOptions::new();
-    fetch_opts.remote_callbacks(callbacks);
+    logs.push((timestamp, "INFO".to_string(), "使用系统 Git 执行 fetch（与 VS / 命令行一致，沿用 http.proxy 等配置）...".to_string()));
 
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     logs.push((timestamp, "INFO".to_string(), "开始获取远程更改...".to_string()));
 
-    // 执行 fetch 操作
-    match remote.fetch::<&str>(&[], Some(&mut fetch_opts), None) {
-        Ok(_) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "INFO".to_string(), "获取成功！".to_string()));
-            
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "SUCCESS".to_string(), "操作完成 - 已获取远程仓库最新信息".to_string()));
-            
-            Ok(logs)
-        },
+    // libgit2 在部分网络/代理环境下易出现「failed to receive response: 操作超时」，改由系统 git 执行 fetch
+    let fetch_result = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo_path)
+        .args(["fetch", "origin"])
+        .output();
+
+    match fetch_result {
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !stdout.is_empty() {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "INFO".to_string(), stdout));
+            }
+            if !stderr.is_empty() {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "INFO".to_string(), stderr.clone()));
+            }
+            if output.status.success() {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "INFO".to_string(), "获取成功！".to_string()));
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "SUCCESS".to_string(), "操作完成 - 已获取远程仓库最新信息".to_string()));
+                Ok(logs)
+            } else {
+                let code = output.status.code().unwrap_or(-1);
+                let detail = format!("git fetch 退出码 {}: {}", code, stderr);
+                log_message("ERROR", &format!("fetch: {} | url={}", detail, url));
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "ERROR".to_string(), format!("获取失败: {}", detail)));
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "ERROR".to_string(), format!("远程仓库URL: {}", url)));
+                Err(format!("Failed to fetch: {}", detail))
+            }
+        }
         Err(e) => {
+            let msg = format!("无法执行 git 命令: {}（请确认已安装 Git for Windows 并加入 PATH）", e);
+            log_message("ERROR", &format!("fetch: {} | url={}", msg, url));
             let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), format!("获取失败: {}", e)));
-            
-            let url = remote.url().unwrap_or("");
+            logs.push((timestamp, "ERROR".to_string(), msg.clone()));
             let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
             logs.push((timestamp, "ERROR".to_string(), format!("远程仓库URL: {}", url)));
-            
-            return Err(format!("Failed to fetch: {}", e));
+            Err(format!("Failed to fetch: {}", msg))
         }
     }
 }
