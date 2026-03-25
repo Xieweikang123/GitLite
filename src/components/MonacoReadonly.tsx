@@ -86,6 +86,8 @@ export function MonacoReadonly({
           scrollbar: {
             vertical: maxViewportHeightPx != null ? "auto" : "hidden",
             horizontal: "auto",
+            verticalScrollbarSize: 14,
+            horizontalScrollbarSize: 14,
           },
           padding: { top: 8, bottom: 8 },
           automaticLayout: true,

@@ -276,18 +276,36 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
   // 暂存文件
   const stageFile = async (filePath: string) => {
     if (!repoInfo) return
-    
+
+    const wasUntracked = workspaceStatus?.untracked_files.includes(filePath) ?? false
+
     try {
       const { invoke } = await import('@tauri-apps/api/tauri')
       await invoke('stage_file', {
         repoPath: repoInfo.path,
         filePath,
       })
-      
-      // 刷新工作区状态
-      await fetchWorkspaceStatus()
+
+      // 未跟踪 → 暂存：先乐观更新列表，避免等待完整 status 时差交互卡顿
+      if (wasUntracked) {
+        setWorkspaceStatus((prev) => {
+          if (!prev) return prev
+          return {
+            ...prev,
+            untracked_files: prev.untracked_files.filter((f) => f !== filePath),
+            staged_files: [
+              ...prev.staged_files.filter((f) => f.path !== filePath),
+              { path: filePath, status: 'added', additions: 1, deletions: 0 },
+            ],
+          }
+        })
+      }
+
+      // 与定时刷新一致：后台拉状态，不触发全局面 loading
+      await fetchWorkspaceStatus({ silent: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : '暂存文件失败')
+      await fetchWorkspaceStatus({ silent: true })
     }
   }
 
@@ -309,7 +327,6 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
         })
       }
       
-      // 刷新工作区状态
       await fetchWorkspaceStatus()
     } catch (err) {
       setError(err instanceof Error ? err.message : '批量暂存失败')
@@ -318,21 +335,44 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
     }
   }
 
-  // 取消暂存文件
+  // 取消暂存文件（先乐观更新列表，再 IPC；失败时静默拉状态恢复）
   const unstageFile = async (filePath: string) => {
     if (!repoInfo) return
-    
+
+    const stagedEntry = workspaceStatus?.staged_files.find((f) => f.path === filePath)
+    if (!stagedEntry) return
+
+    setWorkspaceStatus((prev) => {
+      if (!prev) return prev
+      const staged_files = prev.staged_files.filter((f) => f.path !== filePath)
+      if (stagedEntry.status === 'added') {
+        const untracked_files = prev.untracked_files.includes(filePath)
+          ? prev.untracked_files
+          : [...prev.untracked_files, filePath]
+        return { ...prev, staged_files, untracked_files }
+      }
+      const unstaged_files = [
+        ...prev.unstaged_files.filter((f) => f.path !== filePath),
+        {
+          path: stagedEntry.path,
+          status: stagedEntry.status,
+          additions: stagedEntry.additions,
+          deletions: stagedEntry.deletions,
+        },
+      ]
+      return { ...prev, staged_files, unstaged_files }
+    })
+
     try {
       const { invoke } = await import('@tauri-apps/api/tauri')
       await invoke('unstage_file', {
         repoPath: repoInfo.path,
         filePath,
       })
-      
-      // 刷新工作区状态
-      await fetchWorkspaceStatus()
+      await fetchWorkspaceStatus({ silent: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : '取消暂存文件失败')
+      await fetchWorkspaceStatus({ silent: true })
     }
   }
 
