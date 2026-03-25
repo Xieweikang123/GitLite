@@ -1,7 +1,10 @@
 import { Button } from './ui/button'
+import { Badge } from './ui/badge'
 import { invoke } from '@tauri-apps/api/tauri'
 import { Select, SelectContent, SelectItem, SelectTrigger } from './ui/select'
 import { FolderOpen, GitBranch, Moon, Sun, GitPullRequest, Download } from 'lucide-react'
+import { BranchInfo } from '../types/git'
+import { cn } from '../lib/utils'
 
 interface TopToolbarProps {
   onOpenRepository: () => void
@@ -59,12 +62,57 @@ export function TopToolbar({
                 <SelectTrigger className="w-40 h-8 text-sm min-w-0">
                   <span className="truncate">{repoInfo.current_branch}</span>
                 </SelectTrigger>
-                <SelectContent className="w-48">
-                  {repoInfo.branches.map((branch: any) => (
-                    <SelectItem key={branch.name} value={branch.name} className="text-sm">
-                      <span className="truncate">{branch.name}</span>
-                    </SelectItem>
-                  ))}
+                <SelectContent
+                  className={cn(
+                    'w-auto min-w-[280px] max-w-[min(92vw,520px)] max-h-[min(70vh,400px)] p-1',
+                    'overflow-y-auto overflow-x-hidden'
+                  )}
+                >
+                  {(repoInfo.branches as BranchInfo[]).map((branch) => {
+                    const isCheckout = branch.name === repoInfo.current_branch
+                    return (
+                      <SelectItem
+                        key={branch.name}
+                        value={branch.name}
+                        className="items-start gap-2 py-2.5 px-3 text-sm"
+                      >
+                        <span
+                          className={cn(
+                            'min-w-0 flex-1 break-all text-left leading-snug',
+                            isCheckout && 'font-medium'
+                          )}
+                        >
+                          {branch.name}
+                        </span>
+                        <span className="flex shrink-0 flex-col items-end gap-1">
+                          {branch.is_current && (
+                            <Badge
+                              variant={isCheckout ? 'outline' : 'default'}
+                              className={cn(
+                                'text-[10px] px-1.5 py-0',
+                                isCheckout &&
+                                  'border-primary-foreground/40 bg-primary-foreground/15 text-primary-foreground'
+                              )}
+                            >
+                              当前
+                            </Badge>
+                          )}
+                          {branch.is_remote && (
+                            <Badge
+                              variant={isCheckout ? 'outline' : 'secondary'}
+                              className={cn(
+                                'text-[10px] px-1.5 py-0',
+                                isCheckout &&
+                                  'border-primary-foreground/40 bg-transparent text-primary-foreground'
+                              )}
+                            >
+                              远程
+                            </Badge>
+                          )}
+                        </span>
+                      </SelectItem>
+                    )
+                  })}
                 </SelectContent>
               </Select>
             </div>

@@ -5,8 +5,9 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
 import { FileChange } from '../types/git'
 import { FileDiffModal } from './FileDiffModal'
-import { Eye, Archive, ArchiveRestore, Trash2, CheckCircle, AlertCircle, GitPullRequest, Download, RefreshCw } from 'lucide-react'
+import { Eye, Archive, ArchiveRestore, Trash2, CheckCircle, AlertCircle, GitPullRequest, Download, RefreshCw, Loader2 } from 'lucide-react'
 import { shortenPathMiddle } from '../lib/utils'
+import { formatTauriInvokeError } from '../utils/tauriError'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 
 interface WorkspaceStatusProps {
@@ -21,6 +22,11 @@ interface WorkspaceStatusData {
   staged_files: FileChange[]
   unstaged_files: FileChange[]
   untracked_files: string[]
+}
+
+/** 与后端 normalize_repo_rel_path 对齐，避免 Windows 反斜杠与 Git 索引路径不一致 */
+function normalizeFilePathForGit(path: string): string {
+  return path.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '')
 }
 
 interface StashInfo {
@@ -38,11 +44,23 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
   const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatusData | null>(null)
   const [commitMessage, setCommitMessage] = useState('')
   const [loading, setLoading] = useState(false)
+  /** 取消暂存进行中：IPC + 拉状态可能较慢；记录 path 以便在行内按钮上显示加载 */
+  const [unstagingLoading, setUnstagingLoading] = useState(false)
+  const [unstagingTargetPath, setUnstagingTargetPath] = useState<string | null>(null)
+  /** 暂存 / 添加 进行中：同上 */
+  const [stagingLoading, setStagingLoading] = useState(false)
+  const [stagingTargetPath, setStagingTargetPath] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [refreshIntervalSec] = useState(10)
   /** 避免自动刷新与上一次 IPC 重叠（大仓库 get_workspace_status 可能较慢） */
   const silentRefreshInFlightRef = useRef(false)
+  /**
+   * 防止多路 status 请求乱序：`定时刷新` 先于 `暂存/取消暂存` 发出但后返回时，
+   * 会覆盖乐观更新，造成「消失 → 又出现 → 再消失」。
+   * 仅应用 requestGen 仍等于当前值的响应。
+   */
+  const workspaceStatusFetchGenRef = useRef(0)
   
   // 文件差异查看状态
   const [diffModalOpen, setDiffModalOpen] = useState(false)
@@ -60,7 +78,9 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
   const fetchWorkspaceStatus = async (options?: { silent?: boolean }) => {
     const silent = options?.silent ?? false
     if (!repoInfo) return
-    
+
+    const requestGen = ++workspaceStatusFetchGenRef.current
+
     try {
       if (!silent) {
         setLoading(true)
@@ -71,11 +91,16 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
       const status: WorkspaceStatusData = await invoke('get_workspace_status', {
         repoPath: repoInfo.path,
       })
-      
+
+      if (requestGen !== workspaceStatusFetchGenRef.current) return
+
       setWorkspaceStatus(status)
     } catch (err) {
+      if (requestGen !== workspaceStatusFetchGenRef.current) return
       setError(err instanceof Error ? err.message : '获取工作区状态失败')
     } finally {
+      // 不与生 successful 响应一同做 gen 校验：若本次为 !silent 但被更新的 silent 请求抢了代，
+      // 仍须关掉 loading，否则界面会一直转圈。
       if (!silent) {
         setLoading(false)
       }
@@ -231,10 +256,13 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
   // 工作区 + stash 拉取（与 open_repository 等 effect 合并，避免重复 IPC）
   useEffect(() => {
     if (!repoInfo) {
+      workspaceStatusFetchGenRef.current++
       setWorkspaceStatus(null)
       setStashList([])
       return
     }
+
+    workspaceStatusFetchGenRef.current++
 
     let cancelled = false
 
@@ -273,39 +301,30 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
     }
   }, [repoInfo, autoRefresh, refreshIntervalSec])
 
-  // 暂存文件
+  // 暂存文件（等刷新完成再更新列表，行内按钮可显示 loading，避免「添加/暂存」无反馈）
   const stageFile = async (filePath: string) => {
     if (!repoInfo) return
 
-    const wasUntracked = workspaceStatus?.untracked_files.includes(filePath) ?? false
+    const normPath = normalizeFilePathForGit(filePath)
+
+    workspaceStatusFetchGenRef.current++
+    setStagingLoading(true)
+    setStagingTargetPath(normPath)
 
     try {
       const { invoke } = await import('@tauri-apps/api/tauri')
       await invoke('stage_file', {
         repoPath: repoInfo.path,
-        filePath,
+        filePath: normPath,
       })
 
-      // 未跟踪 → 暂存：先乐观更新列表，避免等待完整 status 时差交互卡顿
-      if (wasUntracked) {
-        setWorkspaceStatus((prev) => {
-          if (!prev) return prev
-          return {
-            ...prev,
-            untracked_files: prev.untracked_files.filter((f) => f !== filePath),
-            staged_files: [
-              ...prev.staged_files.filter((f) => f.path !== filePath),
-              { path: filePath, status: 'added', additions: 1, deletions: 0 },
-            ],
-          }
-        })
-      }
-
-      // 与定时刷新一致：后台拉状态，不触发全局面 loading
       await fetchWorkspaceStatus({ silent: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : '暂存文件失败')
       await fetchWorkspaceStatus({ silent: true })
+    } finally {
+      setStagingLoading(false)
+      setStagingTargetPath(null)
     }
   }
 
@@ -315,6 +334,8 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
     
     try {
       setLoading(true)
+      setStagingLoading(true)
+      setStagingTargetPath(null)
       setError(null)
       
       const { invoke } = await import('@tauri-apps/api/tauri')
@@ -323,7 +344,7 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
       for (const file of workspaceStatus.unstaged_files) {
         await invoke('stage_file', {
           repoPath: repoInfo.path,
-          filePath: file.path,
+          filePath: normalizeFilePathForGit(file.path),
         })
       }
       
@@ -332,47 +353,36 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
       setError(err instanceof Error ? err.message : '批量暂存失败')
     } finally {
       setLoading(false)
+      setStagingLoading(false)
     }
   }
 
-  // 取消暂存文件（先乐观更新列表，再 IPC；失败时静默拉状态恢复）
+  // 取消暂存文件（等 IPC + 刷新完成再更新列表，避免乐观移除导致按钮消失、仅靠顶部横幅易被误认为卡死）
   const unstageFile = async (filePath: string) => {
     if (!repoInfo) return
 
-    const stagedEntry = workspaceStatus?.staged_files.find((f) => f.path === filePath)
+    const normPath = normalizeFilePathForGit(filePath)
+    const stagedEntry = workspaceStatus?.staged_files.find(
+      (f) => normalizeFilePathForGit(f.path) === normPath,
+    )
     if (!stagedEntry) return
 
-    setWorkspaceStatus((prev) => {
-      if (!prev) return prev
-      const staged_files = prev.staged_files.filter((f) => f.path !== filePath)
-      if (stagedEntry.status === 'added') {
-        const untracked_files = prev.untracked_files.includes(filePath)
-          ? prev.untracked_files
-          : [...prev.untracked_files, filePath]
-        return { ...prev, staged_files, untracked_files }
-      }
-      const unstaged_files = [
-        ...prev.unstaged_files.filter((f) => f.path !== filePath),
-        {
-          path: stagedEntry.path,
-          status: stagedEntry.status,
-          additions: stagedEntry.additions,
-          deletions: stagedEntry.deletions,
-        },
-      ]
-      return { ...prev, staged_files, unstaged_files }
-    })
-
+    workspaceStatusFetchGenRef.current++
+    setUnstagingLoading(true)
+    setUnstagingTargetPath(normPath)
     try {
       const { invoke } = await import('@tauri-apps/api/tauri')
       await invoke('unstage_file', {
         repoPath: repoInfo.path,
-        filePath,
+        filePath: normPath,
       })
       await fetchWorkspaceStatus({ silent: true })
     } catch (err) {
-      setError(err instanceof Error ? err.message : '取消暂存文件失败')
+      setError(formatTauriInvokeError(err, '取消暂存文件失败'))
       await fetchWorkspaceStatus({ silent: true })
+    } finally {
+      setUnstagingLoading(false)
+      setUnstagingTargetPath(null)
     }
   }
 
@@ -382,24 +392,28 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
     
     try {
       setLoading(true)
+      setUnstagingLoading(true)
+      setUnstagingTargetPath(null)
       setError(null)
       
       const { invoke } = await import('@tauri-apps/api/tauri')
       
       // 批量取消暂存所有文件
+      workspaceStatusFetchGenRef.current++
       for (const file of workspaceStatus.staged_files) {
         await invoke('unstage_file', {
           repoPath: repoInfo.path,
-          filePath: file.path,
+          filePath: normalizeFilePathForGit(file.path),
         })
       }
       
       // 刷新工作区状态
       await fetchWorkspaceStatus()
     } catch (err) {
-      setError(err instanceof Error ? err.message : '取消所有暂存失败')
+      setError(formatTauriInvokeError(err, '取消所有暂存失败'))
     } finally {
       setLoading(false)
+      setUnstagingLoading(false)
     }
   }
 
@@ -594,7 +608,7 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
             variant="outline"
             size="sm"
             onClick={handleManualRefresh}
-            disabled={loading || !repoInfo}
+            disabled={loading || unstagingLoading || stagingLoading || !repoInfo}
           >
             刷新
           </Button>
@@ -617,6 +631,25 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
       {error && (
         <div className="p-3 bg-destructive/10 border border-destructive/20 rounded-lg">
           <p className="text-destructive text-sm">{error}</p>
+        </div>
+      )}
+
+      {(unstagingLoading || stagingLoading) && (
+        <div
+          className="sticky top-2 z-20 flex items-center gap-2 p-3 rounded-lg border border-border bg-muted/95 backdrop-blur-sm shadow-sm text-sm text-muted-foreground"
+          role="status"
+          aria-live="polite"
+        >
+          <Loader2 className="h-4 w-4 animate-spin shrink-0 text-foreground/70" />
+          <span>
+            {unstagingLoading
+              ? unstagingTargetPath
+                ? `正在取消暂存：${shortenPathMiddle(unstagingTargetPath, 48)}`
+                : '正在取消全部暂存…'
+              : stagingTargetPath
+                ? `正在暂存：${shortenPathMiddle(stagingTargetPath, 48)}`
+                : '正在暂存全部未暂存文件…'}
+          </span>
         </div>
       )}
 
@@ -729,14 +762,18 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
             />
             <Button 
               onClick={commitChanges}
-              disabled={!commitMessage.trim() || loading || !workspaceStatus?.staged_files?.length}
+              disabled={
+                !commitMessage.trim() || loading || stagingLoading || unstagingLoading || !workspaceStatus?.staged_files?.length
+              }
             >
               提交
             </Button>
             <Button 
               onClick={commitAndSync}
               disabled={
-                loading || 
+                loading ||
+                stagingLoading ||
+                unstagingLoading ||
                 ((workspaceStatus?.staged_files?.length ?? 0) > 0 && !commitMessage.trim()) ||
                 ((workspaceStatus?.staged_files?.length ?? 0) === 0 && (!repoInfo || (repoInfo.ahead <= 0 && repoInfo.behind <= 0)))
               }
@@ -864,10 +901,19 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
                 size="sm"
                 variant="outline"
                 onClick={unstageAllFiles}
-                disabled={loading || !workspaceStatus?.staged_files?.length}
+                disabled={
+                  loading || unstagingLoading || stagingLoading || !workspaceStatus?.staged_files?.length
+                }
                 className="flex items-center gap-1"
               >
-                取消所有暂存
+                {loading && unstagingTargetPath === null && unstagingLoading ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    处理中…
+                  </>
+                ) : (
+                  '取消所有暂存'
+                )}
               </Button>
             </div>
           </CardHeader>
@@ -895,9 +941,18 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
                       size="sm"
                       variant="outline"
                       onClick={() => unstageFile(file.path)}
-                      disabled={loading}
+                      disabled={loading || unstagingLoading || stagingLoading}
+                      className="min-w-[5.5rem] flex items-center justify-center gap-1.5"
                     >
-                      取消暂存
+                      {unstagingTargetPath === normalizeFilePathForGit(file.path) ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                          <span className="sr-only">正在取消暂存</span>
+                          <span aria-hidden>处理中</span>
+                        </>
+                      ) : (
+                        '取消暂存'
+                      )}
                     </Button>
                   </div>
                 </div>
@@ -920,9 +975,17 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
                 size="sm"
                 variant="outline"
                 onClick={stageAllFiles}
-                disabled={loading}
+                disabled={loading || unstagingLoading || stagingLoading}
+                className="flex items-center gap-1"
               >
-                暂存所有
+                {loading && stagingTargetPath === null && stagingLoading ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    处理中…
+                  </>
+                ) : (
+                  '暂存所有'
+                )}
               </Button>
             </div>
           </CardHeader>
@@ -949,9 +1012,18 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
                     <Button
                       size="sm"
                       onClick={() => stageFile(file.path)}
-                      disabled={loading}
+                      disabled={loading || unstagingLoading || stagingLoading}
+                      className="min-w-[4.5rem] flex items-center justify-center gap-1.5"
                     >
-                      暂存
+                      {stagingTargetPath === normalizeFilePathForGit(file.path) ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                          <span className="sr-only">正在暂存</span>
+                          <span aria-hidden>处理中</span>
+                        </>
+                      ) : (
+                        '暂存'
+                      )}
                     </Button>
                   </div>
                 </div>
@@ -993,9 +1065,18 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
                     <Button
                       size="sm"
                       onClick={() => stageFile(file)}
-                      disabled={loading}
+                      disabled={loading || unstagingLoading || stagingLoading}
+                      className="min-w-[4.5rem] flex items-center justify-center gap-1.5"
                     >
-                      添加
+                      {stagingTargetPath === normalizeFilePathForGit(file) ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                          <span className="sr-only">正在添加</span>
+                          <span aria-hidden>处理中</span>
+                        </>
+                      ) : (
+                        '添加'
+                      )}
                     </Button>
                   </div>
                 </div>

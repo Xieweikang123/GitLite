@@ -83,14 +83,26 @@ pub struct RepoInfo {
     pub remote_url: Option<String>, // 远程仓库URL
 }
 
+/// 与 Git 索引一致：正斜杠、无 `./` 前缀，避免 Windows 反斜杠导致 reset / add 未命中条目。
+fn normalize_repo_rel_path(path: &str) -> String {
+    let p = path
+        .trim()
+        .trim_start_matches("./")
+        .replace('\\', "/")
+        .trim_start_matches('/')
+        .to_string();
+    p
+}
+
 // 判断某路径是否在给定树（通常为 HEAD^{tree}）中被追踪
 fn path_tracked_in_tree(tree: &git2::Tree, file_path: &str) -> bool {
-    if let Ok(path) = std::path::Path::new(file_path).strip_prefix("./") {
+    let file_path = normalize_repo_rel_path(file_path);
+    if let Ok(path) = std::path::Path::new(&file_path).strip_prefix("./") {
         if tree.get_path(path).is_ok() {
             return true;
         }
     }
-    tree.get_path(Path::new(file_path)).is_ok()
+    tree.get_path(Path::new(&file_path)).is_ok()
 }
 
 // 获取最近打开的仓库列表
@@ -1220,7 +1232,10 @@ async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, Stri
         .map_err(|e| format!("Failed to get statuses: {}", e))?;
     
     for entry in statuses.iter() {
-        let file_path = entry.path().unwrap_or("").to_string();
+        let file_path = normalize_repo_rel_path(entry.path().unwrap_or(""));
+        if file_path.is_empty() {
+            continue;
+        }
         let status = entry.status();
         
         // 优先处理暂存状态，如果文件在暂存区，就不处理工作区状态
@@ -1322,10 +1337,17 @@ async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, Stri
     diff.foreach(
         &mut |delta, _| {
             diff_count += 1;
-            let file_path = delta.new_file().path()
-                .or_else(|| delta.old_file().path())
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_default();
+            let file_path = normalize_repo_rel_path(
+                &delta
+                    .new_file()
+                    .path()
+                    .or_else(|| delta.old_file().path())
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+            );
+            if file_path.is_empty() {
+                return true;
+            }
             let _delta_status = format!("{:?}", delta.status());
             // 注意：同一文件可以同时有暂存和未暂存的修改，所以不跳过
             // 识别类型
@@ -1367,6 +1389,10 @@ async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, Stri
 // 暂存文件
 #[tauri::command]
 async fn stage_file(repo_path: String, file_path: String) -> Result<String, String> {
+    let file_path = normalize_repo_rel_path(&file_path);
+    if file_path.is_empty() {
+        return Err("Empty file path".to_string());
+    }
     log_message("INFO", &format!("stage_file: attempt start | path={} file={}", repo_path, file_path));
     
     let repo = Repository::open(&repo_path)
@@ -1421,6 +1447,10 @@ async fn stage_file(repo_path: String, file_path: String) -> Result<String, Stri
 // 取消暂存文件
 #[tauri::command]
 async fn unstage_file(repo_path: String, file_path: String) -> Result<String, String> {
+    let file_path = normalize_repo_rel_path(&file_path);
+    if file_path.is_empty() {
+        return Err("Empty file path".to_string());
+    }
     log_message("INFO", &format!("unstage_file: attempt start | path={} file={}", repo_path, file_path));
     
     let repo = Repository::open(&repo_path)
@@ -1430,22 +1460,43 @@ async fn unstage_file(repo_path: String, file_path: String) -> Result<String, St
             error_msg
         })?;
 
-    // 获取 HEAD 对象
-    let head_obj = repo.revparse_single("HEAD")
-        .map_err(|e| {
-            let error_msg = format!("Failed to get HEAD object: {}", e);
-            log_message("ERROR", &format!("unstage_file: {} | path={} file={}", error_msg, repo_path, file_path));
-            error_msg
-        })?;
-
-    // 使用 reset_default 方法取消暂存指定文件
-    // 这等价于 git reset HEAD <file>，会将文件从暂存区移除但不会标记为删除
-    repo.reset_default(Some(&head_obj), &[Path::new(&file_path)])
-        .map_err(|e| {
-            let error_msg = format!("Failed to unstage file: {}", e);
-            log_message("ERROR", &format!("unstage_file: {} | path={} file={}", error_msg, repo_path, file_path));
-            error_msg
-        })?;
+    // 与 `git reset HEAD <file>` 一致：用 HEAD 指向的对象重置这些路径在索引中的状态。
+    // `reset_default` 需要 `Object`（Commit 等），不能传 `Tree`。
+    // 尚无任何提交时 `HEAD` 无法解析，只能像 `git rm --cached` 一样从索引移除。
+    match repo.revparse_single("HEAD") {
+        Ok(target) => {
+            repo.reset_default(Some(&target), &[Path::new(&file_path)])
+                .map_err(|e| {
+                    let error_msg = format!("Failed to unstage file: {}", e);
+                    log_message("ERROR", &format!("unstage_file: {} | path={} file={}", error_msg, repo_path, file_path));
+                    error_msg
+                })?;
+        }
+        Err(e_head) => {
+            log_message(
+                "INFO",
+                &format!(
+                    "unstage_file: no HEAD (unborn?), using index.remove_path | parse_err={} path={} file={}",
+                    e_head, repo_path, file_path
+                ),
+            );
+            let mut index = repo.index().map_err(|e| {
+                let error_msg = format!("Failed to get index: {}", e);
+                log_message("ERROR", &format!("unstage_file: {} | path={} file={}", error_msg, repo_path, file_path));
+                error_msg
+            })?;
+            index.remove_path(Path::new(&file_path)).map_err(|e| {
+                let error_msg = format!("Failed to unstage (no commits yet): {}", e);
+                log_message("ERROR", &format!("unstage_file: {} | path={} file={}", error_msg, repo_path, file_path));
+                error_msg
+            })?;
+            index.write().map_err(|e| {
+                let error_msg = format!("Failed to write index: {}", e);
+                log_message("ERROR", &format!("unstage_file: {} | path={} file={}", error_msg, repo_path, file_path));
+                error_msg
+            })?;
+        }
+    }
     
     log_message("INFO", &format!("unstage_file: success | path={} file={}", repo_path, file_path));
     Ok(format!("Successfully unstaged {}", file_path))
