@@ -832,22 +832,6 @@ export function UnifiedCommitView({
                   <ClipboardList className="h-3 w-3" />
                   提交列表
                 </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  className="h-7 shrink-0 gap-1 px-2 text-xs"
-                  disabled={filteredCommits.length === 0 || summaryLoading}
-                  onClick={handleAiSummarize}
-                  title="根据左侧当前筛选后的提交记录（含已加载列表）生成中文总结，需先在菜单「AI」中启用模型"
-                >
-                  {summaryLoading ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <Sparkles className="h-3 w-3" />
-                  )}
-                  AI 总结
-                </Button>
               </div>
               <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
                 <div className="relative min-w-0 flex-1 basis-[8rem] sm:basis-auto sm:flex-none sm:w-40">
@@ -1207,7 +1191,12 @@ export function UnifiedCommitView({
                 readOnly
                 value={commitsListPlainText}
                 spellCheck={false}
-                className="min-h-0 w-full flex-1 resize-y overflow-auto rounded-md border border-input bg-muted/40 px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className={cn(
+                  'w-full min-w-0 flex-1 resize-y overflow-auto rounded-md border border-input bg-muted/40 px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  summaryIncludeAi
+                    ? 'min-h-[min(28vh,220px)]'
+                    : 'min-h-[min(58vh,500px)]',
+                )}
                 onFocus={(e) => e.currentTarget.select()}
               />
             </div>
