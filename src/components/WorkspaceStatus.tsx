@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
@@ -41,7 +41,8 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
   const [error, setError] = useState<string | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [refreshIntervalSec] = useState(10)
-  const [countdown, setCountdown] = useState<number>(refreshIntervalSec)
+  /** 避免自动刷新与上一次 IPC 重叠（大仓库 get_workspace_status 可能较慢） */
+  const silentRefreshInFlightRef = useRef(false)
   
   // 文件差异查看状态
   const [diffModalOpen, setDiffModalOpen] = useState(false)
@@ -55,13 +56,16 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
 
-  // 获取工作区状态
-  const fetchWorkspaceStatus = async () => {
+  // 获取工作区状态（silent：后台定时刷新，不占满屏 loading，减轻卡顿）
+  const fetchWorkspaceStatus = async (options?: { silent?: boolean }) => {
+    const silent = options?.silent ?? false
     if (!repoInfo) return
     
     try {
-      setLoading(true)
-      setError(null)
+      if (!silent) {
+        setLoading(true)
+        setError(null)
+      }
       
       const { invoke } = await import('@tauri-apps/api/tauri')
       const status: WorkspaceStatusData = await invoke('get_workspace_status', {
@@ -72,7 +76,9 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
     } catch (err) {
       setError(err instanceof Error ? err.message : '获取工作区状态失败')
     } finally {
-      setLoading(false)
+      if (!silent) {
+        setLoading(false)
+      }
     }
   }
 
@@ -95,7 +101,6 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
   const handleManualRefresh = async () => {
     await fetchWorkspaceStatus()
     await fetchStashList()
-    setCountdown(refreshIntervalSec)
   }
 
   // 打开贮藏对话框时加载列表
@@ -223,44 +228,48 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
     setConfirmDeleteOpen(true)
   }
 
-  // 自动刷新定时器与倒计时
+  // 工作区 + stash 拉取（与 open_repository 等 effect 合并，避免重复 IPC）
   useEffect(() => {
-    if (!repoInfo || !autoRefresh) {
-      setCountdown(refreshIntervalSec)
+    if (!repoInfo) {
+      setWorkspaceStatus(null)
+      setStashList([])
       return
     }
 
-    let mounted = true
-    const tick = () => {
-      setCountdown(prev => {
-        if (prev <= 1) {
-          // 触发刷新并重置倒计时
-          ;(async () => {
-            try {
-              await fetchWorkspaceStatus()
-              await fetchStashList()
-            } catch (_) {
-              // 已在 fetch 内部处理错误
-            }
-          })()
-          return refreshIntervalSec
+    let cancelled = false
+
+    const runPull = async (silent: boolean) => {
+      if (cancelled) return
+      if (silent) {
+        if (silentRefreshInFlightRef.current) return
+        silentRefreshInFlightRef.current = true
+      }
+      try {
+        await Promise.all([fetchWorkspaceStatus({ silent }), fetchStashList()])
+      } finally {
+        if (silent) {
+          silentRefreshInFlightRef.current = false
         }
-        return prev - 1
-      })
+      }
     }
 
-    // 首次立即拉取一次，随后开始计时
-    ;(async () => {
-      if (mounted) {
-        await fetchWorkspaceStatus()
-        await fetchStashList()
-      }
-    })()
+    // 首次加载始终显示 loading（除非已有数据且仅切换自动刷新 — 仍简单处理为短时 loading）
+    void runPull(false)
 
-    const intervalId = setInterval(tick, 1000)
+    if (!autoRefresh) {
+      return () => {
+        cancelled = true
+      }
+    }
+
+    const intervalMs = refreshIntervalSec * 1000
+    const intervalId = window.setInterval(() => {
+      void runPull(true)
+    }, intervalMs)
+
     return () => {
-      mounted = false
-      clearInterval(intervalId)
+      cancelled = true
+      window.clearInterval(intervalId)
     }
   }, [repoInfo, autoRefresh, refreshIntervalSec])
 
@@ -507,17 +516,6 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
     setSelectedFile(null)
   }
 
-  // 当仓库信息变化时获取工作区状态
-  useEffect(() => {
-    if (repoInfo) {
-      fetchWorkspaceStatus()
-      fetchStashList()
-    } else {
-      setWorkspaceStatus(null)
-      setStashList([])
-    }
-  }, [repoInfo])
-
   if (!repoInfo) {
     return (
       <div className="text-center py-12">
@@ -565,7 +563,9 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
           </label>
         </div>
         {autoRefresh && (
-          <div className="text-xs text-muted-foreground">{countdown}s 后自动刷新</div>
+          <div className="text-xs text-muted-foreground">
+            每 {refreshIntervalSec}s 自动刷新（后台无全屏加载）
+          </div>
         )}
       </div>
 
@@ -966,7 +966,7 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
             <Button
               variant="outline"
               size="sm"
-              onClick={fetchWorkspaceStatus}
+              onClick={() => void fetchWorkspaceStatus()}
               className="mt-2"
             >
               刷新

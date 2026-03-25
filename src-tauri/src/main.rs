@@ -83,23 +83,14 @@ pub struct RepoInfo {
     pub remote_url: Option<String>, // 远程仓库URL
 }
 
-// 判断某路径是否在 HEAD（上一次提交）中被追踪
-fn path_tracked_in_head(repo: &Repository, file_path: &str) -> bool {
-    if let Ok(head) = repo.head() {
-        if let Ok(tree) = head.peel_to_tree() {
-            if let Ok(path) = std::path::Path::new(file_path).strip_prefix("./") {
-                // normalize leading ./ if any
-                if tree.get_path(path).is_ok() {
-                    return true;
-                }
-            }
-            // try original path
-            if tree.get_path(Path::new(file_path)).is_ok() {
-                return true;
-            }
+// 判断某路径是否在给定树（通常为 HEAD^{tree}）中被追踪
+fn path_tracked_in_tree(tree: &git2::Tree, file_path: &str) -> bool {
+    if let Ok(path) = std::path::Path::new(file_path).strip_prefix("./") {
+        if tree.get_path(path).is_ok() {
+            return true;
         }
     }
-    false
+    tree.get_path(Path::new(file_path)).is_ok()
 }
 
 // 获取最近打开的仓库列表
@@ -1215,7 +1206,9 @@ async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, Stri
     let mut staged_files = Vec::new();
     let mut unstaged_files = Vec::new();
     let mut untracked_files = Vec::new();
-    
+
+    // 对每个 status 条目避免重复 peel HEAD tree（大仓库上可显著减少开销）
+    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
     
     // 使用 git status 来获取更准确的状态信息
     let mut status_options = git2::StatusOptions::new();
@@ -1264,12 +1257,16 @@ async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, Stri
         
         // 处理工作区状态（无论文件是否在暂存区）
         if status.contains(git2::Status::WT_NEW) {
+            let in_head = head_tree
+                .as_ref()
+                .map(|t| path_tracked_in_tree(t, &file_path))
+                .unwrap_or(false);
             // 与 git status 对齐：若该路径在 HEAD 存在且索引为 deleted，则工作区提示应为 Untracked
-            if path_tracked_in_head(&repo, &file_path) && status.contains(git2::Status::INDEX_DELETED) {
+            if in_head && status.contains(git2::Status::INDEX_DELETED) {
                 if !untracked_files.contains(&file_path) {
                     untracked_files.push(file_path);
                 }
-            } else if path_tracked_in_head(&repo, &file_path) {
+            } else if in_head {
                 // HEAD 有且索引未删除，才视为修改
                 if !unstaged_files.iter().any(|f: &FileChange| f.path == file_path) {
                     unstaged_files.push(FileChange {
