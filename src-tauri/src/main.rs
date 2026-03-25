@@ -79,6 +79,8 @@ pub struct CommitInfo {
     pub email: String,
     pub date: String,
     pub short_id: String,
+    /// 父提交完整哈希（顺序与 Git 一致：首父、次父…），用于分支图
+    pub parent_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -86,6 +88,13 @@ pub struct BranchInfo {
     pub name: String,
     pub is_current: bool,
     pub is_remote: bool,
+}
+
+/// 分支/远程引用指向的提交，用于在提交列表上标注分支名
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BranchRefTip {
+    pub name: String,
+    pub commit_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1515,11 +1524,21 @@ fn get_commit_history(repo: &Repository) -> Result<Vec<CommitInfo>> {
     get_commit_history_paginated(repo, Some(50), Some(0))
 }
 
+fn commit_parent_ids(commit: &git2::Commit) -> Vec<String> {
+    (0..commit.parent_count())
+        .filter_map(|i| commit.parent_id(i).ok())
+        .map(|oid| oid.to_string())
+        .collect()
+}
+
 // 获取分页提交历史
 fn get_commit_history_paginated(repo: &Repository, limit: Option<usize>, offset: Option<usize>) -> Result<Vec<CommitInfo>> {
     let mut revwalk = repo.revwalk()
         .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
-    
+    revwalk
+        .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+        .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
+
     revwalk.push_head()
         .map_err(|e| anyhow::anyhow!("Failed to push HEAD: {}", e))?;
     
@@ -1559,6 +1578,7 @@ fn get_commit_history_paginated(repo: &Repository, limit: Option<usize>, offset:
             author: author.name().unwrap_or("Unknown").to_string(),
             email: author.email().unwrap_or("").to_string(),
             date,
+            parent_ids: commit_parent_ids(&commit),
         });
         
         count += 1;
@@ -1642,6 +1662,7 @@ fn get_commit_history_search(repo: &Repository, query: &str, limit: usize) -> Re
                 author: author_name,
                 email: author.email().unwrap_or("").to_string(),
                 date,
+                parent_ids: commit_parent_ids(&commit),
             });
         }
     }
@@ -1656,6 +1677,97 @@ async fn search_commits(repo_path: String, query: String, limit: Option<usize>) 
     let commits = get_commit_history_search(&repo, query.trim(), limit)
         .map_err(|e| format!("Search failed: {}", e))?;
     Ok(commits)
+}
+
+fn walk_tree_collect_paths(
+    repo: &Repository,
+    tree: &git2::Tree,
+    prefix: &str,
+    out: &mut Vec<String>,
+    max: usize,
+) -> Result<(), String> {
+    if out.len() >= max {
+        return Ok(());
+    }
+    for entry in tree.iter() {
+        if out.len() >= max {
+            break;
+        }
+        let name = entry.name().unwrap_or("");
+        let path = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{}/{}", prefix, name)
+        };
+        match entry.kind() {
+            Some(git2::ObjectType::Tree) => {
+                let obj = entry.to_object(repo).map_err(|e| e.to_string())?;
+                let sub = obj
+                    .into_tree()
+                    .map_err(|_| "子树解析失败".to_string())?;
+                walk_tree_collect_paths(repo, &sub, &path, out, max)?;
+            }
+            Some(git2::ObjectType::Blob) => {
+                out.push(path);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// 列出当前 HEAD 提交树中的文件路径（扁平、已排序），用于文件树视图
+#[tauri::command]
+async fn get_head_file_paths(repo_path: String, max_entries: Option<usize>) -> Result<Vec<String>, String> {
+    let max = max_entries.unwrap_or(5000).min(50_000);
+    let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+    let head = repo.head().map_err(|e| format!("无法读取 HEAD: {}", e))?;
+    let oid = head
+        .target()
+        .ok_or_else(|| "无法解析 HEAD 目标".to_string())?;
+    let commit = repo
+        .find_commit(oid)
+        .map_err(|e| format!("无法读取提交: {}", e))?;
+    let tree = commit.tree().map_err(|e| format!("无法读取树: {}", e))?;
+    let mut paths = Vec::new();
+    walk_tree_collect_paths(&repo, &tree, "", &mut paths, max)?;
+    paths.sort();
+    Ok(paths)
+}
+
+#[tauri::command]
+async fn get_branch_ref_tips(repo_path: String) -> Result<Vec<BranchRefTip>, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+    let mut tips = Vec::new();
+    let refs = repo.references().map_err(|e| format!("references: {}", e))?;
+    for reference in refs {
+        let reference = reference.map_err(|e| format!("ref: {}", e))?;
+        let Some(name) = reference.name() else {
+            continue;
+        };
+        if name == "HEAD" || name.ends_with("/HEAD") {
+            continue;
+        }
+        if !(name.starts_with("refs/heads/") || name.starts_with("refs/remotes/")) {
+            continue;
+        }
+        let Ok(resolved) = reference.resolve() else {
+            continue;
+        };
+        let Some(oid) = resolved.target() else {
+            continue;
+        };
+        let short_name = name
+            .strip_prefix("refs/heads/")
+            .or_else(|| name.strip_prefix("refs/remotes/"))
+            .unwrap_or(name)
+            .to_string();
+        tips.push(BranchRefTip {
+            name: short_name,
+            commit_id: oid.to_string(),
+        });
+    }
+    Ok(tips)
 }
 
 // 切换分支
@@ -1693,6 +1805,53 @@ async fn checkout_branch(repo_path: String, branch_name: String) -> Result<Strin
     }
 
     Ok(format!("已切换到 {}", branch_name))
+}
+
+/// 将当前分支（或分离 HEAD）重置到指定提交，行为与 `git reset --soft|--mixed|--hard` 一致。
+#[tauri::command]
+async fn reset_to_commit(repo_path: String, commit_id: String, mode: String) -> Result<String, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
+
+    let oid = Oid::from_str(commit_id.trim()).map_err(|e| format!("无效的提交 ID: {}", e))?;
+
+    let commit = repo
+        .find_commit(oid)
+        .map_err(|e| format!("找不到该提交: {}", e))?;
+
+    let reset_type = match mode.trim().to_lowercase().as_str() {
+        "soft" => git2::ResetType::Soft,
+        "mixed" => git2::ResetType::Mixed,
+        "hard" => git2::ResetType::Hard,
+        _ => return Err("重置模式须为 soft、mixed 或 hard".to_string()),
+    };
+
+    let object = commit.as_object();
+    repo.reset(object, reset_type, None).map_err(|e| {
+        let msg = e.message();
+        if msg.contains("overwrite") || msg.contains("conflict") || msg.contains("Failed to") {
+            format!(
+                "无法完成重置：{}。若工作区有未提交修改，可先提交或贮藏，或尝试「软重置/混合重置」而非硬重置。",
+                msg
+            )
+        } else {
+            format!("重置失败: {}", msg)
+        }
+    })?;
+
+    let mode_cn = match reset_type {
+        git2::ResetType::Soft => "软",
+        git2::ResetType::Mixed => "混合",
+        git2::ResetType::Hard => "硬",
+    };
+
+    let id_disp = commit_id.trim();
+    let short = if id_disp.len() > 7 {
+        id_disp[..7].to_string()
+    } else {
+        id_disp.to_string()
+    };
+
+    Ok(format!("已执行「{}」重置，当前指向 {}", mode_cn, short))
 }
 
 // 获取提交的文件列表
@@ -4037,7 +4196,10 @@ fn main() {
             get_commits_paginated,
             get_commit_count_head,
             search_commits,
+            get_head_file_paths,
+            get_branch_ref_tips,
             checkout_branch,
+            reset_to_commit,
             get_file_diff,
             get_commit_files,
             get_single_file_diff,

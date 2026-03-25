@@ -3,8 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
-import { Search, Loader2, FileText, Plus, Edit, Trash2, GitBranch, Calendar, GitCompare, Sparkles, ClipboardList } from 'lucide-react'
-import { CommitInfo, FileChange } from '../types/git'
+import { Search, Loader2, FileText, Plus, Edit, Trash2, GitBranch, Calendar, GitCompare, Sparkles, ClipboardList, RotateCcw } from 'lucide-react'
+import { CommitInfo, FileChange, type GitResetMode, type BranchRefTip } from '../types/git'
 import { VSCodeDiff } from './CodeDiff'
 import { RemoteSyncBar } from './RemoteSyncBar'
 import { cn } from '../lib/utils'
@@ -13,7 +13,9 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { CommitDatePickerButton } from './CommitDatePickerButton'
 import { formatLocalYmd } from '../utils/dateYmd'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
+import { Label } from './ui/label'
 import { formatTauriInvokeError } from '../utils/tauriError'
+import { CommitGraphStrip } from './CommitGraphStrip'
 
 /** 提交页三栏宽度：提交列表 | 文件列表 | diff（与分隔条宽度一致） */
 const PANES_STORAGE_KEY = 'gitlite:unifiedCommitView:panes'
@@ -132,6 +134,8 @@ interface UnifiedCommitViewProps {
   currentBranch?: string
   /** 当前 HEAD 提交短哈希（与列表项 short_id 对齐），用于标记检出位置 */
   headShortId?: string | null
+  /** 将仓库重置到指定提交（git reset） */
+  onResetToCommit?: (commitId: string, mode: GitResetMode) => Promise<void>
 }
 
 export function UnifiedCommitView({
@@ -155,7 +159,8 @@ export function UnifiedCommitView({
   onGetSingleFileDiff,
   repoPath,
   currentBranch,
-  headShortId
+  headShortId,
+  onResetToCommit
 }: UnifiedCommitViewProps) {
   /** 筛选栏输入（待「查询」应用） */
   const [pendingStart, setPendingStart] = useState('')
@@ -178,6 +183,10 @@ export function UnifiedCommitView({
     { role: string; content: string }[] | null
   >(null)
   const [commitListCopied, setCommitListCopied] = useState(false)
+  const [resetDialogOpen, setResetDialogOpen] = useState(false)
+  const [resetMode, setResetMode] = useState<GitResetMode>('mixed')
+  const [resetSubmitting, setResetSubmitting] = useState(false)
+  const [resetDialogError, setResetDialogError] = useState<string | null>(null)
   const aiSummaryBusyRef = useRef(false)
   /** 流式 chunk 缓冲：打破 React 18 批处理，否则会等到本轮事件结束才单次渲染，看起来像「无实时输出」 */
   const aiSummaryStreamBufRef = useRef('')
@@ -208,6 +217,7 @@ export function UnifiedCommitView({
   const currentLoadingFileRef = useRef<string | null>(null)
   const commitListScrollRef = useRef<HTMLDivElement>(null)
   const loadMoreSentinelRef = useRef<HTMLDivElement>(null)
+  const [branchTips, setBranchTips] = useState<BranchRefTip[]>([])
   const hasMoreRef = useRef(hasMore)
   const loadingRef = useRef(loading)
   const onLoadMoreRef = useRef(onLoadMore)
@@ -307,6 +317,38 @@ export function UnifiedCommitView({
       cancelled = true
     }
   }, [repoPath, currentBranch])
+
+  // 分支/远程引用指向，用于在提交旁显示标签
+  useEffect(() => {
+    if (!repoPath) {
+      setBranchTips([])
+      return
+    }
+    let cancelled = false
+    invoke<BranchRefTip[]>('get_branch_ref_tips', { repoPath })
+      .then((tips) => {
+        if (!cancelled) setBranchTips(tips)
+      })
+      .catch(() => {
+        if (!cancelled) setBranchTips([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [repoPath])
+
+  const branchNamesByCommit = useMemo(() => {
+    const m = new Map<string, string[]>()
+    for (const t of branchTips) {
+      const arr = m.get(t.commit_id) ?? []
+      arr.push(t.name)
+      m.set(t.commit_id, arr)
+    }
+    for (const arr of m.values()) {
+      arr.sort()
+    }
+    return m
+  }, [branchTips])
 
   // 滚动到底部自动加载更多
   useEffect(() => {
@@ -574,6 +616,30 @@ export function UnifiedCommitView({
     },
     [headShortNormalized]
   )
+
+  const openResetDialog = useCallback(() => {
+    setResetMode('mixed')
+    setResetDialogError(null)
+    setResetDialogOpen(true)
+  }, [])
+
+  const handleConfirmReset = useCallback(async () => {
+    if (!onResetToCommit || !selectedCommit) return
+    setResetDialogError(null)
+    setResetSubmitting(true)
+    try {
+      await onResetToCommit(selectedCommit.id, resetMode)
+      setResetDialogOpen(false)
+      setSelectedCommit(null)
+      setCommitFiles([])
+      setSelectedFile(null)
+      setDiff('')
+    } catch (e) {
+      setResetDialogError(formatTauriInvokeError(e, '重置失败'))
+    } finally {
+      setResetSubmitting(false)
+    }
+  }, [onResetToCommit, selectedCommit, resetMode])
 
   // 处理提交选择 - 使用 useCallback 优化
   const handleCommitSelect = useCallback(async (commit: CommitInfo) => {
@@ -967,79 +1033,104 @@ export function UnifiedCommitView({
           <CardContent className="flex-1 min-h-0 overflow-hidden py-1 px-3">
             <div
               ref={commitListScrollRef}
-              className="space-y-0.5 h-full overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent"
+              className="flex h-full min-h-0 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent"
             >
+              {filteredCommits.length > 0 && !isSearchMode && (
+                <CommitGraphStrip commits={filteredCommits} />
+              )}
+              <div className="min-w-0 flex-1 flex flex-col divide-y divide-border/60">
               {filteredCommits.map((commit) => {
                 const atHead = isCommitCheckedOut(commit)
+                const refNames = branchNamesByCommit.get(commit.id)
                 return (
                 <div
                   key={commit.id}
                   className={cn(
-                    'border rounded p-1 cursor-pointer transition-colors',
+                    'flex h-14 shrink-0 cursor-pointer flex-col justify-center px-2 py-0 transition-colors',
                     atHead && 'border-l-[3px] border-l-emerald-600 dark:border-l-emerald-500',
                     selectedCommit?.id === commit.id
-                      ? 'bg-accent border-primary'
+                      ? 'bg-accent'
                       : 'hover:bg-accent'
                   )}
                   onClick={() => handleCommitSelect(commit)}
                 >
-                  <div className="space-y-0.5">
+                  <div className="min-h-0 space-y-0.5">
                     {/* 提交信息 */}
-                    <div className="flex items-start justify-between">
+                    <div className="flex items-start justify-between gap-1">
                       <p
-                        className="text-xs font-medium text-foreground line-clamp-2 flex-1 min-w-0 pr-1"
+                        className="line-clamp-2 flex-1 min-w-0 pr-1 text-xs font-medium text-foreground"
                         title={commit.message}
                       >
                         {commit.message}
                       </p>
-                      <div className="flex items-center gap-0.5 flex-shrink-0">
+                      <div className="flex max-w-[48%] flex-shrink-0 flex-wrap items-center justify-end gap-0.5">
                         {atHead && (
                           <Badge
-                            className="bg-emerald-600 text-white hover:bg-emerald-600/90 text-[10px] px-1 py-0 shrink-0"
+                            className="shrink-0 bg-emerald-600 px-1 py-0 text-[10px] text-white hover:bg-emerald-600/90"
                             title="当前工作区检出（HEAD）"
                           >
                             HEAD
                           </Badge>
                         )}
-                        {pendingPushIds.has(commit.id) && (
-                          <Badge className="bg-blue-600 text-white hover:bg-blue-600/90 text-[10px] px-1 py-0">待推送</Badge>
+                        {refNames?.slice(0, 2).map((name) => (
+                          <Badge
+                            key={name}
+                            variant="secondary"
+                            className="max-w-[7rem] shrink-0 truncate px-1 py-0 text-[9px]"
+                            title={name}
+                          >
+                            {name}
+                          </Badge>
+                        ))}
+                        {refNames && refNames.length > 2 && (
+                          <span className="text-[9px] text-muted-foreground">+{refNames.length - 2}</span>
                         )}
-                        <Badge variant="outline" className="text-[10px] px-1 py-0">{commit.short_id}</Badge>
+                        {pendingPushIds.has(commit.id) && (
+                          <Badge className="shrink-0 bg-blue-600 px-1 py-0 text-[10px] text-white hover:bg-blue-600/90">
+                            待推送
+                          </Badge>
+                        )}
+                        <Badge variant="outline" className="shrink-0 px-1 py-0 text-[10px]">
+                          {commit.short_id}
+                        </Badge>
                       </div>
                     </div>
-                    
+
                     {/* 作者和日期 */}
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                        <span className="font-medium">{commit.author}</span>
-                        <span>•</span>
-                        <span>{commit.date}</span>
+                    <div className="flex items-center justify-between gap-1">
+                      <div className="flex min-w-0 items-center gap-1 text-[10px] text-muted-foreground">
+                        <span className="truncate font-medium">{commit.author}</span>
+                        <span className="shrink-0">•</span>
+                        <span className="shrink-0">{commit.date}</span>
                       </div>
                     </div>
                   </div>
                 </div>
                 )
               })}
-              {hasMore && <div ref={loadMoreSentinelRef} className="h-2 flex-shrink-0" aria-hidden="true" />}
-              {hasMore && (
-                <div className="flex justify-center pt-2 border-t">
-                  <Button
-                    onClick={onLoadMore}
-                    disabled={loading}
-                    variant="outline"
-                    className="flex items-center gap-1 h-7 text-xs"
-                  >
-                    {loading ? (
-                      <>
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                        加载中...
-                      </>
-                    ) : (
-                      '加载更多'
-                    )}
-                  </Button>
-                </div>
-              )}
+                {hasMore && (
+                  <div ref={loadMoreSentinelRef} className="h-2 shrink-0" aria-hidden="true" />
+                )}
+                {hasMore && (
+                  <div className="flex justify-center border-t border-border/60 pt-2">
+                    <Button
+                      onClick={onLoadMore}
+                      disabled={loading}
+                      variant="outline"
+                      className="flex h-7 items-center gap-1 text-xs"
+                    >
+                      {loading ? (
+                        <>
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          加载中...
+                        </>
+                      ) : (
+                        '加载更多'
+                      )}
+                    </Button>
+                  </div>
+                )}
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -1067,12 +1158,34 @@ export function UnifiedCommitView({
               className="flex min-h-0 shrink-0 flex-col overflow-hidden"
             >
               <Card className="flex h-full min-h-0 flex-col border-border/80">
-                <CardHeader className="flex-shrink-0 py-1">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <FileText className="h-4 w-4" />
-                    文件变更
-                    {commitFiles.length > 0 && ` (${commitFiles.length})`}
-                  </CardTitle>
+                <CardHeader className="flex-shrink-0 space-y-0 py-1">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <FileText className="h-4 w-4" />
+                      文件变更
+                      {commitFiles.length > 0 && ` (${commitFiles.length})`}
+                    </CardTitle>
+                    {onResetToCommit && selectedCommit && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 shrink-0 gap-1 text-xs"
+                        onClick={openResetDialog}
+                        disabled={
+                          syncBusy || resetSubmitting || isCommitCheckedOut(selectedCommit)
+                        }
+                        title={
+                          isCommitCheckedOut(selectedCommit)
+                            ? '工作区已在此提交，无需重置'
+                            : '将分支重置到当前选中的提交'
+                        }
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                        重置到此提交
+                      </Button>
+                    )}
+                  </div>
                 </CardHeader>
                 <CardContent className="min-h-0 flex-1 overflow-hidden py-1">
                   {loadingFiles ? (
@@ -1317,6 +1430,119 @@ export function UnifiedCommitView({
               </div>
             )}
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={resetDialogOpen}
+        onOpenChange={(open) => {
+          setResetDialogOpen(open)
+          if (!open) setResetDialogError(null)
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>重置到该提交</DialogTitle>
+          </DialogHeader>
+          {selectedCommit && (
+            <div className="space-y-4 text-sm">
+              <div className="rounded-md border border-border bg-muted/30 px-3 py-2">
+                <p className="font-mono text-xs text-muted-foreground">{selectedCommit.short_id}</p>
+                <p className="mt-1 line-clamp-2 text-foreground" title={selectedCommit.message}>
+                  {selectedCommit.message.split('\n')[0]}
+                </p>
+              </div>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                与命令行 <span className="font-mono">git reset</span> 一致。硬重置会丢弃未提交的本地修改，请谨慎选择。
+              </p>
+              <div className="space-y-3">
+                <div className="flex items-start gap-2">
+                  <input
+                    type="radio"
+                    name="reset-mode"
+                    id="reset-soft"
+                    checked={resetMode === 'soft'}
+                    onChange={() => setResetMode('soft')}
+                    className="mt-1"
+                  />
+                  <div className="min-w-0">
+                    <Label htmlFor="reset-soft" className="cursor-pointer font-medium">
+                      软重置（--soft）
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      只移动 HEAD，暂存区与工作区不变；提交记录「撤销」但改动仍保留在暂存区。
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-2">
+                  <input
+                    type="radio"
+                    name="reset-mode"
+                    id="reset-mixed"
+                    checked={resetMode === 'mixed'}
+                    onChange={() => setResetMode('mixed')}
+                    className="mt-1"
+                  />
+                  <div className="min-w-0">
+                    <Label htmlFor="reset-mixed" className="cursor-pointer font-medium">
+                      混合重置（--mixed，默认）
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      移动 HEAD 并取消暂存；工作区文件保留为未暂存修改。
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-2">
+                  <input
+                    type="radio"
+                    name="reset-mode"
+                    id="reset-hard"
+                    checked={resetMode === 'hard'}
+                    onChange={() => setResetMode('hard')}
+                    className="mt-1"
+                  />
+                  <div className="min-w-0">
+                    <Label htmlFor="reset-hard" className="cursor-pointer font-medium text-destructive">
+                      硬重置（--hard）
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      HEAD、暂存区与工作区均与目标提交一致；本地未提交修改将丢失。
+                    </p>
+                  </div>
+                </div>
+              </div>
+              {resetDialogError && (
+                <p className="whitespace-pre-wrap text-xs text-destructive">{resetDialogError}</p>
+              )}
+              <div className="flex justify-end gap-2 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setResetDialogOpen(false)}
+                  disabled={resetSubmitting}
+                >
+                  取消
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={resetMode === 'hard' ? 'destructive' : 'default'}
+                  onClick={() => void handleConfirmReset()}
+                  disabled={resetSubmitting}
+                >
+                  {resetSubmitting ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      执行中…
+                    </span>
+                  ) : (
+                    '确认重置'
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>
