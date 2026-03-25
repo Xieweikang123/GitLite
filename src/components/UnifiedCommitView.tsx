@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, memo, useRef, useEffect } from 'react'
+import { useState, useCallback, useMemo, memo, useRef, useEffect, type PointerEvent } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -7,6 +7,7 @@ import { Search, Loader2, FileText, Plus, Edit, Trash2, GitBranch, Calendar, Git
 import { CommitInfo, FileChange } from '../types/git'
 import { VSCodeDiff } from './CodeDiff'
 import { RemoteSyncBar } from './RemoteSyncBar'
+import { cn } from '../lib/utils'
 import { invoke } from '@tauri-apps/api/tauri'
 
 function formatLocalYmd(d: Date): string {
@@ -14,6 +15,98 @@ function formatLocalYmd(d: Date): string {
   const m = String(d.getMonth() + 1).padStart(2, '0')
   const day = String(d.getDate()).padStart(2, '0')
   return `${y}-${m}-${day}`
+}
+
+/** 提交页三栏宽度：提交列表 | 文件列表 | diff（与分隔条宽度一致） */
+const PANES_STORAGE_KEY = 'gitlite:unifiedCommitView:panes'
+const SPLITTER_PX = 6
+const MIN_COMMIT_W = 200
+const MIN_FILE_W = 160
+const MIN_DIFF_W = 240
+const MIN_RIGHT_EMPTY_W = 200
+const DEFAULT_PANES = { commit: 304, file: 268 } as const
+
+function loadPanes(): { commit: number; file: number } {
+  if (typeof window === 'undefined') return { ...DEFAULT_PANES }
+  try {
+    const raw = localStorage.getItem(PANES_STORAGE_KEY)
+    if (!raw) return { ...DEFAULT_PANES }
+    const j = JSON.parse(raw) as { commit?: number; file?: number }
+    const commit =
+      typeof j.commit === 'number' && Number.isFinite(j.commit)
+        ? Math.max(MIN_COMMIT_W, j.commit)
+        : DEFAULT_PANES.commit
+    const file =
+      typeof j.file === 'number' && Number.isFinite(j.file)
+        ? Math.max(MIN_FILE_W, j.file)
+        : DEFAULT_PANES.file
+    return { commit, file }
+  } catch {
+    return { ...DEFAULT_PANES }
+  }
+}
+
+function savePanes(p: { commit: number; file: number }) {
+  try {
+    localStorage.setItem(PANES_STORAGE_KEY, JSON.stringify(p))
+  } catch {
+    /* 忽略隐私模式等写入失败 */
+  }
+}
+
+function VerticalResizeHandle({
+  onDrag,
+  onDragEnd,
+  className,
+}: {
+  onDrag: (deltaX: number) => void
+  onDragEnd?: () => void
+  className?: string
+}) {
+  const dragRef = useRef({ active: false, x: 0 })
+
+  const handlePointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    dragRef.current = { active: true, x: e.clientX }
+    e.currentTarget.setPointerCapture(e.pointerId)
+  }
+
+  const handlePointerMove = (e: PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current.active) return
+    const dx = e.clientX - dragRef.current.x
+    dragRef.current.x = e.clientX
+    if (dx !== 0) onDrag(dx)
+  }
+
+  const end = (e: PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current.active) return
+    dragRef.current.active = false
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    } catch {
+      /* 已释放 */
+    }
+    onDragEnd?.()
+  }
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="拖动调整宽度"
+      tabIndex={0}
+      className={cn(
+        'w-1.5 shrink-0 cursor-col-resize touch-none select-none rounded-full bg-border/70 hover:bg-primary/45',
+        'active:bg-primary/60',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        className
+      )}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={end}
+      onPointerCancel={end}
+    />
+  )
 }
 
 interface UnifiedCommitViewProps {
@@ -84,6 +177,71 @@ export function UnifiedCommitView({
   loadingRef.current = loading
   onLoadMoreRef.current = onLoadMore
 
+  const [panes, setPanes] = useState(loadPanes)
+  const panesRef = useRef(panes)
+  panesRef.current = panes
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  const persistPanes = useCallback(() => {
+    savePanes(panesRef.current)
+  }, [])
+
+  const onDragOuter = useCallback(
+    (dx: number) => {
+      setPanes(({ commit, file }) => {
+        const root = rootRef.current
+        if (!root) return { commit: commit + dx, file }
+        const cw = root.clientWidth
+        const s = SPLITTER_PX
+        const maxCommit = selectedCommit
+          ? cw - file - MIN_DIFF_W - s * 2
+          : cw - MIN_RIGHT_EMPTY_W - s
+        const cappedMax = Math.max(MIN_COMMIT_W, maxCommit)
+        const next = Math.max(MIN_COMMIT_W, Math.min(commit + dx, cappedMax))
+        return { commit: next, file }
+      })
+    },
+    [selectedCommit]
+  )
+
+  const onDragInner = useCallback((dx: number) => {
+    setPanes(({ commit, file }) => {
+      const root = rootRef.current
+      if (!root) return { commit, file: file + dx }
+      const cw = root.clientWidth
+      const s = SPLITTER_PX
+      const maxFile = cw - commit - MIN_DIFF_W - s * 2
+      const cappedMax = Math.max(MIN_FILE_W, maxFile)
+      const next = Math.max(MIN_FILE_W, Math.min(file + dx, cappedMax))
+      return { commit, file: next }
+    })
+  }, [])
+
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    const ro = new ResizeObserver(() => {
+      setPanes(({ commit, file }) => {
+        const cw = root.clientWidth
+        if (cw <= 0) return { commit, file }
+        const s = SPLITTER_PX
+        let c = commit
+        let f = file
+        const maxC = selectedCommit
+          ? cw - f - MIN_DIFF_W - s * 2
+          : cw - MIN_RIGHT_EMPTY_W - s
+        c = Math.max(MIN_COMMIT_W, Math.min(c, Math.max(MIN_COMMIT_W, maxC)))
+        if (selectedCommit) {
+          const maxF = cw - c - MIN_DIFF_W - s * 2
+          f = Math.max(MIN_FILE_W, Math.min(f, Math.max(MIN_FILE_W, maxF)))
+        }
+        return { commit: c, file: f }
+      })
+    })
+    ro.observe(root)
+    return () => ro.disconnect()
+  }, [selectedCommit])
+
   // 当前分支 HEAD 历史提交总数（切换仓库/分支时重新查询）
   useEffect(() => {
     if (!repoPath) {
@@ -147,6 +305,24 @@ export function UnifiedCommitView({
   }, [isSearchMode, searchTerm, onClearSearchMode])
 
   // 过滤提交 - 非搜索模式下按关键词过滤；始终按自定义日期范围过滤
+  const hasActiveFilters = useMemo(
+    () =>
+      !!(
+        dateRangeStart ||
+        dateRangeEnd ||
+        searchTerm.trim() ||
+        isSearchMode
+      ),
+    [dateRangeStart, dateRangeEnd, searchTerm, isSearchMode]
+  )
+
+  const clearAllFilters = useCallback(() => {
+    setDateRangeStart('')
+    setDateRangeEnd('')
+    setSearchTerm('')
+    onClearSearchMode?.()
+  }, [onClearSearchMode])
+
   const filteredCommits = useMemo(() => {
     return commits.filter(commit => {
       const commitDate = getCommitDate(commit.date)
@@ -346,124 +522,127 @@ export function UnifiedCommitView({
   })
 
   return (
-    <div className="flex flex-1 min-h-0 h-full flex-row gap-3">
-      {/* 左侧：提交记录全高 */}
-      <div className="flex h-full min-h-0 w-[clamp(16rem,32vw,26rem)] shrink-0 flex-col">
+    <div
+      ref={rootRef}
+      className="flex h-full min-h-0 min-w-0 flex-1 flex-row overflow-hidden"
+    >
+      <div
+        style={{ width: panes.commit }}
+        className="flex h-full min-h-0 shrink-0 flex-col overflow-hidden"
+      >
         <Card className="flex h-full min-h-0 flex-col border-border/80">
           <CardHeader className="py-1 px-3 space-y-1">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <CardTitle className="text-sm">提交记录</CardTitle>
-              <div className="flex items-center gap-2 flex-wrap">
-                <div className="flex items-center gap-1.5">
-                  <Calendar className="h-3 w-3 text-muted-foreground shrink-0" />
-                  <input
-                    type="date"
-                    value={dateRangeStart}
-                    onChange={(e) => setDateRangeStart(e.target.value)}
-                    className="h-7 text-xs border rounded-md px-2 bg-background text-foreground"
-                    title="开始日期"
+            {/* 标题单独一行，避免与多行筛选区并排时 items-center 把标题挤到日期行中间造成重叠 */}
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <CardTitle className="text-sm shrink-0">提交记录</CardTitle>
+              {hasActiveFilters && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground"
+                  onClick={clearAllFilters}
+                >
+                  清空筛选
+                </Button>
+              )}
+            </div>
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
+                <Calendar className="h-3 w-3 shrink-0 text-muted-foreground" />
+                <input
+                  type="date"
+                  value={dateRangeStart}
+                  onChange={(e) => setDateRangeStart(e.target.value)}
+                  className="h-7 min-w-0 max-w-full shrink rounded-md border bg-background px-2 text-xs text-foreground"
+                  title="开始日期"
+                />
+                <span className="shrink-0 text-xs text-muted-foreground">至</span>
+                <input
+                  type="date"
+                  value={dateRangeEnd}
+                  onChange={(e) => setDateRangeEnd(e.target.value)}
+                  className="h-7 min-w-0 max-w-full shrink rounded-md border bg-background px-2 text-xs text-foreground"
+                  title="结束日期"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 shrink-0 px-2 text-xs"
+                  onClick={() => {
+                    const ymd = formatLocalYmd(new Date())
+                    setDateRangeStart(ymd)
+                    setDateRangeEnd(ymd)
+                  }}
+                >
+                  今日
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 shrink-0 px-2 text-xs"
+                  onClick={() => {
+                    const end = new Date()
+                    const start = new Date(end)
+                    start.setDate(start.getDate() - 6)
+                    setDateRangeStart(formatLocalYmd(start))
+                    setDateRangeEnd(formatLocalYmd(end))
+                  }}
+                  title="含今日共 7 个自然日"
+                >
+                  最近7天
+                </Button>
+              </div>
+              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
+                <div className="relative min-w-0 flex-1 basis-[8rem] sm:basis-auto sm:flex-none sm:w-40">
+                  <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    placeholder="搜索提交..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="h-7 w-full min-w-0 pl-6 text-xs"
                   />
-                  <span className="text-xs text-muted-foreground">至</span>
-                  <input
-                    type="date"
-                    value={dateRangeEnd}
-                    onChange={(e) => setDateRangeEnd(e.target.value)}
-                    className="h-7 text-xs border rounded-md px-2 bg-background text-foreground"
-                    title="结束日期"
-                  />
+                </div>
+                {searchTerm.trim() && !isSearchMode && (
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="h-7 px-2 text-xs shrink-0"
-                    onClick={() => {
-                      const ymd = formatLocalYmd(new Date())
-                      setDateRangeStart(ymd)
-                      setDateRangeEnd(ymd)
-                    }}
+                    className="h-7 shrink-0 text-xs"
+                    disabled={searchLoading}
+                    onClick={() => onSearchFullRepo?.(searchTerm.trim())}
                   >
-                    今日
+                    {searchLoading ? (
+                      <>
+                        <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                        搜索中...
+                      </>
+                    ) : (
+                      '在全仓库中搜索'
+                    )}
                   </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 px-2 text-xs shrink-0"
-                    onClick={() => {
-                      const end = new Date()
-                      const start = new Date(end)
-                      start.setDate(start.getDate() - 6)
-                      setDateRangeStart(formatLocalYmd(start))
-                      setDateRangeEnd(formatLocalYmd(end))
-                    }}
-                    title="含今日共 7 个自然日"
-                  >
-                    最近7天
-                  </Button>
-                  {(dateRangeStart || dateRangeEnd) && (
+                )}
+                {isSearchMode && (
+                  <>
+                    <span className="whitespace-nowrap text-[10px] text-muted-foreground">
+                      全仓库结果
+                    </span>
                     <Button
                       type="button"
                       variant="ghost"
                       size="sm"
-                      className="h-7 px-2 text-xs"
+                      className="h-7 shrink-0 text-xs"
                       onClick={() => {
-                        setDateRangeStart('')
-                        setDateRangeEnd('')
+                        setSearchTerm('')
+                        onClearSearchMode?.()
                       }}
                     >
-                      清除
+                      恢复列表
                     </Button>
-                  )}
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <div className="relative">
-                    <Search className="absolute left-2 top-2 h-3 w-3 text-muted-foreground" />
-                    <Input
-                      placeholder="搜索提交..."
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      className="h-7 min-w-0 flex-1 pl-6 text-xs sm:w-40 sm:flex-none"
-                    />
-                  </div>
-                  {searchTerm.trim() && !isSearchMode && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-7 text-xs flex-shrink-0"
-                      disabled={searchLoading}
-                      onClick={() => onSearchFullRepo?.(searchTerm.trim())}
-                    >
-                      {searchLoading ? (
-                        <>
-                          <Loader2 className="h-3 w-3 animate-spin mr-1" />
-                          搜索中...
-                        </>
-                      ) : (
-                        '在全仓库中搜索'
-                      )}
-                    </Button>
-                  )}
-                  {isSearchMode && (
-                    <>
-                      <span className="text-[10px] text-muted-foreground whitespace-nowrap">
-                        全仓库结果
-                      </span>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 text-xs flex-shrink-0"
-                        onClick={() => {
-                          setSearchTerm('')
-                          onClearSearchMode?.()
-                        }}
-                      >
-                        恢复列表
-                      </Button>
-                    </>
-                  )}
-                </div>
+                  </>
+                )}
               </div>
             </div>
             <RemoteSyncBar
@@ -571,60 +750,74 @@ export function UnifiedCommitView({
         </Card>
       </div>
 
-      {/* 右侧：文件变更 | 代码差异 */}
-      <div
-        className="grid min-h-0 min-w-0 flex-1 gap-3"
-        style={{ gridTemplateColumns: 'minmax(200px, 1fr) minmax(280px, 1.25fr)' }}
-      >
-        {/* 文件变更 */}
-        <div className="flex flex-col min-h-0 min-w-0">
-          <Card className="flex flex-col h-full min-h-0 border-border/80">
-            <CardHeader className="py-1 flex-shrink-0">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <FileText className="h-4 w-4" />
-                文件变更
-                {commitFiles.length > 0 && ` (${commitFiles.length})`}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="flex-1 min-h-0 py-1 overflow-hidden">
-              {loadingFiles ? (
-                <div className="flex items-center justify-center py-8">
-                  <Loader2 className="h-6 w-6 animate-spin" />
-                  <span className="ml-2">加载中...</span>
-                </div>
-              ) : commitFiles.length === 0 ? (
-                <div className="text-center py-8">
-                  <p className="text-muted-foreground">
-                    {selectedCommit ? '此提交没有文件变更' : '选择一个提交以查看文件变更'}
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-1 h-full overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent">
-                  {commitFiles.map((file) => (
-                    <FileItem
-                      key={file.path}
-                      file={file}
-                      isSelected={selectedFile === file.path}
-                      onSelect={handleFileSelect}
-                      getStatusIcon={getStatusIcon}
-                      getStatusColor={getStatusColor}
-                      getStatusText={getStatusText}
-                    />
-                  ))}
-                </div>
-              )}
+      <VerticalResizeHandle onDrag={onDragOuter} onDragEnd={persistPanes} />
+
+      {/* 右侧：未选提交时为一块说明；选中后为 文件变更 | 代码差异 */}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        {!selectedCommit ? (
+          <Card className="flex h-full min-h-0 flex-1 flex-col border-border/80">
+            <CardContent className="flex flex-1 flex-col items-center justify-center gap-2 px-6 py-12 text-center text-muted-foreground">
+              <GitCompare className="h-14 w-14 shrink-0 opacity-40" />
+              <p className="text-sm font-medium text-foreground">选择提交查看变更</p>
+              <p className="max-w-sm text-xs leading-relaxed opacity-80">
+                在左侧提交记录中点击任意一条，即可查看该提交的文件列表与代码差异。
+              </p>
             </CardContent>
           </Card>
-        </div>
+        ) : (
+          <div className="flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden">
+            {/* 文件变更 */}
+            <div
+              style={{ width: panes.file }}
+              className="flex min-h-0 shrink-0 flex-col overflow-hidden"
+            >
+              <Card className="flex h-full min-h-0 flex-col border-border/80">
+                <CardHeader className="flex-shrink-0 py-1">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <FileText className="h-4 w-4" />
+                    文件变更
+                    {commitFiles.length > 0 && ` (${commitFiles.length})`}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="min-h-0 flex-1 overflow-hidden py-1">
+                  {loadingFiles ? (
+                    <div className="flex items-center justify-center py-8">
+                      <Loader2 className="h-6 w-6 animate-spin" />
+                      <span className="ml-2">加载中...</span>
+                    </div>
+                  ) : commitFiles.length === 0 ? (
+                    <div className="py-8 text-center">
+                      <p className="text-muted-foreground">此提交没有文件变更</p>
+                    </div>
+                  ) : (
+                    <div className="scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent h-full space-y-1 overflow-y-auto">
+                      {commitFiles.map((file) => (
+                        <FileItem
+                          key={file.path}
+                          file={file}
+                          isSelected={selectedFile === file.path}
+                          onSelect={handleFileSelect}
+                          getStatusIcon={getStatusIcon}
+                          getStatusColor={getStatusColor}
+                          getStatusText={getStatusText}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
 
-        {/* 代码差异 */}
-        <div className="flex flex-col min-h-0 min-w-0">
-          <Card className="flex flex-col h-full min-h-0 border-border/80">
-            <CardHeader className="py-1 flex-shrink-0">
-              <div className="flex items-center justify-between min-w-0">
-                <CardTitle className="text-base truncate" title={selectedFile || undefined}>
-                  {selectedFile ? selectedFile : '代码差异'}
-                </CardTitle>
+            <VerticalResizeHandle onDrag={onDragInner} onDragEnd={persistPanes} />
+
+            {/* 代码差异 */}
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              <Card className="flex h-full min-h-0 flex-col border-border/80">
+                <CardHeader className="flex-shrink-0 py-1">
+                  <div className="flex min-w-0 items-center justify-between">
+                    <CardTitle className="truncate text-base" title={selectedFile || undefined}>
+                      {selectedFile ? selectedFile : '代码差异'}
+                    </CardTitle>
                 {/* {selectedFile && commitFiles.length > 1 && (
                 <div className="flex items-center gap-2">
                   <Button
@@ -659,24 +852,23 @@ export function UnifiedCommitView({
                 </div>
               )} */}
             </div>
-          </CardHeader>
-          <CardContent className="flex-1 min-h-0 py-1 overflow-hidden">
-            {!selectedCommit ? (
-              <div className="flex flex-col items-center justify-center h-full min-h-[200px] text-muted-foreground">
-                <GitCompare className="h-12 w-12 mb-3 opacity-40" />
-                <p className="text-sm font-medium mb-1">选择提交查看变更</p>
-                <p className="text-xs opacity-80">在左侧列表中点击任意提交记录</p>
-              </div>
-            ) : !selectedFile ? (
-              <div className="flex flex-col items-center justify-center h-full min-h-[200px] text-muted-foreground">
-                <FileText className="h-12 w-12 mb-3 opacity-40" />
-                <p className="text-sm font-medium mb-1">选择文件查看差异</p>
-                <p className="text-xs opacity-80">在「文件变更」列表中点击要查看的文件</p>
-              </div>
-            ) : loadingDiff ? (
-              <div className="flex-1 overflow-hidden bg-white dark:bg-gray-900 relative min-h-0">
+                </CardHeader>
+                <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden py-1">
+                  {!loadingFiles && commitFiles.length === 0 ? (
+                    <div className="flex h-full min-h-[120px] flex-col items-center justify-center text-muted-foreground">
+                      <FileText className="mb-2 h-10 w-10 opacity-40" />
+                      <p className="text-xs opacity-90">该提交没有可展示的差异</p>
+                    </div>
+                  ) : !selectedFile ? (
+                    <div className="flex h-full min-h-[200px] flex-col items-center justify-center text-muted-foreground">
+                      <FileText className="mb-3 h-12 w-12 opacity-40" />
+                      <p className="mb-1 text-sm font-medium">选择文件查看差异</p>
+                      <p className="text-xs opacity-80">在「文件变更」列表中点击要查看的文件</p>
+                    </div>
+                  ) : loadingDiff ? (
+              <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-white dark:bg-gray-900">
                 {diff && (
-                  <div className="h-full">
+                  <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
                     <VSCodeDiff
                       diff={diff}
                       filePath={selectedFile}
@@ -684,7 +876,7 @@ export function UnifiedCommitView({
                     />
                   </div>
                 )}
-                <div className="absolute inset-0 bg-background/80 flex items-center justify-center">
+                <div className="absolute inset-0 flex items-center justify-center bg-background/80">
                   <div className="flex items-center gap-2">
                     <Loader2 className="h-4 w-4 animate-spin" />
                     <span className="text-sm">加载中...</span>
@@ -692,21 +884,23 @@ export function UnifiedCommitView({
                 </div>
               </div>
             ) : diff ? (
-              <div className="flex-1 overflow-hidden bg-white dark:bg-gray-900 min-h-0">
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-white dark:bg-gray-900">
                 <VSCodeDiff
                   diff={diff}
                   filePath={selectedFile}
                   repoPath={repoPath || ''}
                 />
               </div>
-            ) : (
-              <div className="text-center py-8">
-                <p className="text-muted-foreground">无法加载文件差异</p>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-        </div>
+                  ) : (
+                    <div className="py-8 text-center">
+                      <p className="text-muted-foreground">无法加载文件差异</p>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

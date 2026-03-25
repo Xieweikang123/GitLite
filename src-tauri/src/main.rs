@@ -825,10 +825,28 @@ fn build_proxy_url(proxy_config: &ProxyConfig) -> Result<String, String> {
     Ok(proxy_url)
 }
 
-// 注意：根据要求，我们不设置环境变量，也不写入 git config
-// libgit2 会使用系统已有的 Git 配置（用户已设置的 http://127.0.0.1:10809）
-// 我们只需要确保不会生成错误的 https:// 代理 URL 并写入配置
-// 如果用户需要在 GitLite 中使用不同的代理，应该通过 Git 全局配置来设置
+fn local_proxy_override_file_exists() -> bool {
+    get_config_dir().join("proxy_config.json").exists()
+}
+
+/// libgit2 未设置 `proxy_opts` 时默认为 `GIT_PROXY_NONE`，**不会**读取 `http.proxy` / `https.proxy`。
+/// 与命令行 `git` 一致的行为需使用 `GIT_PROXY_AUTO`，或显式传入代理 URL。
+fn libgit2_proxy_options_for(proxy_config: &ProxyConfig, has_local_proxy_file: bool) -> git2::ProxyOptions<'_> {
+    let mut po = git2::ProxyOptions::new();
+    if proxy_config.enabled {
+        match build_proxy_url(proxy_config) {
+            Ok(url) => {
+                po.url(&url);
+            }
+            Err(_) => {
+                po.auto();
+            }
+        }
+    } else if !has_local_proxy_file {
+        po.auto();
+    }
+    po
+}
 
 // 清理仓库中的错误代理配置（https://...）
 fn cleanup_invalid_proxy_config(repo: &Repository) -> Result<Vec<String>, String> {
@@ -1952,6 +1970,9 @@ async fn commit_changes(repo_path: String, message: String) -> Result<String, St
 #[tauri::command]
 async fn push_changes(repo_path: String) -> Result<String, String> {
     log_message("INFO", &format!("push: attempt start | path={}", repo_path));
+    let has_local_proxy_file = local_proxy_override_file_exists();
+    let (proxy_config, _) = get_proxy_config().await?;
+
     let repo = match Repository::open(&repo_path) {
         Ok(r) => r,
         Err(e) => {
@@ -2009,6 +2030,7 @@ async fn push_changes(repo_path: String) -> Result<String, String> {
 
     let mut push_opts = git2::PushOptions::new();
     push_opts.remote_callbacks(callbacks);
+    push_opts.proxy_options(libgit2_proxy_options_for(&proxy_config, has_local_proxy_file));
 
     let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
     if let Err(e) = remote.push(&[&refspec], Some(&mut push_opts)) {
@@ -2035,6 +2057,9 @@ async fn push_changes(repo_path: String) -> Result<String, String> {
 #[tauri::command]
 async fn pull_changes(repo_path: String) -> Result<String, String> {
     log_message("INFO", &format!("pull: attempt start | path={}", repo_path));
+    let has_local_proxy_file = local_proxy_override_file_exists();
+    let (proxy_config, _) = get_proxy_config().await?;
+
     let repo = match Repository::open(&repo_path) {
         Ok(r) => r,
         Err(e) => {
@@ -2082,6 +2107,7 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
 
     let mut fetch_opts = git2::FetchOptions::new();
     fetch_opts.remote_callbacks(callbacks);
+    fetch_opts.proxy_options(libgit2_proxy_options_for(&proxy_config, has_local_proxy_file));
 
     // 首先执行 fetch
     let refspec = format!("refs/heads/{}:refs/remotes/origin/{}", branch_name, branch_name);
@@ -2214,6 +2240,9 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
 #[tauri::command]
 async fn fetch_changes_with_logs(repo_path: String) -> Result<Vec<(String, String, String)>, String> {
     let mut logs = Vec::new();
+    let has_local_proxy_file = local_proxy_override_file_exists();
+    let (proxy_config, _) = get_proxy_config().await?;
+
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     
     logs.push((timestamp, "INFO".to_string(), format!("fetch: attempt start | path={}", repo_path)));
@@ -2275,6 +2304,7 @@ async fn fetch_changes_with_logs(repo_path: String) -> Result<Vec<(String, Strin
 
     let mut fetch_opts = git2::FetchOptions::new();
     fetch_opts.remote_callbacks(callbacks);
+    fetch_opts.proxy_options(libgit2_proxy_options_for(&proxy_config, has_local_proxy_file));
 
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     logs.push((timestamp, "INFO".to_string(), "开始获取远程更改...".to_string()));
@@ -2350,6 +2380,7 @@ async fn push_changes_with_realtime_logs(
         "message": "正在应用代理配置..."
     }));
 
+    let has_local_proxy_file = local_proxy_override_file_exists();
     let proxy_config = match get_proxy_config().await {
         Ok((config, is_from_git)) => {
             // 配置来源
@@ -2391,9 +2422,6 @@ async fn push_changes_with_realtime_logs(
         }
     };
 
-    // 注意：不再设置代理环境变量或写入 git config
-    // libgit2 会使用系统已有的 Git 配置（用户已设置的代理）
-    // 我们只需要验证代理配置的协议是否正确
     if proxy_config.enabled {
         if let Err(e) = validate_proxy_protocol(&proxy_config.protocol) {
             let _ = window.emit("push-log", serde_json::json!({
@@ -2406,8 +2434,22 @@ async fn push_changes_with_realtime_logs(
         let _ = window.emit("push-log", serde_json::json!({
             "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
             "level": "INFO",
-            "message": format!("注意：GitLite 使用系统 Git 配置中的代理设置，当前代理配置（{}://{}:{}）仅用于参考", 
-                proxy_config.protocol, proxy_config.host, proxy_config.port)
+            "message": format!(
+                "libgit2 将经代理连接远程：{}://{}:{}",
+                proxy_config.protocol, proxy_config.host, proxy_config.port
+            )
+        }));
+    } else if !has_local_proxy_file {
+        let _ = window.emit("push-log", serde_json::json!({
+            "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+            "level": "INFO",
+            "message": "libgit2 将从 Git 配置自动检测代理（http.proxy / https.proxy）；未配置则不使用代理"
+        }));
+    } else {
+        let _ = window.emit("push-log", serde_json::json!({
+            "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+            "level": "INFO",
+            "message": "libgit2：不使用代理（应用内已关闭，且存在 proxy_config.json）"
         }));
     }
 
@@ -2496,6 +2538,7 @@ async fn push_changes_with_realtime_logs(
 
     let mut push_opts = git2::PushOptions::new();
     push_opts.remote_callbacks(callbacks);
+    push_opts.proxy_options(libgit2_proxy_options_for(&proxy_config, has_local_proxy_file));
 
     let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
     let _ = window.emit("push-log", serde_json::json!({
@@ -2602,6 +2645,9 @@ async fn push_changes_with_realtime_logs(
 #[tauri::command]
 async fn push_changes_with_logs(repo_path: String) -> Result<Vec<(String, String, String)>, String> {
     let mut logs = Vec::new();
+    let has_local_proxy_file = local_proxy_override_file_exists();
+    let (proxy_config, _) = get_proxy_config().await?;
+
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     
     logs.push((timestamp, "INFO".to_string(), format!("push: attempt start | path={}", repo_path)));
@@ -2683,6 +2729,7 @@ async fn push_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
 
     let mut push_opts = git2::PushOptions::new();
     push_opts.remote_callbacks(callbacks);
+    push_opts.proxy_options(libgit2_proxy_options_for(&proxy_config, has_local_proxy_file));
 
     let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
@@ -2848,6 +2895,9 @@ async fn git_diagnostics(repo_path: String) -> Result<Vec<(String, String, Strin
 #[tauri::command]
 async fn pull_changes_with_logs(repo_path: String) -> Result<Vec<(String, String, String)>, String> {
     let mut logs = Vec::new();
+    let has_local_proxy_file = local_proxy_override_file_exists();
+    let (proxy_config, _) = get_proxy_config().await?;
+
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     
     logs.push((timestamp, "INFO".to_string(), format!("pull: attempt start | path={}", repo_path)));
@@ -2929,6 +2979,7 @@ async fn pull_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
 
     let mut fetch_opts = git2::FetchOptions::new();
     fetch_opts.remote_callbacks(callbacks);
+    fetch_opts.proxy_options(libgit2_proxy_options_for(&proxy_config, has_local_proxy_file));
 
     // 首先执行 fetch
     let refspec = format!("refs/heads/{}:refs/remotes/origin/{}", branch_name, branch_name);
