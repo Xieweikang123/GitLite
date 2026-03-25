@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { open } from '@tauri-apps/api/dialog'
 import { RepoInfo, CommitInfo, FileChange, RecentRepo, WorkspaceStatus } from '../types/git'
+import { formatTauriInvokeError } from '../utils/tauriError'
 
 export function useGit() {
   const [repoInfo, setRepoInfo] = useState<RepoInfo | null>(null)
@@ -29,7 +30,7 @@ export function useGit() {
         loadRecentRepos()
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : '打开仓库失败')
+      setError(formatTauriInvokeError(err, '打开仓库失败'))
     } finally {
       setLoading(false)
     }
@@ -47,7 +48,7 @@ export function useGit() {
       // 刷新最近仓库列表
       loadRecentRepos()
     } catch (err) {
-      setError(err instanceof Error ? err.message : '打开仓库失败')
+      setError(formatTauriInvokeError(err, '打开仓库失败'))
     } finally {
       setLoading(false)
     }
@@ -92,13 +93,7 @@ export function useGit() {
       })
       setRepoInfo(updatedRepoInfo)
     } catch (err) {
-      const msg =
-        typeof err === 'string'
-          ? err
-          : err instanceof Error
-            ? err.message
-            : '切换分支失败'
-      setError(msg)
+      setError(formatTauriInvokeError(err, '切换分支失败'))
     } finally {
       setLoading(false)
     }
@@ -114,7 +109,7 @@ export function useGit() {
       })
       return files
     } catch (err) {
-      throw new Error(err instanceof Error ? err.message : '获取文件列表失败')
+      throw new Error(formatTauriInvokeError(err, '获取文件列表失败'))
     }
   }, [repoInfo])
 
@@ -129,7 +124,7 @@ export function useGit() {
       })
       return diff
     } catch (err) {
-      throw new Error(err instanceof Error ? err.message : '获取文件差异失败')
+      throw new Error(formatTauriInvokeError(err, '获取文件差异失败'))
     }
   }, [repoInfo])
 
@@ -143,7 +138,7 @@ export function useGit() {
       })
       return diff
     } catch (err) {
-      throw new Error(err instanceof Error ? err.message : '获取差异失败')
+      throw new Error(formatTauriInvokeError(err, '获取差异失败'))
     }
   }, [repoInfo])
 
@@ -184,7 +179,7 @@ export function useGit() {
       })
       return status
     } catch (err) {
-      throw new Error(err instanceof Error ? err.message : '获取工作区状态失败')
+      throw new Error(formatTauriInvokeError(err, '获取工作区状态失败'))
     }
   }, [repoInfo])
 
@@ -197,7 +192,7 @@ export function useGit() {
         filePath,
       })
     } catch (err) {
-      throw new Error(err instanceof Error ? err.message : '暂存文件失败')
+      throw new Error(formatTauriInvokeError(err, '暂存文件失败'))
     }
   }, [repoInfo])
 
@@ -210,7 +205,7 @@ export function useGit() {
         filePath,
       })
     } catch (err) {
-      throw new Error(err instanceof Error ? err.message : '取消暂存文件失败')
+      throw new Error(formatTauriInvokeError(err, '取消暂存文件失败'))
     }
   }, [repoInfo])
 
@@ -223,7 +218,7 @@ export function useGit() {
         message,
       })
     } catch (err) {
-      throw new Error(err instanceof Error ? err.message : '提交失败')
+      throw new Error(formatTauriInvokeError(err, '提交失败'))
     }
   }, [repoInfo])
 
@@ -235,7 +230,7 @@ export function useGit() {
         repoPath: repoInfo.path,
       })
     } catch (err) {
-      throw new Error(err instanceof Error ? err.message : '推送失败')
+      throw new Error(formatTauriInvokeError(err, '推送失败'))
     }
   }, [repoInfo])
 
@@ -255,7 +250,7 @@ export function useGit() {
       
       return result
     } catch (err) {
-      throw new Error(err instanceof Error ? err.message : '拉取失败')
+      throw new Error(formatTauriInvokeError(err, '拉取失败'))
     }
   }, [repoInfo])
 
@@ -275,7 +270,7 @@ export function useGit() {
       
       return result
     } catch (err) {
-      throw new Error(err instanceof Error ? err.message : '获取失败')
+      throw new Error(formatTauriInvokeError(err, '获取失败'))
     }
   }, [repoInfo])
 
@@ -295,7 +290,7 @@ export function useGit() {
       
       return logs
     } catch (err) {
-      throw new Error(err instanceof Error ? err.message : '获取失败')
+      throw new Error(formatTauriInvokeError(err, '获取失败'))
     }
   }, [repoInfo])
 
@@ -315,7 +310,7 @@ export function useGit() {
       
       return logs
     } catch (err) {
-      throw new Error(err instanceof Error ? err.message : '推送失败')
+      throw new Error(formatTauriInvokeError(err, '推送失败'))
     }
   }, [repoInfo])
 
@@ -335,7 +330,7 @@ export function useGit() {
       
       return []
     } catch (err) {
-      throw new Error(err instanceof Error ? err.message : '推送失败')
+      throw new Error(formatTauriInvokeError(err, '推送失败'))
     }
   }, [repoInfo])
 
@@ -355,7 +350,7 @@ export function useGit() {
       
       return logs
     } catch (err) {
-      throw new Error(err instanceof Error ? err.message : '拉取失败')
+      throw new Error(formatTauriInvokeError(err, '拉取失败'))
     }
   }, [repoInfo])
 

@@ -634,7 +634,7 @@ async fn open_external_url(url: String) -> Result<(), String> {
 #[tauri::command]
 async fn open_repository(path: String) -> Result<RepoInfo, String> {
     let repo = Repository::open(&path)
-        .map_err(|e| format!("Failed to open repository: {}", e))?;
+        .map_err(|e| format!("无法打开仓库：{}", e))?;
     
     // 清理错误的代理配置（https://...）
     if let Ok(cleaned_keys) = cleanup_invalid_proxy_config(&repo) {
@@ -644,7 +644,7 @@ async fn open_repository(path: String) -> Result<RepoInfo, String> {
     }
     
     let repo_info = get_repository_info(&repo, &path)
-        .map_err(|e| format!("Failed to get repository info: {}", e))?;
+        .map_err(|e| format!("无法读取仓库信息：{}", e))?;
     
     // 保存到最近打开的仓库列表
     if let Err(e) = save_recent_repo(path).await {
