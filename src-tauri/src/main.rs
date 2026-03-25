@@ -191,6 +191,146 @@ async fn test_ai_connection(config: AiConfig) -> Result<String, String> {
     Ok("测试成功：接口可用并已返回内容。".to_string())
 }
 
+/// 读取 `git diff --cached` 全文，供生成提交说明（需系统 PATH 中有 git）。
+fn read_staged_diff_cached(repo_path: &str) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .args(["diff", "--cached"])
+        .current_dir(repo_path)
+        .output()
+        .map_err(|e| format!("无法执行 git diff：{}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git diff --cached 失败：{}", stderr.trim()));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn normalize_llm_commit_message(raw: &str) -> String {
+    let mut s = raw.trim();
+    if s.starts_with("```") {
+        if let Some(idx) = s.find('\n') {
+            s = &s[idx + 1..];
+        }
+        if let Some(end) = s.rfind("```") {
+            s = s[..end].trim_end();
+        }
+    }
+    s.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_string()
+}
+
+/// OpenAI 兼容 chat/completions，返回 assistant 文本（单条）。
+fn openai_chat_completion_text(
+    config: &AiConfig,
+    messages: Vec<serde_json::Value>,
+    max_tokens: u32,
+) -> Result<String, String> {
+    let base_url = config.base_url.trim().trim_end_matches('/').to_string();
+    if base_url.is_empty() {
+        return Err("请填写 API 地址".to_string());
+    }
+    let model = config.model.trim().to_string();
+    if model.is_empty() {
+        return Err("请填写模型名称".to_string());
+    }
+    let api_key = config
+        .api_key
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let url = format!("{}/chat/completions", base_url);
+    let body = serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.3
+    });
+
+    let resp = std::thread::spawn(move || {
+        let req = ureq::post(&url).set("Content-Type", "application/json");
+        let req = if let Some(ref key) = api_key {
+            req.set("Authorization", &format!("Bearer {}", key))
+        } else {
+            req
+        };
+        req.send_json(body)
+    })
+    .join()
+    .map_err(|_| "请求线程异常".to_string())?;
+
+    let resp = resp.map_err(|e| format!("请求失败: {}", e))?;
+    let status = resp.status();
+    let text = resp.into_string().unwrap_or_default();
+    if status >= 400 {
+        let short: String = text.chars().take(800).collect();
+        return Err(format!("HTTP {} — {}", status, short));
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("解析响应失败: {}", e))?;
+    if let Some(err) = v.get("error") {
+        let msg = err
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or(&text);
+        return Err(format!("API 错误: {}", msg));
+    }
+    let content = v
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+        .and_then(|o| o.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .ok_or_else(|| "响应中无 choices[0].message.content".to_string())?;
+    Ok(content.to_string())
+}
+
+/// 根据暂存区 diff 调用已配置的模型生成一行中文提交说明。
+#[tauri::command]
+async fn generate_commit_message_ai(repo_path: String) -> Result<String, String> {
+    let config = get_ai_config().await?;
+    if !config.enabled {
+        return Err("请先在菜单「AI」中启用并保存配置".to_string());
+    }
+    let staged_diff = read_staged_diff_cached(&repo_path)?;
+
+    let trimmed = staged_diff.trim();
+    if trimmed.is_empty() {
+        return Err("暂无暂存更改，请先暂存文件后再生成".to_string());
+    }
+
+    const MAX_DIFF_CHARS: usize = 48_000;
+    let diff_for_prompt: String = if staged_diff.len() > MAX_DIFF_CHARS {
+        let mut t = staged_diff.chars().take(MAX_DIFF_CHARS).collect::<String>();
+        t.push_str("\n\n…（diff 过长已截断）");
+        t
+    } else {
+        staged_diff
+    };
+
+    let system = "你是 Git 提交信息助手。只根据用户给出的暂存区 diff 写一条简洁的提交说明。\
+要求：单行或极短首行；使用中文；动词开头；不要引号、不要 Markdown、不要解释。";
+    let user = format!("以下为 git diff --cached：\n\n{}", diff_for_prompt);
+
+    let messages = vec![
+        serde_json::json!({"role": "system", "content": system}),
+        serde_json::json!({"role": "user", "content": user}),
+    ];
+
+    let raw = openai_chat_completion_text(&config, messages, 256)?;
+    let msg = normalize_llm_commit_message(&raw);
+    if msg.is_empty() {
+        return Err("模型未返回有效提交说明，请重试".to_string());
+    }
+    Ok(msg)
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RepoInfo {
     pub path: String,
@@ -3475,6 +3615,7 @@ fn main() {
             get_ai_config,
             save_ai_config,
             test_ai_connection,
+            generate_commit_message_ai,
             get_git_config_info
         ])
         .run(tauri::generate_context!())

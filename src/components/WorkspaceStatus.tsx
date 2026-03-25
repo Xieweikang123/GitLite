@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
 import { FileChange } from '../types/git'
 import { FileDiffModal } from './FileDiffModal'
-import { Eye, Archive, ArchiveRestore, Trash2, CheckCircle, AlertCircle, Loader2 } from 'lucide-react'
+import { Eye, Archive, ArchiveRestore, Trash2, CheckCircle, AlertCircle, Loader2, Sparkles } from 'lucide-react'
 import { shortenPathMiddle } from '../lib/utils'
 import { formatTauriInvokeError } from '../utils/tauriError'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
@@ -82,6 +82,8 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
   >(null)
   const [deletingUntrackedPath, setDeletingUntrackedPath] = useState<string | null>(null)
   const [deletingAllUntracked, setDeletingAllUntracked] = useState(false)
+  /** AI 根据暂存区生成提交说明 */
+  const [aiCommitMessageLoading, setAiCommitMessageLoading] = useState(false)
 
   // 获取工作区状态（silent：后台定时刷新，不占满屏 loading，减轻卡顿）
   const fetchWorkspaceStatus = async (options?: { silent?: boolean }) => {
@@ -498,6 +500,23 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
     }
   }
 
+  const generateCommitMessageAi = async () => {
+    if (!repoInfo) return
+    try {
+      setAiCommitMessageLoading(true)
+      setError(null)
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      const text = await invoke<string>('generate_commit_message_ai', {
+        repoPath: repoInfo.path,
+      })
+      setCommitMessage(text)
+    } catch (err) {
+      setError(formatTauriInvokeError(err, 'AI 生成提交说明失败'))
+    } finally {
+      setAiCommitMessageLoading(false)
+    }
+  }
+
   // 提交更改
   const commitChanges = async () => {
     if (!repoInfo || !commitMessage.trim()) return
@@ -764,8 +783,9 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap items-center">
             <Input
+              className="flex-1 min-w-[160px]"
               placeholder="输入提交信息..."
               value={commitMessage}
               onChange={(e) => setCommitMessage(e.target.value)}
@@ -776,6 +796,28 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
                 }
               }}
             />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="shrink-0 gap-1"
+              onClick={() => void generateCommitMessageAi()}
+              disabled={
+                loading ||
+                aiCommitMessageLoading ||
+                stagingLoading ||
+                unstagingLoading ||
+                !(workspaceStatus?.staged_files?.length)
+              }
+              title="根据暂存区 diff 生成提交说明（需在菜单中配置并启用 AI）"
+            >
+              {aiCommitMessageLoading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="h-3.5 w-3.5" />
+              )}
+              AI 生成
+            </Button>
             <Button 
               onClick={commitChanges}
               disabled={
