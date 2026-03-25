@@ -1295,35 +1295,30 @@ export function UnifiedCommitView({
                       <p className="mb-1 text-sm font-medium">选择文件查看差异</p>
                       <p className="text-xs opacity-80">在「文件变更」列表中点击要查看的文件</p>
                     </div>
-                  ) : loadingDiff ? (
-              <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-white dark:bg-gray-900">
-                {diff && (
-                  <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                    <VSCodeDiff
-                      diff={diff}
-                      filePath={selectedFile}
-                      repoPath={repoPath || ''}
-                    />
-                  </div>
-                )}
-                <div className="absolute inset-0 flex items-center justify-center bg-background/80">
-                  <div className="flex items-center gap-2">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    <span className="text-sm">加载中...</span>
-                  </div>
-                </div>
-              </div>
-            ) : diff ? (
-              <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-white dark:bg-gray-900">
-                <VSCodeDiff
-                  diff={diff}
-                  filePath={selectedFile}
-                  repoPath={repoPath || ''}
-                />
-              </div>
                   ) : (
-                    <div className="py-8 text-center">
-                      <p className="text-muted-foreground">无法加载文件差异</p>
+                    /* 固定同一套 DOM，避免 loading 切换时卸载/重挂 Monaco（否则会闪一帧深色画布像「黑框」） */
+                    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-white dark:bg-gray-900">
+                      {diff ? (
+                        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                          <VSCodeDiff
+                            diff={diff}
+                            filePath={selectedFile}
+                            repoPath={repoPath || ''}
+                          />
+                        </div>
+                      ) : !loadingDiff ? (
+                        <div className="flex flex-1 flex-col items-center justify-center py-8">
+                          <p className="text-muted-foreground">无法加载文件差异</p>
+                        </div>
+                      ) : null}
+                      {loadingDiff && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-background/80">
+                          <div className="flex items-center gap-2">
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            <span className="text-sm">加载中...</span>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </CardContent>

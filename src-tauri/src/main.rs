@@ -265,7 +265,7 @@ async fn test_ai_connection(config: AiConfig) -> Result<String, String> {
 
 /// 读取 `git diff --cached` 全文，供生成提交说明（需系统 PATH 中有 git）。
 fn read_staged_diff_cached(repo_path: &str) -> Result<String, String> {
-    let output = std::process::Command::new("git")
+    let output = git_command()
         .args(["diff", "--cached"])
         .current_dir(repo_path)
         .output()
@@ -952,9 +952,20 @@ fn get_config_dir() -> std::path::PathBuf {
     config_dir
 }
 
+/// 构造 `git` 子进程。Windows 上必须隐藏控制台，否则会每次执行都闪出类似 cmd 的黑窗口。
+fn git_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 /// 在指定仓库目录执行系统 `git`（与 VS / 命令行一致，沿用 http.proxy、凭据助手等）
 fn run_git_in_repo(repo_path: &str, args: &[&str]) -> Result<std::process::Output, std::io::Error> {
-    std::process::Command::new("git")
+    git_command()
         .arg("-C")
         .arg(repo_path)
         .args(args)
@@ -1015,7 +1026,7 @@ async fn get_proxy_config() -> Result<(ProxyConfig, bool), String> {
 // 从Git全局配置读取代理设置
 fn get_git_proxy_config() -> Result<Option<ProxyConfig>, String> {
     // 尝试读取HTTP代理
-    let http_proxy = match std::process::Command::new("git")
+    let http_proxy = match git_command()
         .args(&["config", "--global", "--get", "http.proxy"])
         .output()
     {
@@ -1035,7 +1046,7 @@ fn get_git_proxy_config() -> Result<Option<ProxyConfig>, String> {
     };
     
     // 尝试读取HTTPS代理
-    let https_proxy = match std::process::Command::new("git")
+    let https_proxy = match git_command()
         .args(&["config", "--global", "--get", "https.proxy"])
         .output()
     {
@@ -1176,7 +1187,7 @@ pub struct GitConfigItem {
 #[tauri::command]
 async fn get_git_config_info() -> Result<Vec<GitConfigItem>, String> {
     // 执行 git config --list --show-origin
-    let output = match std::process::Command::new("git")
+    let output = match git_command()
         .args(&["config", "--list", "--show-origin"])
         .output()
     {
@@ -1992,17 +2003,13 @@ fn append_repo_log(repo_path: &str, message: &str) {
     let has_hunk = text.lines().any(|l| l.starts_with("@@"));
     if has_hunk && (plus + minus) < 3 {
         if commit.parent_count() > 0 {
-            use std::process::Command;
             let parent_id = commit.parent_id(0).ok();
             if let Some(pid) = parent_id {
-                let output = Command::new("git")
-                    .arg("-C").arg(&repo_path)
-                    .arg("diff")
-                    .arg(format!("{}", pid))
-                    .arg(format!("{}", commit_id))
-                    .arg("--")
-                    .arg(&file_path)
-                    .output();
+                let pid_s = format!("{}", pid);
+                let output = run_git_in_repo(
+                    &repo_path,
+                    &["diff", pid_s.as_str(), commit_id.as_str(), "--", file_path.as_str()],
+                );
                 if let Ok(out) = output {
                     if out.status.success() {
                         let t = String::from_utf8_lossy(&out.stdout).to_string();
