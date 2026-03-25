@@ -541,6 +541,33 @@ fn get_config_dir() -> std::path::PathBuf {
     config_dir
 }
 
+/// 在指定仓库目录执行系统 `git`（与 VS / 命令行一致，沿用 http.proxy、凭据助手等）
+fn run_git_in_repo(repo_path: &str, args: &[&str]) -> Result<std::process::Output, std::io::Error> {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(args)
+        .output()
+}
+
+fn git_output_detail(output: &std::process::Output) -> String {
+    let stdout_lossy = String::from_utf8_lossy(&output.stdout);
+    let stderr_lossy = String::from_utf8_lossy(&output.stderr);
+    let stdout = stdout_lossy.trim();
+    let stderr = stderr_lossy.trim();
+    let mut s = String::new();
+    if !stdout.is_empty() {
+        s.push_str(stdout);
+    }
+    if !stderr.is_empty() {
+        if !s.is_empty() {
+            s.push('\n');
+        }
+        s.push_str(stderr);
+    }
+    s
+}
+
 // 获取代理配置
 #[tauri::command]
 async fn get_proxy_config() -> Result<(ProxyConfig, bool), String> {
@@ -1969,56 +1996,21 @@ async fn push_changes(repo_path: String) -> Result<String, String> {
     };
     let branch_name = head.shorthand().unwrap_or("main");
 
-    let mut remote = match repo.find_remote("origin") {
-        Ok(r) => r,
-        Err(e) => {
-            log_message("ERROR", &format!("push: find remote 'origin' failed: {}", e));
-            return Err(format!("Failed to find remote 'origin': {}", e));
-        }
-    };
-
-    // 认证与 Push 选项
-    let cfg = repo.config().ok();
-    let mut callbacks = git2::RemoteCallbacks::new();
-    callbacks.credentials(move |url, username_from_url, allowed| {
-        log_message("DEBUG", &format!("push: credential callback | url={} username={:?} allowed={:?}", 
-            url, username_from_url, allowed));
-        
-        if allowed.contains(git2::CredentialType::DEFAULT) {
-            log_message("DEBUG", "push: trying default credentials");
-            return git2::Cred::default();
-        }
-        if allowed.contains(git2::CredentialType::SSH_KEY) {
-            log_message("DEBUG", "push: trying SSH key from agent");
-            return git2::Cred::ssh_key_from_agent(username_from_url.unwrap_or("git"));
-        }
-        if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
-            log_message("DEBUG", "push: trying credential helper");
-            if let Some(cfg) = cfg.as_ref() {
-                if let Ok(cred) = git2::Cred::credential_helper(cfg, url, username_from_url) {
-                    log_message("DEBUG", "push: credential helper success");
-                    return Ok(cred);
-                } else {
-                    log_message("WARN", "push: credential helper failed");
-                }
-            }
-        }
-        log_message("ERROR", "push: no authentication method available");
-        Err(git2::Error::from_str("No authentication method available"))
-    });
-
-    let mut push_opts = git2::PushOptions::new();
-    push_opts.remote_callbacks(callbacks);
-
-    let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
-    if let Err(e) = remote.push(&[&refspec], Some(&mut push_opts)) {
-        let url = remote.url().unwrap_or("");
-        log_message("ERROR", &format!("push: git push failed: {} | url={} refspec={} branch={}", e, url, refspec, branch_name));
-        let log_path = get_config_dir().join("logs").join("gitlite.log");
-        return Err(format!("Failed to push: {} (see log: {})", e, log_path.display()));
+    if let Err(e) = repo.find_remote("origin") {
+        log_message("ERROR", &format!("push: find remote 'origin' failed: {}", e));
+        return Err(format!("Failed to find remote 'origin': {}", e));
     }
 
-    // 若本地分支没有上游，自动设置到 origin/<branch>
+    let output = run_git_in_repo(&repo_path, &["push", "-u", "origin", branch_name])
+        .map_err(|e| format!("Failed to push: {}（无法执行 git）", e))?;
+    if !output.status.success() {
+        let detail = git_output_detail(&output);
+        log_message("ERROR", &format!("push: git push failed: {} | branch={}", detail, branch_name));
+        let log_path = get_config_dir().join("logs").join("gitlite.log");
+        return Err(format!("Failed to push: {} (see log: {})", detail, log_path.display()));
+    }
+
+    // 若本地分支没有上游，自动设置到 origin/<branch>（git push -u 通常已设置）
     if let Ok(mut branch) = repo.find_branch(branch_name, git2::BranchType::Local) {
         if branch.upstream().is_err() {
             if let Err(e) = branch.set_upstream(Some(&format!("origin/{}", branch_name))) {
@@ -2027,7 +2019,7 @@ async fn push_changes(repo_path: String) -> Result<String, String> {
         }
     }
 
-    log_message("INFO", &format!("push: success | branch={} refspec={}", branch_name, refspec));
+    log_message("INFO", &format!("push: success | branch={}", branch_name));
     Ok(format!("Successfully pushed to origin/{}", branch_name))
 }
 
@@ -2052,44 +2044,18 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
     };
     let branch_name = head.shorthand().unwrap_or("main");
 
-    let mut remote = match repo.find_remote("origin") {
-        Ok(r) => r,
-        Err(e) => {
-            log_message("ERROR", &format!("pull: find remote 'origin' failed: {}", e));
-            return Err(format!("Failed to find remote 'origin': {}", e));
-        }
-    };
+    if let Err(e) = repo.find_remote("origin") {
+        log_message("ERROR", &format!("pull: find remote 'origin' failed: {}", e));
+        return Err(format!("Failed to find remote 'origin': {}", e));
+    }
 
-    // 认证与 Fetch 选项
-    let cfg = repo.config().ok();
-    let mut callbacks = git2::RemoteCallbacks::new();
-    callbacks.credentials(move |url, username_from_url, allowed| {
-        if allowed.contains(git2::CredentialType::DEFAULT) {
-            return git2::Cred::default();
-        }
-        if allowed.contains(git2::CredentialType::SSH_KEY) {
-            return git2::Cred::ssh_key_from_agent(username_from_url.unwrap_or("git"));
-        }
-        if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
-            if let Some(cfg) = cfg.as_ref() {
-                if let Ok(cred) = git2::Cred::credential_helper(cfg, url, username_from_url) {
-                    return Ok(cred);
-                }
-            }
-        }
-        Err(git2::Error::from_str("No authentication method available"))
-    });
-
-    let mut fetch_opts = git2::FetchOptions::new();
-    fetch_opts.remote_callbacks(callbacks);
-
-    // 首先执行 fetch
-    let refspec = format!("refs/heads/{}:refs/remotes/origin/{}", branch_name, branch_name);
-    if let Err(e) = remote.fetch(&[&refspec], Some(&mut fetch_opts), None) {
-        let url = remote.url().unwrap_or("");
-        log_message("ERROR", &format!("pull: git fetch failed: {} | url={} refspec={} branch={}", e, url, refspec, branch_name));
+    let fetch_out = run_git_in_repo(&repo_path, &["fetch", "origin"])
+        .map_err(|e| format!("Failed to fetch: {}（无法执行 git）", e))?;
+    if !fetch_out.status.success() {
+        let detail = git_output_detail(&fetch_out);
+        log_message("ERROR", &format!("pull: git fetch failed: {} | branch={}", detail, branch_name));
         let log_path = get_config_dir().join("logs").join("gitlite.log");
-        return Err(format!("Failed to fetch: {} (see log: {})", e, log_path.display()));
+        return Err(format!("Failed to fetch: {} (see log: {})", detail, log_path.display()));
     }
 
     // 获取远程分支引用
@@ -2257,12 +2223,7 @@ async fn fetch_changes_with_logs(repo_path: String) -> Result<Vec<(String, Strin
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     logs.push((timestamp, "INFO".to_string(), "开始获取远程更改...".to_string()));
 
-    // libgit2 在部分网络/代理环境下易出现「failed to receive response: 操作超时」，改由系统 git 执行 fetch
-    let fetch_result = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["fetch", "origin"])
-        .output();
+    let fetch_result = run_git_in_repo(&repo_path, &["fetch", "origin"]);
 
     match fetch_result {
         Ok(output) => {
@@ -2393,9 +2354,7 @@ async fn push_changes_with_realtime_logs(
         }
     };
 
-    // 注意：不再设置代理环境变量或写入 git config
-    // libgit2 会使用系统已有的 Git 配置（用户已设置的代理）
-    // 我们只需要验证代理配置的协议是否正确
+    // 推送使用系统 git 子进程，沿用 Git 全局配置中的代理；此处仅校验应用内代理表单格式
     if proxy_config.enabled {
         if let Err(e) = validate_proxy_protocol(&proxy_config.protocol) {
             let _ = window.emit("push-log", serde_json::json!({
@@ -2451,7 +2410,7 @@ async fn push_changes_with_realtime_logs(
         "message": "正在查找远程仓库 origin..."
     }));
 
-    let mut remote = match repo.find_remote("origin") {
+    let remote = match repo.find_remote("origin") {
         Ok(r) => {
             let _ = window.emit("push-log", serde_json::json!({
                 "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
@@ -2473,130 +2432,116 @@ async fn push_changes_with_realtime_logs(
     let _ = window.emit("push-log", serde_json::json!({
         "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
         "level": "INFO",
-        "message": "正在设置认证..."
+        "message": "使用系统 Git 执行 push（与 VS / 命令行一致）..."
     }));
 
-    // 认证与 Push 选项
-    let cfg = repo.config().ok();
-    let mut callbacks = git2::RemoteCallbacks::new();
-    callbacks.credentials(move |url, username_from_url, allowed| {
-        if allowed.contains(git2::CredentialType::DEFAULT) {
-            return git2::Cred::default();
-        }
-        if allowed.contains(git2::CredentialType::SSH_KEY) {
-            return git2::Cred::ssh_key_from_agent(username_from_url.unwrap_or("git"));
-        }
-        if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
-            if let Some(cfg) = cfg.as_ref() {
-                if let Ok(cred) = git2::Cred::credential_helper(cfg, url, username_from_url) {
-                    return Ok(cred);
-                }
-            }
-        }
-        Err(git2::Error::from_str("No authentication method available"))
-    });
-
-    let mut push_opts = git2::PushOptions::new();
-    push_opts.remote_callbacks(callbacks);
-
-    let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
     let _ = window.emit("push-log", serde_json::json!({
         "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
         "level": "INFO",
         "message": format!("开始推送分支 {} 到 origin...", branch_name)
     }));
 
-    // 执行推送
-    match remote.push(&[&refspec], Some(&mut push_opts)) {
-        Ok(_) => {
+    let push_out = match run_git_in_repo(&repo_path, &["push", "-u", "origin", branch_name]) {
+        Ok(o) => o,
+        Err(e) => {
+            let msg = format!("无法执行 git: {}", e);
             let _ = window.emit("push-log", serde_json::json!({
                 "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
-                "level": "SUCCESS",
-                "message": "推送成功！"
+                "level": "ERROR",
+                "message": msg.clone()
             }));
-            
-            // 若本地分支没有上游，自动设置到 origin/<branch>
-            let _ = window.emit("push-log", serde_json::json!({
-                "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
-                "level": "INFO",
-                "message": "正在检查上游分支设置..."
-            }));
-            
-            if let Ok(mut branch) = repo.find_branch(branch_name, git2::BranchType::Local) {
-                if branch.upstream().is_err() {
-                    if let Err(e) = branch.set_upstream(Some(&format!("origin/{}", branch_name))) {
-                        let _ = window.emit("push-log", serde_json::json!({
-                            "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
-                            "level": "WARN",
-                            "message": format!("设置上游分支失败: {}", e)
-                        }));
-                    } else {
-                        let _ = window.emit("push-log", serde_json::json!({
-                            "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
-                            "level": "SUCCESS",
-                            "message": format!("已设置上游分支: origin/{}", branch_name)
-                        }));
-                    }
+            return Err(format!("Failed to push: {}", msg));
+        }
+    };
+
+    let detail = git_output_detail(&push_out);
+    if !detail.is_empty() {
+        let _ = window.emit("push-log", serde_json::json!({
+            "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+            "level": "INFO",
+            "message": detail
+        }));
+    }
+
+    if push_out.status.success() {
+        let _ = window.emit("push-log", serde_json::json!({
+            "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+            "level": "SUCCESS",
+            "message": "推送成功！"
+        }));
+
+        let _ = window.emit("push-log", serde_json::json!({
+            "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+            "level": "INFO",
+            "message": "正在检查上游分支设置..."
+        }));
+
+        if let Ok(mut branch) = repo.find_branch(branch_name, git2::BranchType::Local) {
+            if branch.upstream().is_err() {
+                if let Err(e) = branch.set_upstream(Some(&format!("origin/{}", branch_name))) {
+                    let _ = window.emit("push-log", serde_json::json!({
+                        "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+                        "level": "WARN",
+                        "message": format!("设置上游分支失败: {}", e)
+                    }));
                 } else {
                     let _ = window.emit("push-log", serde_json::json!({
                         "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
-                        "level": "INFO",
-                        "message": "上游分支已存在"
+                        "level": "SUCCESS",
+                        "message": format!("已设置上游分支: origin/{}", branch_name)
                     }));
                 }
-            }
-            
-            let _ = window.emit("push-log", serde_json::json!({
-                "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
-                "level": "SUCCESS",
-                "message": format!("操作完成 - 已推送到 origin/{}", branch_name)
-            }));
-            
-            Ok(format!("Successfully pushed to origin/{}", branch_name))
-        },
-        Err(e) => {
-            let url = remote.url().unwrap_or("");
-            let error_msg = format!("推送失败: {}", e);
-            let detailed_msg = format!("详细错误信息: {}", e);
-            let url_msg = format!("远程仓库URL: {}", url);
-            
-            let _ = window.emit("push-log", serde_json::json!({
-                "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
-                "level": "ERROR",
-                "message": error_msg
-            }));
-            
-            let _ = window.emit("push-log", serde_json::json!({
-                "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
-                "level": "ERROR",
-                "message": detailed_msg
-            }));
-            
-            let _ = window.emit("push-log", serde_json::json!({
-                "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
-                "level": "ERROR",
-                "message": url_msg
-            }));
-            
-            // 根据错误类型提供更具体的建议
-            let suggestion = if e.message().contains("authentication") {
-                "建议：检查Git凭据配置，确保有推送权限"
-            } else if e.message().contains("network") || e.message().contains("timeout") {
-                "建议：检查网络连接，或尝试使用代理"
-            } else if e.message().contains("rejected") {
-                "建议：远程仓库可能已更新，请先拉取最新更改"
             } else {
-                "建议：查看详细错误信息，或尝试使用命令行推送"
-            };
-            
-            let _ = window.emit("push-log", serde_json::json!({
-                "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
-                "level": "INFO",
-                "message": suggestion
-            }));
-            
-            return Err(format!("Failed to push: {}", e));
+                let _ = window.emit("push-log", serde_json::json!({
+                    "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+                    "level": "INFO",
+                    "message": "上游分支已存在"
+                }));
+            }
         }
+
+        let _ = window.emit("push-log", serde_json::json!({
+            "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+            "level": "SUCCESS",
+            "message": format!("操作完成 - 已推送到 origin/{}", branch_name)
+        }));
+
+        Ok(format!("Successfully pushed to origin/{}", branch_name))
+    } else {
+        let url = remote.url().unwrap_or("");
+        let err_text = git_output_detail(&push_out);
+        let error_msg = format!("推送失败: {}", err_text);
+        let url_msg = format!("远程仓库URL: {}", url);
+
+        let _ = window.emit("push-log", serde_json::json!({
+            "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+            "level": "ERROR",
+            "message": error_msg.clone()
+        }));
+
+        let _ = window.emit("push-log", serde_json::json!({
+            "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+            "level": "ERROR",
+            "message": url_msg
+        }));
+
+        let suggestion = if err_text.contains("authentication") || err_text.contains("Authentication") {
+            "建议：检查Git凭据配置，确保有推送权限"
+        } else if err_text.contains("network") || err_text.contains("timeout") || err_text.contains("timed out") {
+            "建议：检查网络连接，或尝试使用代理"
+        } else if err_text.contains("rejected") {
+            "建议：远程仓库可能已更新，请先拉取最新更改"
+        } else {
+            "建议：查看详细错误信息，或尝试使用命令行推送"
+        };
+
+        let _ = window.emit("push-log", serde_json::json!({
+            "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
+            "level": "INFO",
+            "message": suggestion
+        }));
+
+        Err(format!("Failed to push: {}", err_text))
     }
 }
 
@@ -2647,7 +2592,7 @@ async fn push_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     logs.push((timestamp, "INFO".to_string(), "正在查找远程仓库 origin...".to_string()));
 
-    let mut remote = match repo.find_remote("origin") {
+    let remote = match repo.find_remote("origin") {
         Ok(r) => {
             let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
             logs.push((timestamp, "INFO".to_string(), "找到远程仓库 origin".to_string()));
@@ -2661,76 +2606,60 @@ async fn push_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
     };
 
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    logs.push((timestamp, "INFO".to_string(), "正在设置认证...".to_string()));
+    logs.push((timestamp, "INFO".to_string(), "使用系统 Git 执行 push（与 VS / 命令行一致）...".to_string()));
 
-    // 认证与 Push 选项
-    let cfg = repo.config().ok();
-    let mut callbacks = git2::RemoteCallbacks::new();
-    callbacks.credentials(move |url, username_from_url, allowed| {
-        if allowed.contains(git2::CredentialType::DEFAULT) {
-            return git2::Cred::default();
-        }
-        if allowed.contains(git2::CredentialType::SSH_KEY) {
-            return git2::Cred::ssh_key_from_agent(username_from_url.unwrap_or("git"));
-        }
-        if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
-            if let Some(cfg) = cfg.as_ref() {
-                if let Ok(cred) = git2::Cred::credential_helper(cfg, url, username_from_url) {
-                    return Ok(cred);
-                }
-            }
-        }
-        Err(git2::Error::from_str("No authentication method available"))
-    });
-
-    let mut push_opts = git2::PushOptions::new();
-    push_opts.remote_callbacks(callbacks);
-
-    let refspec = format!("refs/heads/{}:refs/heads/{}", branch_name, branch_name);
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     logs.push((timestamp, "INFO".to_string(), format!("开始推送分支 {} 到 origin...", branch_name)));
 
-    // 执行推送
-    match remote.push(&[&refspec], Some(&mut push_opts)) {
-        Ok(_) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "INFO".to_string(), "推送成功！".to_string()));
-            
-            // 若本地分支没有上游，自动设置到 origin/<branch>
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "INFO".to_string(), "正在检查上游分支设置...".to_string()));
-            
-            if let Ok(mut branch) = repo.find_branch(branch_name, git2::BranchType::Local) {
-                if branch.upstream().is_err() {
-                    if let Err(e) = branch.set_upstream(Some(&format!("origin/{}", branch_name))) {
-                        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                        logs.push((timestamp, "WARN".to_string(), format!("设置上游分支失败: {}", e)));
-                    } else {
-                        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                        logs.push((timestamp, "INFO".to_string(), format!("已设置上游分支: origin/{}", branch_name)));
-                    }
-                } else {
-                    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                    logs.push((timestamp, "INFO".to_string(), "上游分支已存在".to_string()));
-                }
-            }
-            
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "SUCCESS".to_string(), format!("操作完成 - 已推送到 origin/{}", branch_name)));
-            
-            Ok(logs)
-        },
+    let push_out = match run_git_in_repo(&repo_path, &["push", "-u", "origin", branch_name]) {
+        Ok(o) => o,
         Err(e) => {
             let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), format!("推送失败: {}", e)));
-            
-            let url = remote.url().unwrap_or("");
+            let msg = format!("无法执行 git: {}", e);
+            logs.push((timestamp, "ERROR".to_string(), msg.clone()));
+            return Err(format!("Failed to push: {}", msg));
+        }
+    };
+    let push_txt = git_output_detail(&push_out);
+    if !push_txt.is_empty() {
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "INFO".to_string(), push_txt));
+    }
+    if !push_out.status.success() {
+        let detail = git_output_detail(&push_out);
+        let url = remote.url().unwrap_or("");
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "ERROR".to_string(), format!("推送失败: {}", detail)));
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "ERROR".to_string(), format!("远程仓库URL: {}", url)));
+        return Err(format!("Failed to push: {}", detail));
+    }
+
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "推送成功！".to_string()));
+
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "正在检查上游分支设置...".to_string()));
+
+    if let Ok(mut branch) = repo.find_branch(branch_name, git2::BranchType::Local) {
+        if branch.upstream().is_err() {
+            if let Err(e) = branch.set_upstream(Some(&format!("origin/{}", branch_name))) {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "WARN".to_string(), format!("设置上游分支失败: {}", e)));
+            } else {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "INFO".to_string(), format!("已设置上游分支: origin/{}", branch_name)));
+            }
+        } else {
             let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), format!("远程仓库URL: {}", url)));
-            
-            return Err(format!("Failed to push: {}", e));
+            logs.push((timestamp, "INFO".to_string(), "上游分支已存在".to_string()));
         }
     }
+
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "SUCCESS".to_string(), format!("操作完成 - 已推送到 origin/{}", branch_name)));
+
+    Ok(logs)
 }
 
 // Git诊断功能
@@ -2893,7 +2822,7 @@ async fn pull_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     logs.push((timestamp, "INFO".to_string(), "正在查找远程仓库 origin...".to_string()));
 
-    let mut remote = match repo.find_remote("origin") {
+    let remote = match repo.find_remote("origin") {
         Ok(r) => {
             let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
             logs.push((timestamp, "INFO".to_string(), "找到远程仓库 origin".to_string()));
@@ -2907,47 +2836,36 @@ async fn pull_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
     };
 
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    logs.push((timestamp, "INFO".to_string(), "正在设置认证...".to_string()));
+    logs.push((timestamp, "INFO".to_string(), "使用系统 Git 执行 fetch（与 VS / 命令行一致）...".to_string()));
 
-    // 认证与 Fetch 选项
-    let cfg = repo.config().ok();
-    let mut callbacks = git2::RemoteCallbacks::new();
-    callbacks.credentials(move |url, username_from_url, allowed| {
-        if allowed.contains(git2::CredentialType::DEFAULT) {
-            return git2::Cred::default();
-        }
-        if allowed.contains(git2::CredentialType::SSH_KEY) {
-            return git2::Cred::ssh_key_from_agent(username_from_url.unwrap_or("git"));
-        }
-        if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
-            if let Some(cfg) = cfg.as_ref() {
-                if let Ok(cred) = git2::Cred::credential_helper(cfg, url, username_from_url) {
-                    return Ok(cred);
-                }
-            }
-        }
-        Err(git2::Error::from_str("No authentication method available"))
-    });
-
-    let mut fetch_opts = git2::FetchOptions::new();
-    fetch_opts.remote_callbacks(callbacks);
-
-    // 首先执行 fetch
-    let refspec = format!("refs/heads/{}:refs/remotes/origin/{}", branch_name, branch_name);
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     logs.push((timestamp, "INFO".to_string(), format!("开始获取远程分支 {}...", branch_name)));
 
-    match remote.fetch::<&str>(&[&refspec], Some(&mut fetch_opts), None) {
-        Ok(_) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "INFO".to_string(), "获取远程信息成功".to_string()));
-        },
+    let fetch_out = match run_git_in_repo(&repo_path, &["fetch", "origin"]) {
+        Ok(o) => o,
         Err(e) => {
             let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), format!("获取远程信息失败: {}", e)));
-            return Err(format!("Failed to fetch: {}", e));
+            let msg = format!("无法执行 git: {}", e);
+            logs.push((timestamp, "ERROR".to_string(), msg.clone()));
+            return Err(format!("Failed to fetch: {}", msg));
         }
+    };
+    let out_txt = git_output_detail(&fetch_out);
+    if !out_txt.is_empty() {
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "INFO".to_string(), out_txt));
     }
+    if !fetch_out.status.success() {
+        let detail = git_output_detail(&fetch_out);
+        let url = remote.url().unwrap_or("");
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "ERROR".to_string(), format!("获取远程信息失败: {}", detail)));
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "ERROR".to_string(), format!("远程仓库URL: {}", url)));
+        return Err(format!("Failed to fetch: {}", detail));
+    }
+    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((timestamp, "INFO".to_string(), "获取远程信息成功".to_string()));
 
     // 获取远程分支引用
     let remote_branch_ref = format!("refs/remotes/origin/{}", branch_name);
