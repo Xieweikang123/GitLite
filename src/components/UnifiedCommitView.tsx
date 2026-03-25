@@ -7,6 +7,13 @@ import { Search, Loader2, FileText, Plus, Edit, Trash2, GitBranch, Calendar, Git
 import { CommitInfo, FileChange } from '../types/git'
 import { VSCodeDiff } from './CodeDiff'
 
+function formatLocalYmd(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
 interface UnifiedCommitViewProps {
   commits: CommitInfo[]
   onLoadMore?: () => void
@@ -318,6 +325,35 @@ export function UnifiedCommitView({
                     className="h-7 text-xs border rounded-md px-2 bg-background text-foreground"
                     title="结束日期"
                   />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-xs shrink-0"
+                    onClick={() => {
+                      const ymd = formatLocalYmd(new Date())
+                      setDateRangeStart(ymd)
+                      setDateRangeEnd(ymd)
+                    }}
+                  >
+                    今日
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-xs shrink-0"
+                    onClick={() => {
+                      const end = new Date()
+                      const start = new Date(end)
+                      start.setDate(start.getDate() - 6)
+                      setDateRangeStart(formatLocalYmd(start))
+                      setDateRangeEnd(formatLocalYmd(end))
+                    }}
+                    title="含今日共 7 个自然日"
+                  >
+                    最近7天
+                  </Button>
                   {(dateRangeStart || dateRangeEnd) && (
                     <Button
                       type="button"
