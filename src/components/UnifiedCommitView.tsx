@@ -1374,11 +1374,18 @@ export function UnifiedCommitView({
           if (!open) {
             setCommitListCopied(false)
             setSummaryConversationMessages(null)
+            setSummaryDialogTab('list')
           }
         }}
       >
-        <DialogContent className="flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
-          <DialogHeader className="shrink-0 border-b border-border/60 px-6 pb-3 pt-6">
+        <DialogContent
+          className={cn(
+            'flex max-h-[85vh] min-h-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl',
+            // 明确高度，让 flex 子项 min-h-0 + overflow 生效，避免内容叠成一层
+            'h-[min(85vh,800px)]'
+          )}
+        >
+          <DialogHeader className="shrink-0 border-b border-border/60 bg-background px-6 pb-3 pt-6 pr-12">
             <DialogTitle>
               {summaryIncludeAi ? '提交记录 · AI 总结' : '提交记录 · 列表'}
             </DialogTitle>
@@ -1386,70 +1393,121 @@ export function UnifiedCommitView({
               当前筛选下、列表中已加载 {filteredCommits.length} 条（时间升序排列）。若需更长历史请先下拉「加载更多」。
             </p>
           </DialogHeader>
-          {/* 单一纵向滚动，避免多个 flex-1 与嵌套滚动叠在一起 */}
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 pb-6 pt-4">
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium">全部提交（可复制）</p>
-                  <p className="text-xs text-muted-foreground">
-                    每行格式：序号 · 日期 · 短哈希 · 作者 · 说明。可全选复制。
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-8 shrink-0 text-xs"
-                  disabled={!commitsListPlainText}
-                  onClick={copyCommitListToClipboard}
-                >
-                  {commitListCopied ? '已复制' : '复制全部'}
-                </Button>
-              </div>
-              <textarea
-                readOnly
-                value={commitsListPlainText}
-                spellCheck={false}
-                className={cn(
-                  'box-border w-full resize-y rounded-md border border-input bg-muted/40 px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  summaryIncludeAi ? 'min-h-[11rem] max-h-[min(32vh,280px)]' : 'min-h-[min(50vh,420px)] max-h-[60vh]',
-                )}
-                onFocus={(e) => e.currentTarget.select()}
-              />
-            </div>
 
-            {summaryIncludeAi ? (
-              <div className="mt-6 border-t border-border pt-5">
-                <p className="text-sm font-medium">完整对话</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  系统提示、用户意图与助手回复。用户侧正文与上方列表相同，下方不重复长列表。
+          {summaryIncludeAi ? (
+            <div className="flex shrink-0 gap-1 border-b border-border bg-background px-6 py-2">
+              <button
+                type="button"
+                onClick={() => setSummaryDialogTab('list')}
+                className={cn(
+                  'rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
+                  summaryDialogTab === 'list'
+                    ? 'bg-accent text-accent-foreground'
+                    : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+                )}
+              >
+                提交列表
+              </button>
+              <button
+                type="button"
+                onClick={() => setSummaryDialogTab('conversation')}
+                className={cn(
+                  'rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
+                  summaryDialogTab === 'conversation'
+                    ? 'bg-accent text-accent-foreground'
+                    : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+                )}
+              >
+                完整对话
+              </button>
+            </div>
+          ) : null}
+
+          <div className="min-h-0 flex-1 overflow-hidden bg-background">
+            {(!summaryIncludeAi || summaryDialogTab === 'list') && (
+              <div className="h-full min-h-0 overflow-y-auto overscroll-contain px-6 pb-6 pt-4">
+                <div className="relative z-0 space-y-2">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium">全部提交（可复制）</p>
+                      <p className="text-xs text-muted-foreground">
+                        每行格式：序号 · 日期 · 短哈希 · 作者 · 说明。可全选复制。
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 shrink-0 text-xs"
+                      disabled={!commitsListPlainText}
+                      onClick={copyCommitListToClipboard}
+                    >
+                      {commitListCopied ? '已复制' : '复制全部'}
+                    </Button>
+                  </div>
+                  <textarea
+                    readOnly
+                    value={commitsListPlainText}
+                    spellCheck={false}
+                    className={cn(
+                      'box-border min-h-[min(50vh,420px)] w-full resize-y rounded-md border border-input bg-muted px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                      summaryIncludeAi ? 'max-h-[min(58vh,480px)]' : 'max-h-[min(65vh,560px)]'
+                    )}
+                    onFocus={(e) => e.currentTarget.select()}
+                  />
+                </div>
+
+                {!summaryIncludeAi ? (
+                  <div className="mt-6 border-t border-border pt-5">
+                    <p className="mb-2 text-xs text-muted-foreground">
+                      未请求 AI。需要时点击下方按钮（将使用菜单「AI」中的模型配置）。
+                    </p>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="gap-1"
+                      disabled={filteredCommits.length === 0 || summaryLoading}
+                      onClick={handleAiSummarize}
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      生成 AI 总结
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+            )}
+
+            {summaryIncludeAi && summaryDialogTab === 'conversation' && (
+              <div
+                ref={aiSummaryScrollRef}
+                className="h-full min-h-0 overflow-y-auto overscroll-contain px-6 pb-6 pt-4"
+              >
+                <p className="mb-2 text-sm font-medium">完整对话</p>
+                <p className="mb-3 text-xs text-muted-foreground">
+                  发往模型的系统提示、用户消息与助手回复（流式）。用户侧长列表见「提交列表」标签。
                 </p>
-                <div
-                  ref={aiSummaryScrollRef}
-                  className="mt-3 space-y-4 rounded-md border border-border/80 bg-muted/25 p-3"
-                >
+                <div className="space-y-4 rounded-md border border-border bg-muted p-3">
                   {summaryConversationMessages?.map((m, idx) => (
                     <div key={`${m.role}-${idx}`} className="space-y-1.5">
                       <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                         {m.role === 'system' ? '系统' : m.role === 'user' ? '用户' : m.role}
                       </div>
                       {m.role === 'user' ? (
-                        <div className="rounded-md border border-border/60 bg-background/90 px-3 py-2 text-xs leading-relaxed text-foreground">
+                        <div className="rounded-md border border-border bg-background px-3 py-2 text-xs leading-relaxed text-foreground">
                           <p>以下为当前筛选范围内的提交记录。</p>
                           <p className="mt-1.5 text-muted-foreground">
-                            完整条目与上方「全部提交」文本框一致（共 {filteredCommits.length}{' '}
-                            条），避免重复此处不展开。
+                            完整条目与「提交列表」标签内文本一致（共 {filteredCommits.length}{' '}
+                            条），此处不重复展开。
                           </p>
                         </div>
                       ) : (
-                        <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-border/60 bg-background/90 px-3 py-2 font-sans text-xs leading-relaxed">
+                        <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background px-3 py-2 font-sans text-xs leading-relaxed">
                           {m.content}
                         </pre>
                       )}
                     </div>
                   ))}
-                  <div className="space-y-2 border-t border-border/60 pt-4">
+                  <div className="space-y-2 border-t border-border pt-4">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                       助手
                     </div>
@@ -1463,7 +1521,7 @@ export function UnifiedCommitView({
                       <p className="whitespace-pre-wrap text-xs text-destructive">{summaryError}</p>
                     )}
                     {summaryText ? (
-                      <div className="whitespace-pre-wrap rounded-md border border-primary/30 bg-background/95 px-3 py-2 text-xs leading-relaxed">
+                      <div className="whitespace-pre-wrap rounded-md border border-primary/30 bg-background px-3 py-2 text-xs leading-relaxed">
                         {summaryText}
                       </div>
                     ) : null}
@@ -1476,22 +1534,6 @@ export function UnifiedCommitView({
                     ) : null}
                   </div>
                 </div>
-              </div>
-            ) : (
-              <div className="mt-6 border-t border-border pt-5">
-                <p className="mb-2 text-xs text-muted-foreground">
-                  未请求 AI。需要时点击下方按钮（将使用菜单「AI」中的模型配置）。
-                </p>
-                <Button
-                  type="button"
-                  size="sm"
-                  className="gap-1"
-                  disabled={filteredCommits.length === 0 || summaryLoading}
-                  onClick={handleAiSummarize}
-                >
-                  <Sparkles className="h-3.5 w-3.5" />
-                  生成 AI 总结
-                </Button>
               </div>
             )}
           </div>
