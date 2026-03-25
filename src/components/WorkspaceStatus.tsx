@@ -540,6 +540,11 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
     workspaceStatus.untracked_files.length > 0
   )
 
+  /** 与下列表一致：不含仅表示未跟踪目录的 `path/` 占位项 */
+  const untrackedDisplayCount = workspaceStatus
+    ? workspaceStatus.untracked_files.filter((f) => !f.endsWith('/')).length
+    : 0
+
   return (
     <div className="space-y-4">
       {/* 刷新与自动刷新控制栏 */}
@@ -920,7 +925,9 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
       {workspaceStatus?.untracked_files && workspaceStatus.untracked_files.length > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">未跟踪的文件</CardTitle>
+            <CardTitle className="text-lg">
+              未跟踪的文件（{untrackedDisplayCount}）
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
