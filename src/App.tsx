@@ -12,6 +12,7 @@ import { FileList } from './components/FileList'
 import { UnifiedCommitView } from './components/UnifiedCommitView'
 import { LogModal } from './components/LogModal'
 import { ProxyConfigModal } from './components/ProxyConfigModal'
+import { AiConfigModal } from './components/AiConfigModal'
 import { CommitInfo, FileChange } from './types/git'
 
 function App() {
@@ -55,8 +56,9 @@ function App() {
   const [logs, setLogs] = useState<Array<{timestamp: string, level: 'INFO' | 'DEBUG' | 'WARN' | 'ERROR' | 'SUCCESS', message: string}>>([])
   const [isOperationRunning, setIsOperationRunning] = useState(false)
   
-  // 代理配置弹窗状态
+  // 代理 / AI 配置弹窗状态
   const [proxyConfigOpen, setProxyConfigOpen] = useState(false)
+  const [aiConfigOpen, setAiConfigOpen] = useState(false)
 
   const handleCommitSelect = async (commit: CommitInfo) => {
     setSelectedCommit(commit)
@@ -366,6 +368,7 @@ function App() {
         loading={loading}
         repoInfo={repoInfo}
         onOpenProxyConfig={() => setProxyConfigOpen(true)}
+        onOpenAiConfig={() => setAiConfigOpen(true)}
       />
       
       {/* 顶部工具栏 */}
@@ -374,7 +377,6 @@ function App() {
         onBranchSelect={handleBranchSelect}
         onOpenRemoteRepository={handleOpenRemoteRepository}
         onPullChanges={handlePullChanges}
-        onFetchChanges={handleFetchChanges}
         loading={loading}
         repoInfo={repoInfo}
         isDark={isDark}
@@ -438,6 +440,11 @@ function App() {
                 onSearchFullRepo={handleSearchFullRepo}
                 onClearSearchMode={handleClearSearchMode}
                 aheadCount={repoInfo?.ahead ?? 0}
+                behindCount={repoInfo?.behind}
+                onFetchChanges={handleFetchChanges}
+                onPullChanges={handlePullChanges}
+                onRefreshRepo={handleRefresh}
+                syncBusy={loading}
                 onGetCommitFiles={getCommitFiles}
                 onGetDiff={getFileDiff}
                 onGetSingleFileDiff={getSingleFileDiff}
@@ -467,6 +474,7 @@ function App() {
         isOpen={proxyConfigOpen}
         onClose={() => setProxyConfigOpen(false)}
       />
+      <AiConfigModal isOpen={aiConfigOpen} onClose={() => setAiConfigOpen(false)} />
     </div>
   )
 }

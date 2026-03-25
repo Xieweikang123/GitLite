@@ -6,6 +6,7 @@ import { Input } from './ui/input'
 import { Search, Loader2, FileText, Plus, Edit, Trash2, GitBranch, Calendar, GitCompare } from 'lucide-react'
 import { CommitInfo, FileChange } from '../types/git'
 import { VSCodeDiff } from './CodeDiff'
+import { RemoteSyncBar } from './RemoteSyncBar'
 import { invoke } from '@tauri-apps/api/tauri'
 
 function formatLocalYmd(d: Date): string {
@@ -25,6 +26,12 @@ interface UnifiedCommitViewProps {
   onSearchFullRepo?: (term: string) => void
   onClearSearchMode?: () => void
   aheadCount?: number
+  behindCount?: number
+  onFetchChanges?: () => void
+  onPullChanges?: () => void
+  onRefreshRepo?: () => void
+  /** 仓库级操作进行中（如切换分支），用于禁用同步按钮 */
+  syncBusy?: boolean
   onGetCommitFiles: (commitId: string) => Promise<FileChange[]>
   onGetDiff: (commitId: string) => Promise<string>
   onGetSingleFileDiff: (commitId: string, filePath: string) => Promise<string>
@@ -43,6 +50,11 @@ export function UnifiedCommitView({
   onSearchFullRepo,
   onClearSearchMode,
   aheadCount = 0,
+  behindCount,
+  onFetchChanges,
+  onPullChanges,
+  onRefreshRepo,
+  syncBusy = false,
   onGetCommitFiles,
   onGetDiff,
   onGetSingleFileDiff,
@@ -454,6 +466,16 @@ export function UnifiedCommitView({
                 </div>
               </div>
             </div>
+            <RemoteSyncBar
+              ahead={aheadCount}
+              behind={behindCount}
+              disabled={syncBusy}
+              onFetchChanges={onFetchChanges}
+              onPullChanges={onPullChanges}
+              onRefresh={onRefreshRepo}
+              refreshTitle="刷新仓库与提交列表"
+              density="compact"
+            />
             <p
               className="text-[11px] text-muted-foreground leading-snug px-0.5 pb-0.5"
               title="「已加载」为当前列表中的条数，可向下滚动继续加载。「当前分支」总数为 HEAD 可达提交数（与 git rev-list --count HEAD 一致），含合并带来的历史。"
