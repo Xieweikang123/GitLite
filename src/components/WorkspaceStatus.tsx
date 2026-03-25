@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
 import { FileChange } from '../types/git'
 import { FileDiffModal } from './FileDiffModal'
@@ -771,9 +771,27 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
       {/* 提交区域 */}
       <Card>
         <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-lg">提交更改</CardTitle>
-            <Button size="sm" variant="outline" className="flex items-center gap-1" onClick={() => setStashDialogOpen(true)} disabled={loading && !hasChanges}>
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <CardTitle className="text-lg">提交更改</CardTitle>
+              {repoInfo && (
+                <CardDescription className="mt-1.5 space-y-0.5">
+                  <span className="block truncate" title={repoInfo.current_branch}>
+                    分支 <span className="font-medium text-foreground">{repoInfo.current_branch}</span>
+                    {repoInfo.head_short_id ? (
+                      <>
+                        {' '}
+                        · 当前提交{' '}
+                        <span className="font-mono font-medium text-foreground">{repoInfo.head_short_id}</span>
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground"> · 尚无提交</span>
+                    )}
+                  </span>
+                </CardDescription>
+              )}
+            </div>
+            <Button size="sm" variant="outline" className="flex shrink-0 items-center gap-1" onClick={() => setStashDialogOpen(true)} disabled={loading && !hasChanges}>
               <Archive className="h-3 w-3" />
               贮藏
               {stashList.length > 0 && (

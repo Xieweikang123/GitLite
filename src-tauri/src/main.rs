@@ -734,6 +734,8 @@ async fn summarize_commits_ai_stream(
 pub struct RepoInfo {
     pub path: String,
     pub current_branch: String,
+    /// HEAD 指向的提交短哈希（约 7 字符），空仓库或无提交时为 None
+    pub head_short_id: Option<String>,
     pub branches: Vec<BranchInfo>,
     pub commits: Vec<CommitInfo>,
     pub ahead: u32,   // 本地比远端超前的提交数（待推送）
@@ -1439,6 +1441,14 @@ fn get_repository_info(repo: &Repository, path: &str) -> Result<RepoInfo> {
     // 获取当前分支
     let head = repo.head().map_err(|e| anyhow::anyhow!("Failed to get HEAD: {}", e))?;
     let current_branch = head.shorthand().unwrap_or("detached").to_string();
+    let head_short_id = head.peel_to_commit().ok().map(|c| {
+        let s = c.id().to_string();
+        if s.len() > 7 {
+            s[..7].to_string()
+        } else {
+            s
+        }
+    });
     
     // 获取分支列表
     let mut branches = Vec::new();
@@ -1491,6 +1501,7 @@ fn get_repository_info(repo: &Repository, path: &str) -> Result<RepoInfo> {
     Ok(RepoInfo {
         path: path.to_string(),
         current_branch,
+        head_short_id,
         branches,
         commits,
         ahead,

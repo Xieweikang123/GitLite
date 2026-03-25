@@ -35,6 +35,8 @@ export interface WorkspaceStatus {
 export interface RepoInfo {
   path: string
   current_branch: string
+  /** HEAD 当前提交的短哈希（约 7 字符），空仓库等情况下可能为空 */
+  head_short_id?: string | null
   branches: BranchInfo[]
   commits: CommitInfo[]
   ahead: number // 本地比远端超前（待推送）

@@ -130,6 +130,8 @@ interface UnifiedCommitViewProps {
   repoPath?: string
   /** 与路径一起用于在切换分支后重新统计提交总数 */
   currentBranch?: string
+  /** 当前 HEAD 提交短哈希（与列表项 short_id 对齐），用于标记检出位置 */
+  headShortId?: string | null
 }
 
 export function UnifiedCommitView({
@@ -152,7 +154,8 @@ export function UnifiedCommitView({
   onGetDiff,
   onGetSingleFileDiff,
   repoPath,
-  currentBranch
+  currentBranch,
+  headShortId
 }: UnifiedCommitViewProps) {
   /** 筛选栏输入（待「查询」应用） */
   const [pendingStart, setPendingStart] = useState('')
@@ -556,6 +559,22 @@ export function UnifiedCommitView({
     return new Set(commits.slice(0, aheadCount).map(c => c.id))
   }, [commits, aheadCount])
 
+  /** 与 RepoInfo.head_short_id / 列表 short_id 对齐，用于标记当前检出提交 */
+  const headShortNormalized = useMemo(
+    () => headShortId?.trim().toLowerCase() ?? '',
+    [headShortId]
+  )
+  const isCommitCheckedOut = useCallback(
+    (c: CommitInfo) => {
+      if (!headShortNormalized) return false
+      return (
+        c.short_id.toLowerCase() === headShortNormalized ||
+        c.id.toLowerCase().startsWith(headShortNormalized)
+      )
+    },
+    [headShortNormalized]
+  )
+
   // 处理提交选择 - 使用 useCallback 优化
   const handleCommitSelect = useCallback(async (commit: CommitInfo) => {
     // 如果已经是当前选中的提交，直接返回
@@ -911,6 +930,15 @@ export function UnifiedCommitView({
                   {!headCommitTotalLoading && headCommitTotal !== null && (
                     <> · 当前分支共 {headCommitTotal} 个提交</>
                   )}
+                  {headShortNormalized && (
+                    <>
+                      {' '}
+                      · 当前检出{' '}
+                      <span className="font-mono text-foreground" title="工作区基于此提交（HEAD）">
+                        HEAD {headShortId?.trim()}
+                      </span>
+                    </>
+                  )}
                 </>
               ) : (
                 <>
@@ -923,6 +951,15 @@ export function UnifiedCommitView({
                   {filteredCommits.length !== commits.length && (
                     <> · 筛选后显示 {filteredCommits.length} 条</>
                   )}
+                  {headShortNormalized && (
+                    <>
+                      {' '}
+                      · 当前检出{' '}
+                      <span className="font-mono text-foreground" title="工作区基于此提交（HEAD）">
+                        HEAD {headShortId?.trim()}
+                      </span>
+                    </>
+                  )}
                 </>
               )}
             </p>
@@ -932,14 +969,18 @@ export function UnifiedCommitView({
               ref={commitListScrollRef}
               className="space-y-0.5 h-full overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent"
             >
-              {filteredCommits.map((commit) => (
+              {filteredCommits.map((commit) => {
+                const atHead = isCommitCheckedOut(commit)
+                return (
                 <div
                   key={commit.id}
-                  className={`border rounded p-1 cursor-pointer transition-colors ${
+                  className={cn(
+                    'border rounded p-1 cursor-pointer transition-colors',
+                    atHead && 'border-l-[3px] border-l-emerald-600 dark:border-l-emerald-500',
                     selectedCommit?.id === commit.id
                       ? 'bg-accent border-primary'
                       : 'hover:bg-accent'
-                  }`}
+                  )}
                   onClick={() => handleCommitSelect(commit)}
                 >
                   <div className="space-y-0.5">
@@ -952,6 +993,14 @@ export function UnifiedCommitView({
                         {commit.message}
                       </p>
                       <div className="flex items-center gap-0.5 flex-shrink-0">
+                        {atHead && (
+                          <Badge
+                            className="bg-emerald-600 text-white hover:bg-emerald-600/90 text-[10px] px-1 py-0 shrink-0"
+                            title="当前工作区检出（HEAD）"
+                          >
+                            HEAD
+                          </Badge>
+                        )}
                         {pendingPushIds.has(commit.id) && (
                           <Badge className="bg-blue-600 text-white hover:bg-blue-600/90 text-[10px] px-1 py-0">待推送</Badge>
                         )}
@@ -969,7 +1018,8 @@ export function UnifiedCommitView({
                     </div>
                   </div>
                 </div>
-              ))}
+                )
+              })}
               {hasMore && <div ref={loadMoreSentinelRef} className="h-2 flex-shrink-0" aria-hidden="true" />}
               {hasMore && (
                 <div className="flex justify-center pt-2 border-t">

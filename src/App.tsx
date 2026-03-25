@@ -450,6 +450,7 @@ function App() {
                 onGetSingleFileDiff={getSingleFileDiff}
                 repoPath={repoInfo.path}
                 currentBranch={repoInfo.current_branch}
+                headShortId={repoInfo.head_short_id ?? undefined}
               />
             ) : (
               <div className="text-center py-12 flex-1 flex items-center justify-center">
