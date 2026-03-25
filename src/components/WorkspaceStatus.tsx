@@ -51,6 +51,8 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
   /** 暂存 / 添加 进行中：同上 */
   const [stagingLoading, setStagingLoading] = useState(false)
   const [stagingTargetPath, setStagingTargetPath] = useState<string | null>(null)
+  /** 批量暂存时区分「未暂存」与「未跟踪」，用于横幅与行内按钮 loading */
+  const [stagingBulkType, setStagingBulkType] = useState<'unstaged' | 'untracked' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [refreshIntervalSec] = useState(10)
@@ -381,6 +383,7 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
       setLoading(true)
       setStagingLoading(true)
       setStagingTargetPath(null)
+      setStagingBulkType('unstaged')
       setError(null)
       
       const { invoke } = await import('@tauri-apps/api/tauri')
@@ -399,6 +402,39 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
     } finally {
       setLoading(false)
       setStagingLoading(false)
+      setStagingBulkType(null)
+    }
+  }
+
+  // 暂存全部未跟踪文件（与列表一致：不含仅表示目录的 `path/` 占位项）
+  const stageAllUntracked = async () => {
+    if (!repoInfo || !workspaceStatus?.untracked_files?.length) return
+
+    const paths = workspaceStatus.untracked_files.filter((f) => !f.endsWith('/'))
+    if (paths.length === 0) return
+
+    try {
+      setLoading(true)
+      setStagingLoading(true)
+      setStagingTargetPath(null)
+      setStagingBulkType('untracked')
+      setError(null)
+
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      for (const file of paths) {
+        await invoke('stage_file', {
+          repoPath: repoInfo.path,
+          filePath: normalizeFilePathForGit(file),
+        })
+      }
+
+      await fetchWorkspaceStatus()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '批量添加未跟踪文件失败')
+    } finally {
+      setLoading(false)
+      setStagingLoading(false)
+      setStagingBulkType(null)
     }
   }
 
@@ -693,7 +729,9 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
                 : '正在取消全部暂存…'
               : stagingTargetPath
                 ? `正在暂存：${shortenPathMiddle(stagingTargetPath, 48)}`
-                : '正在暂存全部未暂存文件…'}
+                : stagingBulkType === 'untracked'
+                  ? '正在暂存全部未跟踪文件…'
+                  : '正在暂存全部未暂存文件…'}
           </span>
         </div>
       )}
@@ -986,7 +1024,10 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
                 disabled={loading || unstagingLoading || stagingLoading}
                 className="flex items-center gap-1"
               >
-                {loading && stagingTargetPath === null && stagingLoading ? (
+                {loading &&
+                stagingTargetPath === null &&
+                stagingLoading &&
+                stagingBulkType === 'unstaged' ? (
                   <>
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     处理中…
@@ -1049,31 +1090,58 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
               <CardTitle className="text-lg">
                 未跟踪的文件（{untrackedDisplayCount}）
               </CardTitle>
-              <Button
-                size="sm"
-                variant="outline"
-                className="text-destructive hover:text-destructive shrink-0"
-                onClick={askRemoveAllUntracked}
-                disabled={
-                  loading ||
-                  unstagingLoading ||
-                  stagingLoading ||
-                  deletingAllUntracked ||
-                  deletingUntrackedPath !== null
-                }
-              >
-                {deletingAllUntracked ? (
-                  <>
-                    <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
-                    处理中…
-                  </>
-                ) : (
-                  <>
-                    <Trash2 className="h-3 w-3 mr-1" />
-                    删除全部
-                  </>
-                )}
-              </Button>
+              <div className="flex flex-wrap items-center gap-2 justify-end shrink-0">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={stageAllUntracked}
+                  disabled={
+                    loading ||
+                    unstagingLoading ||
+                    stagingLoading ||
+                    deletingAllUntracked ||
+                    deletingUntrackedPath !== null
+                  }
+                  className="flex items-center gap-1"
+                >
+                  {loading &&
+                  stagingTargetPath === null &&
+                  stagingLoading &&
+                  stagingBulkType === 'untracked' ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      处理中…
+                    </>
+                  ) : (
+                    '暂存全部'
+                  )}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-destructive hover:text-destructive shrink-0"
+                  onClick={askRemoveAllUntracked}
+                  disabled={
+                    loading ||
+                    unstagingLoading ||
+                    stagingLoading ||
+                    deletingAllUntracked ||
+                    deletingUntrackedPath !== null
+                  }
+                >
+                  {deletingAllUntracked ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+                      处理中…
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="h-3 w-3 mr-1" />
+                      删除全部
+                    </>
+                  )}
+                </Button>
+              </div>
             </div>
           </CardHeader>
           <CardContent>

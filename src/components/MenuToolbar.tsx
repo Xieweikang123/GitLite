@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Button } from './ui/button'
-import { Clock, GitBranch, FileText, Settings, FolderOpen, Network } from 'lucide-react'
+import { Clock, GitBranch, FileText, Settings, FolderOpen, Network, Sparkles } from 'lucide-react'
 import { RecentRepo } from '../types/git'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { Input } from './ui/input'
@@ -21,6 +21,7 @@ interface MenuToolbarProps {
   loading: boolean
   repoInfo: any
   onOpenProxyConfig?: () => void
+  onOpenAiConfig?: () => void
 }
 
 export function MenuToolbar({
@@ -33,7 +34,8 @@ export function MenuToolbar({
   onToggleAutoOpen,
   loading,
   repoInfo,
-  onOpenProxyConfig
+  onOpenProxyConfig,
+  onOpenAiConfig
 }: MenuToolbarProps) {
   const [contextMenu, setContextMenu] = useState<{
     x: number
@@ -289,6 +291,18 @@ export function MenuToolbar({
           <FileText className="h-3 w-3 mr-1" />
           日志
         </Button>
+
+        {onOpenAiConfig && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onOpenAiConfig}
+            className="h-6 px-2 text-xs"
+          >
+            <Sparkles className="h-3 w-3 mr-1" />
+            AI
+          </Button>
+        )}
 
         {onOpenProxyConfig && (
           <Button

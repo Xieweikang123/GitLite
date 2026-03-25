@@ -50,3 +50,14 @@ export interface ProxyConfig {
   password?: string
   protocol: string // "http", "socks5" (不支持 "https")
 }
+
+/** OpenAI 兼容 API（Ollama / 智谱 / 自建网关等） */
+export type AiProviderPreset = 'ollama' | 'zhipu' | 'openai_compatible' | 'custom'
+
+export interface AiConfig {
+  enabled: boolean
+  provider: string
+  base_url: string
+  api_key?: string | null
+  model: string
+}

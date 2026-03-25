@@ -1,7 +1,5 @@
 import { useEffect, useRef } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
-import { Button } from './ui/button'
-import { Copy, Download } from 'lucide-react'
 
 interface LogEntry {
   timestamp: string
@@ -55,58 +53,13 @@ export function LogModal({ isOpen, onClose, title, logs, isRunning }: LogModalPr
     }
   }
 
-  const copyLogs = () => {
-    const logText = logs.map(log => 
-      `[${log.timestamp}] [${log.level}] ${log.message}`
-    ).join('\n')
-    navigator.clipboard.writeText(logText)
-  }
-
-  const downloadLogs = () => {
-    const logText = logs.map(log => 
-      `[${log.timestamp}] [${log.level}] ${log.message}`
-    ).join('\n')
-    
-    const blob = new Blob([logText], { type: 'text/plain' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `gitlite-${title.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.log`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-  }
-
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent className="max-w-4xl h-[600px] p-0 bg-black text-green-400 font-mono">
-        <DialogHeader className="px-6 py-4 border-b border-green-800">
-          <div className="flex items-center justify-between">
-            <DialogTitle className="text-green-400 font-mono text-lg">
-              {title} - 实时日志
-            </DialogTitle>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={copyLogs}
-                className="text-green-400 hover:text-green-300 hover:bg-green-900/20"
-                title="复制日志"
-              >
-                <Copy className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={downloadLogs}
-                className="text-green-400 hover:text-green-300 hover:bg-green-900/20"
-                title="下载日志"
-              >
-                <Download className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
+        <DialogHeader className="px-6 py-4 border-b border-green-800 pr-14">
+          <DialogTitle className="text-green-400 font-mono text-lg">
+            {title} - 实时日志
+          </DialogTitle>
         </DialogHeader>
         
         <div className="flex-1 overflow-hidden">

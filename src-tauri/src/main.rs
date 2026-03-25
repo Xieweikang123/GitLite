@@ -72,6 +72,125 @@ pub struct ProxyConfig {
     pub protocol: String, // "http", "socks5" (不支持 "https")
 }
 
+/// 大模型/API 配置（OpenAI 兼容接口：Ollama、智谱、自建网关等）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AiConfig {
+    pub enabled: bool,
+    /// 预设类型：ollama | zhipu | openai_compatible | custom（仅用于前端展示，后端原样存储）
+    pub provider: String,
+    pub base_url: String,
+    pub api_key: Option<String>,
+    pub model: String,
+}
+
+fn default_ai_config() -> AiConfig {
+    AiConfig {
+        enabled: false,
+        provider: "ollama".to_string(),
+        base_url: "http://127.0.0.1:11434/v1".to_string(),
+        api_key: None,
+        model: "llama3.2".to_string(),
+    }
+}
+
+#[tauri::command]
+async fn get_ai_config() -> Result<AiConfig, String> {
+    let config_file = get_config_dir().join("ai_config.json");
+    if !config_file.exists() {
+        return Ok(default_ai_config());
+    }
+    let content = fs::read_to_string(&config_file)
+        .map_err(|e| format!("读取 AI 配置失败: {}", e))?;
+    let config: AiConfig = serde_json::from_str(&content)
+        .map_err(|e| format!("解析 AI 配置失败: {}", e))?;
+    Ok(config)
+}
+
+#[tauri::command]
+async fn save_ai_config(config: AiConfig) -> Result<(), String> {
+    let base = config.base_url.trim();
+    if config.enabled && base.is_empty() {
+        return Err("启用 AI 时请填写 API 地址".to_string());
+    }
+    let model = config.model.trim();
+    if config.enabled && model.is_empty() {
+        return Err("启用 AI 时请填写模型名称".to_string());
+    }
+    let normalized = AiConfig {
+        enabled: config.enabled,
+        provider: config.provider.trim().to_string(),
+        base_url: base.to_string(),
+        api_key: config
+            .api_key
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        model: model.to_string(),
+    };
+    let config_dir = get_config_dir();
+    fs::create_dir_all(&config_dir).map_err(|e| format!("创建配置目录失败: {}", e))?;
+    let config_file = config_dir.join("ai_config.json");
+    let content = serde_json::to_string_pretty(&normalized)
+        .map_err(|e| format!("序列化 AI 配置失败: {}", e))?;
+    fs::write(&config_file, content).map_err(|e| format!("写入 AI 配置失败: {}", e))?;
+    Ok(())
+}
+
+/// 使用当前表单值发一条最小 chat/completions 请求，验证地址、密钥与模型是否可用。
+#[tauri::command]
+async fn test_ai_connection(config: AiConfig) -> Result<String, String> {
+    let base_url = config.base_url.trim().trim_end_matches('/').to_string();
+    if base_url.is_empty() {
+        return Err("请填写 API 地址".to_string());
+    }
+    let model = config.model.trim().to_string();
+    if model.is_empty() {
+        return Err("请填写模型名称".to_string());
+    }
+    let api_key = config
+        .api_key
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let url = format!("{}/chat/completions", base_url);
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 8
+    });
+
+    let resp = std::thread::spawn(move || {
+        let req = ureq::post(&url).set("Content-Type", "application/json");
+        let req = if let Some(ref key) = api_key {
+            req.set("Authorization", &format!("Bearer {}", key))
+        } else {
+            req
+        };
+        req.send_json(body)
+    })
+    .join()
+    .map_err(|_| "测试线程异常".to_string())?;
+
+    let resp = resp.map_err(|e| format!("请求失败: {}", e))?;
+    let status = resp.status();
+    let text = resp.into_string().unwrap_or_default();
+    if status >= 400 {
+        let short: String = text.chars().take(600).collect();
+        return Err(format!("HTTP {} — {}", status, short));
+    }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+        if let Some(err) = v.get("error") {
+            let msg = err
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or(&text);
+            return Err(format!("API 错误: {}", msg));
+        }
+    }
+    Ok("测试成功：接口可用并已返回内容。".to_string())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RepoInfo {
     pub path: String,
@@ -3353,6 +3472,9 @@ fn main() {
             delete_stash,
             get_proxy_config,
             save_proxy_config,
+            get_ai_config,
+            save_ai_config,
+            test_ai_connection,
             get_git_config_info
         ])
         .run(tauri::generate_context!())
