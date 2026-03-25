@@ -149,12 +149,16 @@ export function UnifiedCommitView({
   repoPath,
   currentBranch
 }: UnifiedCommitViewProps) {
-  const [searchTerm, setSearchTerm] = useState('')
+  /** 筛选栏输入（待「查询」应用） */
+  const [pendingStart, setPendingStart] = useState('')
+  const [pendingEnd, setPendingEnd] = useState('')
+  const [pendingSearch, setPendingSearch] = useState('')
+  /** 已应用到列表的筛选条件 */
+  const [appliedStart, setAppliedStart] = useState('')
+  const [appliedEnd, setAppliedEnd] = useState('')
+  const [appliedSearch, setAppliedSearch] = useState('')
   const [headCommitTotal, setHeadCommitTotal] = useState<number | null>(null)
   const [headCommitTotalLoading, setHeadCommitTotalLoading] = useState(false)
-  // 自定义日期范围，格式 YYYY-MM-DD，空字符串表示不限制
-  const [dateRangeStart, setDateRangeStart] = useState('')
-  const [dateRangeEnd, setDateRangeEnd] = useState('')
   const [selectedCommit, setSelectedCommit] = useState<CommitInfo | null>(null)
   const [commitFiles, setCommitFiles] = useState<FileChange[]>([])
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
@@ -294,27 +298,62 @@ export function UnifiedCommitView({
 
   // 全仓库搜索模式下清空关键词时退出搜索模式
   useEffect(() => {
-    if (isSearchMode && !searchTerm.trim()) {
+    if (isSearchMode && !pendingSearch.trim()) {
       onClearSearchMode?.()
     }
-  }, [isSearchMode, searchTerm, onClearSearchMode])
+  }, [isSearchMode, pendingSearch, onClearSearchMode])
 
   // 过滤提交 - 非搜索模式下按关键词过滤；始终按自定义日期范围过滤
   const hasActiveFilters = useMemo(
     () =>
       !!(
-        dateRangeStart ||
-        dateRangeEnd ||
-        searchTerm.trim() ||
+        pendingStart ||
+        pendingEnd ||
+        pendingSearch.trim() ||
+        appliedStart ||
+        appliedEnd ||
+        appliedSearch.trim() ||
         isSearchMode
       ),
-    [dateRangeStart, dateRangeEnd, searchTerm, isSearchMode]
+    [
+      pendingStart,
+      pendingEnd,
+      pendingSearch,
+      appliedStart,
+      appliedEnd,
+      appliedSearch,
+      isSearchMode,
+    ]
   )
 
+  const canApplyFilters = useMemo(
+    () =>
+      pendingStart !== appliedStart ||
+      pendingEnd !== appliedEnd ||
+      pendingSearch !== appliedSearch,
+    [
+      pendingStart,
+      pendingEnd,
+      pendingSearch,
+      appliedStart,
+      appliedEnd,
+      appliedSearch,
+    ]
+  )
+
+  const applyFilters = useCallback(() => {
+    setAppliedStart(pendingStart)
+    setAppliedEnd(pendingEnd)
+    setAppliedSearch(pendingSearch)
+  }, [pendingStart, pendingEnd, pendingSearch])
+
   const clearAllFilters = useCallback(() => {
-    setDateRangeStart('')
-    setDateRangeEnd('')
-    setSearchTerm('')
+    setPendingStart('')
+    setPendingEnd('')
+    setPendingSearch('')
+    setAppliedStart('')
+    setAppliedEnd('')
+    setAppliedSearch('')
     onClearSearchMode?.()
   }, [onClearSearchMode])
 
@@ -322,22 +361,29 @@ export function UnifiedCommitView({
     return commits.filter(commit => {
       const commitDate = getCommitDate(commit.date)
       if (commitDate) {
-        if (dateRangeStart) {
-          const start = new Date(dateRangeStart + 'T00:00:00')
+        if (appliedStart) {
+          const start = new Date(appliedStart + 'T00:00:00')
           if (commitDate < start) return false
         }
-        if (dateRangeEnd) {
-          const end = new Date(dateRangeEnd + 'T23:59:59.999')
+        if (appliedEnd) {
+          const end = new Date(appliedEnd + 'T23:59:59.999')
           if (commitDate > end) return false
         }
       }
-      if (isSearchMode || !searchTerm.trim()) return true
-      const term = searchTerm.toLowerCase()
+      if (isSearchMode || !appliedSearch.trim()) return true
+      const term = appliedSearch.toLowerCase()
       return commit.message.toLowerCase().includes(term) ||
              commit.author.toLowerCase().includes(term) ||
              commit.short_id.toLowerCase().includes(term)
     })
-  }, [commits, searchTerm, dateRangeStart, dateRangeEnd, getCommitDate, isSearchMode])
+  }, [
+    commits,
+    appliedSearch,
+    appliedStart,
+    appliedEnd,
+    getCommitDate,
+    isSearchMode,
+  ])
 
   // 计算待推送提交集合 - 使用 useMemo 优化
   const pendingPushIds = useMemo(() => {
@@ -546,17 +592,17 @@ export function UnifiedCommitView({
               <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
                 <Calendar className="h-3 w-3 shrink-0 text-muted-foreground" />
                 <CommitDatePickerButton
-                  value={dateRangeStart}
-                  onChange={setDateRangeStart}
+                  value={pendingStart}
+                  onChange={setPendingStart}
                   placeholder="开始日期"
-                  title="开始日期（点击打开日历）"
+                  title="开始日期（点击打开日历，确定后写入待查询条件）"
                 />
                 <span className="shrink-0 text-xs text-muted-foreground">至</span>
                 <CommitDatePickerButton
-                  value={dateRangeEnd}
-                  onChange={setDateRangeEnd}
+                  value={pendingEnd}
+                  onChange={setPendingEnd}
                   placeholder="结束日期"
-                  title="结束日期（点击打开日历）"
+                  title="结束日期（点击打开日历，确定后写入待查询条件）"
                 />
                 <Button
                   type="button"
@@ -565,8 +611,8 @@ export function UnifiedCommitView({
                   className="h-7 shrink-0 px-2 text-xs"
                   onClick={() => {
                     const ymd = formatLocalYmd(new Date())
-                    setDateRangeStart(ymd)
-                    setDateRangeEnd(ymd)
+                    setPendingStart(ymd)
+                    setPendingEnd(ymd)
                   }}
                 >
                   今日
@@ -580,12 +626,22 @@ export function UnifiedCommitView({
                     const end = new Date()
                     const start = new Date(end)
                     start.setDate(start.getDate() - 6)
-                    setDateRangeStart(formatLocalYmd(start))
-                    setDateRangeEnd(formatLocalYmd(end))
+                    setPendingStart(formatLocalYmd(start))
+                    setPendingEnd(formatLocalYmd(end))
                   }}
                   title="含今日共 7 个自然日"
                 >
                   最近7天
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-7 shrink-0 px-3 text-xs"
+                  disabled={!canApplyFilters}
+                  onClick={applyFilters}
+                  title="将当前日期与关键词应用到列表筛选"
+                >
+                  查询
                 </Button>
               </div>
               <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
@@ -593,19 +649,25 @@ export function UnifiedCommitView({
                   <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     placeholder="搜索提交..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
+                    value={pendingSearch}
+                    onChange={(e) => setPendingSearch(e.target.value)}
                     className="h-7 w-full min-w-0 pl-6 text-xs"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && canApplyFilters) {
+                        e.preventDefault()
+                        applyFilters()
+                      }
+                    }}
                   />
                 </div>
-                {searchTerm.trim() && !isSearchMode && (
+                {pendingSearch.trim() && !isSearchMode && (
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
                     className="h-7 shrink-0 text-xs"
                     disabled={searchLoading}
-                    onClick={() => onSearchFullRepo?.(searchTerm.trim())}
+                    onClick={() => onSearchFullRepo?.(pendingSearch.trim())}
                   >
                     {searchLoading ? (
                       <>
@@ -628,7 +690,7 @@ export function UnifiedCommitView({
                       size="sm"
                       className="h-7 shrink-0 text-xs"
                       onClick={() => {
-                        setSearchTerm('')
+                        setPendingSearch('')
                         onClearSearchMode?.()
                       }}
                     >
