@@ -184,6 +184,8 @@ export function UnifiedCommitView({
     { role: string; content: string }[] | null
   >(null)
   const [commitListCopied, setCommitListCopied] = useState(false)
+  /** AI 弹窗内：提交列表与完整对话分标签，避免两块内容纵向叠压、滚动嵌套错乱 */
+  const [summaryDialogTab, setSummaryDialogTab] = useState<'list' | 'conversation'>('list')
   const [resetDialogOpen, setResetDialogOpen] = useState(false)
   /** 重置弹窗目标（可与列表选中项不同，例如仅右键未左键选中时） */
   const [resetTargetCommit, setResetTargetCommit] = useState<CommitInfo | null>(null)
@@ -524,6 +526,7 @@ export function UnifiedCommitView({
     if (filteredCommits.length === 0) return
     setSummaryIncludeAi(false)
     setSummaryOpen(true)
+    setSummaryDialogTab('list')
     setSummaryLoading(false)
     setSummaryText('')
     setSummaryError(null)
@@ -540,6 +543,7 @@ export function UnifiedCommitView({
     aiSummaryStreamBufRef.current = ''
     setSummaryIncludeAi(true)
     setSummaryOpen(true)
+    setSummaryDialogTab('conversation')
     setSummaryLoading(true)
     setSummaryError(null)
     setSummaryText('')
@@ -1373,8 +1377,8 @@ export function UnifiedCommitView({
           }
         }}
       >
-        <DialogContent className="flex max-h-[min(92vh,800px)] min-h-0 max-w-3xl flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
-          <DialogHeader className="shrink-0 px-6 pb-2 pt-6">
+        <DialogContent className="flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+          <DialogHeader className="shrink-0 border-b border-border/60 px-6 pb-3 pt-6">
             <DialogTitle>
               {summaryIncludeAi ? '提交记录 · AI 总结' : '提交记录 · 列表'}
             </DialogTitle>
@@ -1382,13 +1386,14 @@ export function UnifiedCommitView({
               当前筛选下、列表中已加载 {filteredCommits.length} 条（时间升序排列）。若需更长历史请先下拉「加载更多」。
             </p>
           </DialogHeader>
-          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden px-6 pb-6">
-            <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
-              <div className="flex shrink-0 flex-wrap items-start justify-between gap-2">
+          {/* 单一纵向滚动，避免多个 flex-1 与嵌套滚动叠在一起 */}
+          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 pb-6 pt-4">
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="text-sm font-medium">全部提交（可复制）</p>
                   <p className="text-xs text-muted-foreground">
-                    每行格式：序号 · 日期 · 短哈希 · 作者 · 说明。可在框内 Ctrl+A 全选复制。
+                    每行格式：序号 · 日期 · 短哈希 · 作者 · 说明。可全选复制。
                   </p>
                 </div>
                 <Button
@@ -1407,41 +1412,49 @@ export function UnifiedCommitView({
                 value={commitsListPlainText}
                 spellCheck={false}
                 className={cn(
-                  'w-full min-w-0 flex-1 resize-y overflow-auto rounded-md border border-input bg-muted/40 px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  summaryIncludeAi
-                    ? 'min-h-[min(28vh,220px)]'
-                    : 'min-h-[min(58vh,500px)]',
+                  'box-border w-full resize-y rounded-md border border-input bg-muted/40 px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                  summaryIncludeAi ? 'min-h-[11rem] max-h-[min(32vh,280px)]' : 'min-h-[min(50vh,420px)] max-h-[60vh]',
                 )}
                 onFocus={(e) => e.currentTarget.select()}
               />
             </div>
 
             {summaryIncludeAi ? (
-              <div className="flex min-h-0 flex-1 flex-col overflow-hidden border-t border-border pt-4">
-                <p className="mb-2 shrink-0 text-sm font-medium">完整对话</p>
-                <p className="mb-3 shrink-0 text-xs text-muted-foreground">
-                  以下为发往模型的系统提示、用户消息及助手回复（与菜单「AI」中配置的接口一致）。
+              <div className="mt-6 border-t border-border pt-5">
+                <p className="text-sm font-medium">完整对话</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  系统提示、用户意图与助手回复。用户侧正文与上方列表相同，下方不重复长列表。
                 </p>
                 <div
                   ref={aiSummaryScrollRef}
-                  className="min-h-0 flex-1 space-y-3 overflow-y-auto rounded-md border border-border/80 bg-muted/30 p-3 text-sm"
+                  className="mt-3 space-y-4 rounded-md border border-border/80 bg-muted/25 p-3"
                 >
                   {summaryConversationMessages?.map((m, idx) => (
-                    <div key={`${m.role}-${idx}`} className="space-y-1">
+                    <div key={`${m.role}-${idx}`} className="space-y-1.5">
                       <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                         {m.role === 'system' ? '系统' : m.role === 'user' ? '用户' : m.role}
                       </div>
-                      <pre className="max-h-[min(28vh,240px)] overflow-y-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-background/80 px-2.5 py-2 font-sans text-xs leading-relaxed text-foreground">
-                        {m.content}
-                      </pre>
+                      {m.role === 'user' ? (
+                        <div className="rounded-md border border-border/60 bg-background/90 px-3 py-2 text-xs leading-relaxed text-foreground">
+                          <p>以下为当前筛选范围内的提交记录。</p>
+                          <p className="mt-1.5 text-muted-foreground">
+                            完整条目与上方「全部提交」文本框一致（共 {filteredCommits.length}{' '}
+                            条），避免重复此处不展开。
+                          </p>
+                        </div>
+                      ) : (
+                        <pre className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-border/60 bg-background/90 px-3 py-2 font-sans text-xs leading-relaxed">
+                          {m.content}
+                        </pre>
+                      )}
                     </div>
                   ))}
-                  <div className="space-y-1 border-t border-border/60 pt-3">
+                  <div className="space-y-2 border-t border-border/60 pt-4">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                       助手
                     </div>
                     {summaryLoading && (
-                      <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
                         <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
                         <span>正在流式生成…</span>
                       </div>
@@ -1450,7 +1463,7 @@ export function UnifiedCommitView({
                       <p className="whitespace-pre-wrap text-xs text-destructive">{summaryError}</p>
                     )}
                     {summaryText ? (
-                      <div className="whitespace-pre-wrap rounded border border-primary/25 bg-background/90 px-2.5 py-2 text-xs leading-relaxed">
+                      <div className="whitespace-pre-wrap rounded-md border border-primary/30 bg-background/95 px-3 py-2 text-xs leading-relaxed">
                         {summaryText}
                       </div>
                     ) : null}
@@ -1465,7 +1478,7 @@ export function UnifiedCommitView({
                 </div>
               </div>
             ) : (
-              <div className="shrink-0 border-t border-border pt-4">
+              <div className="mt-6 border-t border-border pt-5">
                 <p className="mb-2 text-xs text-muted-foreground">
                   未请求 AI。需要时点击下方按钮（将使用菜单「AI」中的模型配置）。
                 </p>
