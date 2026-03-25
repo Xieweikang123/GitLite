@@ -3,6 +3,7 @@
 
 use git2::{Repository, Oid};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::Path;
 use std::fs;
 use anyhow::Result; 
@@ -1691,6 +1692,37 @@ fn collect_workspace_status(repo: &Repository) -> Result<WorkspaceStatus, String
     })
 }
 
+/// 收集 diff 中涉及的路径（与 `git diff --name-only` 类似）。
+fn diff_paths_set(diff: &git2::Diff) -> Result<HashSet<String>, String> {
+    let mut set = HashSet::new();
+    for delta in diff.deltas() {
+        let p = delta
+            .new_file()
+            .path()
+            .or_else(|| delta.old_file().path())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let p = normalize_repo_rel_path(&p);
+        if !p.is_empty() {
+            set.insert(p);
+        }
+    }
+    Ok(set)
+}
+
+/// 相对当前 HEAD，索引 + 工作区有改动的路径（与 `git diff HEAD` 一致，不含未跟踪）。
+fn paths_dirty_vs_head(repo: &Repository) -> Result<HashSet<String>, String> {
+    let head_tree = repo
+        .head()
+        .map_err(|e| format!("Failed to get HEAD: {}", e))?
+        .peel_to_tree()
+        .map_err(|e| format!("Failed to peel HEAD to tree: {}", e))?;
+    let diff = repo
+        .diff_tree_to_workdir_with_index(Some(&head_tree), None)
+        .map_err(|e| format!("Failed to diff HEAD vs index/workdir: {}", e))?;
+    diff_paths_set(&diff)
+}
+
 #[tauri::command]
 async fn get_workspace_status(repo_path: String) -> Result<WorkspaceStatus, String> {
     let repo = Repository::open(&repo_path)
@@ -2083,21 +2115,6 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
         return Ok("Already up to date".to_string());
     }
 
-    // 与界面一致：用 collect_workspace_status 判断，避免与 diff_index_to_workdir 默认选项不一致导致误报
-    let ws = collect_workspace_status(&repo)?;
-    if !ws.staged_files.is_empty() || !ws.unstaged_files.is_empty() {
-        log_message(
-            "WARN",
-            &format!(
-                "pull: local changes block merge | staged={} unstaged={}",
-                ws.staged_files.len(),
-                ws.unstaged_files.len()
-            ),
-        );
-        return Err("Cannot pull: You have uncommitted changes. Please commit or stash them first.".to_string());
-    }
-
-    // 执行合并
     let remote_commit = match repo.find_commit(remote_branch_oid) {
         Ok(c) => c,
         Err(e) => {
@@ -2114,6 +2131,9 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
         }
     };
 
+    // 仅当：合并产生冲突，或「本地未提交」与「本次拉取会改动的路径」相交时阻断（与「有改动就禁止」不同）
+    let dirty_paths = paths_dirty_vs_head(&repo)?;
+
     // 检查是否是快进合并
     let is_ff = match repo.merge_base(local_head_oid, remote_branch_oid) {
         Ok(base) => base == local_head_oid,
@@ -2121,7 +2141,31 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
     };
 
     if is_ff {
-        // 快进合并
+        let local_tree = local_commit
+            .tree()
+            .map_err(|e| format!("Failed to get local tree: {}", e))?;
+        let remote_tree = remote_commit
+            .tree()
+            .map_err(|e| format!("Failed to get remote tree: {}", e))?;
+        let pull_diff = repo
+            .diff_tree_to_tree(Some(&local_tree), Some(&remote_tree), None)
+            .map_err(|e| format!("Failed to diff for fast-forward paths: {}", e))?;
+        let pull_paths = diff_paths_set(&pull_diff)?;
+        if !dirty_paths.is_empty() {
+            let overlap: Vec<String> = dirty_paths.intersection(&pull_paths).cloned().collect();
+            if !overlap.is_empty() {
+                let sample = overlap.iter().take(8).cloned().collect::<Vec<_>>().join(", ");
+                log_message(
+                    "WARN",
+                    &format!("pull: blocked — local changes overlap fast-forward paths | sample=[{}]", sample),
+                );
+                return Err(format!(
+                    "Cannot pull: uncommitted changes would be overwritten (e.g. {}). Commit or stash first.",
+                    sample
+                ));
+            }
+        }
+
         let mut reference = match repo.find_reference("HEAD") {
             Ok(r) => r,
             Err(e) => {
@@ -2138,7 +2182,6 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
         log_message("INFO", &format!("pull: fast-forward success | branch={}", branch_name));
         Ok("Successfully pulled (fast-forward)".to_string())
     } else {
-        // 需要创建合并提交
         let mut merge_index = match repo.merge_commits(&local_commit, &remote_commit, None) {
             Ok(index) => index,
             Err(e) => {
@@ -2147,22 +2190,55 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
             }
         };
 
-        // 将合并结果写入工作区
-        let merge_tree = repo.find_tree(merge_index.write_tree().map_err(|e| format!("Failed to write merge tree: {}", e))?)
-            .map_err(|e| format!("Failed to find merge tree: {}", e))?;
+        if merge_index.has_conflicts() {
+            log_message("WARN", "pull: merge index has conflicts — blocking");
+            return Err(
+                "Cannot pull: merge would have conflicts. Please commit, stash, or resolve first."
+                    .to_string(),
+            );
+        }
 
-        // 创建合并提交
+        let merge_tree_oid = merge_index
+            .write_tree_to(&repo)
+            .map_err(|e| format!("Failed to write merge tree: {}", e))?;
+        let merge_tree = repo
+            .find_tree(merge_tree_oid)
+            .map_err(|e| format!("Failed to find merge tree: {}", e))?;
+        let local_tree = local_commit
+            .tree()
+            .map_err(|e| format!("Failed to get local tree: {}", e))?;
+        let merge_touch = repo
+            .diff_tree_to_tree(Some(&local_tree), Some(&merge_tree), None)
+            .map_err(|e| format!("Failed to diff merge result paths: {}", e))?;
+        let merge_paths = diff_paths_set(&merge_touch)?;
+        if !dirty_paths.is_empty() {
+            let overlap: Vec<String> = dirty_paths.intersection(&merge_paths).cloned().collect();
+            if !overlap.is_empty() {
+                let sample = overlap.iter().take(8).cloned().collect::<Vec<_>>().join(", ");
+                log_message(
+                    "WARN",
+                    &format!("pull: blocked — local changes overlap merge paths | sample=[{}]", sample),
+                );
+                return Err(format!(
+                    "Cannot pull: uncommitted changes would be overwritten (e.g. {}). Commit or stash first.",
+                    sample
+                ));
+            }
+        }
+
         let signature = git2::Signature::now("GitLite User", "gitlite@example.com")
             .map_err(|e| format!("Failed to create signature: {}", e))?;
 
-        let merge_commit_id = repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            &format!("Merge branch 'origin/{}'", branch_name),
-            &merge_tree,
-            &[&local_commit, &remote_commit],
-        ).map_err(|e| format!("Failed to create merge commit: {}", e))?;
+        let merge_commit_id = repo
+            .commit(
+                Some("HEAD"),
+                &signature,
+                &signature,
+                &format!("Merge branch 'origin/{}'", branch_name),
+                &merge_tree,
+                &[&local_commit, &remote_commit],
+            )
+            .map_err(|e| format!("Failed to create merge commit: {}", e))?;
 
         log_message("INFO", &format!("pull: merge success | branch={} merge_commit={}", branch_name, merge_commit_id));
         Ok(format!("Successfully pulled and merged (commit: {})", merge_commit_id))
@@ -2906,38 +2982,6 @@ async fn pull_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     logs.push((timestamp, "INFO".to_string(), "检测到远程更新，准备合并...".to_string()));
 
-    // 与界面一致：用 collect_workspace_status 判断（与 diff_index_to_workdir 默认选项不一致时不再误报）
-    let ws = match collect_workspace_status(&repo) {
-        Ok(ws) => ws,
-        Err(e) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), format!("获取工作区状态失败: {}", e)));
-            return Err(e);
-        }
-    };
-
-    if !ws.staged_files.is_empty() || !ws.unstaged_files.is_empty() {
-        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push((
-            timestamp,
-            "WARN".to_string(),
-            format!(
-                "存在未提交的更改（暂存 {} 项、未暂存 {} 项）",
-                ws.staged_files.len(),
-                ws.unstaged_files.len()
-            ),
-        ));
-
-        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push((timestamp, "ERROR".to_string(), "无法拉取：存在未提交的更改，请先提交或贮藏".to_string()));
-
-        return Err("Cannot pull: You have uncommitted changes. Please commit or stash them first.".to_string());
-    }
-
-    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    logs.push((timestamp, "INFO".to_string(), "工作区状态检查通过，开始合并...".to_string()));
-
-    // 执行合并
     let remote_commit = match repo.find_commit(remote_branch_oid) {
         Ok(c) => {
             let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
@@ -2964,7 +3008,15 @@ async fn pull_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
         }
     };
 
-    // 检查是否是快进合并
+    let dirty_paths = match paths_dirty_vs_head(&repo) {
+        Ok(p) => p,
+        Err(e) => {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("检查工作区与 HEAD 差异失败: {}", e)));
+            return Err(e);
+        }
+    };
+
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     logs.push((timestamp, "INFO".to_string(), "正在检查合并类型...".to_string()));
 
@@ -2974,7 +3026,49 @@ async fn pull_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
     };
 
     if is_ff {
-        // 快进合并
+        let local_tree = match local_commit.tree() {
+            Ok(t) => t,
+            Err(e) => {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "ERROR".to_string(), format!("获取本地树失败: {}", e)));
+                return Err(format!("Failed to get local tree: {}", e));
+            }
+        };
+        let remote_tree = match remote_commit.tree() {
+            Ok(t) => t,
+            Err(e) => {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "ERROR".to_string(), format!("获取远程树失败: {}", e)));
+                return Err(format!("Failed to get remote tree: {}", e));
+            }
+        };
+        let pull_diff = match repo.diff_tree_to_tree(Some(&local_tree), Some(&remote_tree), None) {
+            Ok(d) => d,
+            Err(e) => {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "ERROR".to_string(), format!("比较快进变更路径失败: {}", e)));
+                return Err(format!("Failed to diff for fast-forward paths: {}", e));
+            }
+        };
+        let pull_paths = match diff_paths_set(&pull_diff) {
+            Ok(p) => p,
+            Err(e) => return Err(e),
+        };
+        if !dirty_paths.is_empty() {
+            let overlap: Vec<String> = dirty_paths.intersection(&pull_paths).cloned().collect();
+            if !overlap.is_empty() {
+                let sample = overlap.iter().take(8).cloned().collect::<Vec<_>>().join(", ");
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "WARN".to_string(), format!("本地未提交改动与本次快进将修改的文件冲突（示例: {}）", sample)));
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "ERROR".to_string(), "无法拉取：请先提交或贮藏".to_string()));
+                return Err(format!(
+                    "Cannot pull: uncommitted changes would be overwritten (e.g. {}). Commit or stash first.",
+                    sample
+                ));
+            }
+        }
+
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
         logs.push((timestamp, "INFO".to_string(), "检测到快进合并，执行快进操作...".to_string()));
 
@@ -2999,20 +3093,19 @@ async fn pull_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
 
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
         logs.push((timestamp, "INFO".to_string(), "快进合并成功".to_string()));
-        
+
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
         logs.push((timestamp, "SUCCESS".to_string(), "操作完成 - 快进合并成功".to_string()));
-        
+
         Ok(logs)
     } else {
-        // 需要创建合并提交
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
         logs.push((timestamp, "INFO".to_string(), "检测到需要合并提交，开始合并操作...".to_string()));
 
         let mut merge_index = match repo.merge_commits(&local_commit, &remote_commit, None) {
             Ok(index) => {
                 let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "INFO".to_string(), "合并提交创建成功".to_string()));
+                logs.push((timestamp, "INFO".to_string(), "已生成合并索引".to_string()));
                 index
             },
             Err(e) => {
@@ -3022,29 +3115,91 @@ async fn pull_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
             }
         };
 
-        // 将合并结果写入工作区
-        let merge_tree = repo.find_tree(merge_index.write_tree().map_err(|e| format!("Failed to write merge tree: {}", e))?)
-            .map_err(|e| format!("Failed to find merge tree: {}", e))?;
+        if merge_index.has_conflicts() {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), "自动合并存在冲突，无法拉取".to_string()));
+            return Err(
+                "Cannot pull: merge would have conflicts. Please commit, stash, or resolve first."
+                    .to_string(),
+            );
+        }
+
+        let merge_tree_oid = match merge_index.write_tree_to(&repo) {
+            Ok(oid) => oid,
+            Err(e) => {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "ERROR".to_string(), format!("写入合并树失败: {}", e)));
+                return Err(format!("Failed to write merge tree: {}", e));
+            }
+        };
+        let merge_tree = match repo.find_tree(merge_tree_oid) {
+            Ok(t) => t,
+            Err(e) => {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "ERROR".to_string(), format!("查找合并树失败: {}", e)));
+                return Err(format!("Failed to find merge tree: {}", e));
+            }
+        };
+        let local_tree = match local_commit.tree() {
+            Ok(t) => t,
+            Err(e) => {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "ERROR".to_string(), format!("获取本地树失败: {}", e)));
+                return Err(format!("Failed to get local tree: {}", e));
+            }
+        };
+        let merge_touch = match repo.diff_tree_to_tree(Some(&local_tree), Some(&merge_tree), None) {
+            Ok(d) => d,
+            Err(e) => {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "ERROR".to_string(), format!("比较合并影响路径失败: {}", e)));
+                return Err(format!("Failed to diff merge result paths: {}", e));
+            }
+        };
+        let merge_paths = match diff_paths_set(&merge_touch) {
+            Ok(p) => p,
+            Err(e) => return Err(e),
+        };
+        if !dirty_paths.is_empty() {
+            let overlap: Vec<String> = dirty_paths.intersection(&merge_paths).cloned().collect();
+            if !overlap.is_empty() {
+                let sample = overlap.iter().take(8).cloned().collect::<Vec<_>>().join(", ");
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "WARN".to_string(), format!("本地未提交改动与合并将修改的文件冲突（示例: {}）", sample)));
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "ERROR".to_string(), "无法拉取：请先提交或贮藏".to_string()));
+                return Err(format!(
+                    "Cannot pull: uncommitted changes would be overwritten (e.g. {}). Commit or stash first.",
+                    sample
+                ));
+            }
+        }
 
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
         logs.push((timestamp, "INFO".to_string(), "正在创建合并提交...".to_string()));
 
-        // 创建合并提交
         let signature = git2::Signature::now("GitLite User", "gitlite@example.com")
             .map_err(|e| format!("Failed to create signature: {}", e))?;
 
-        let merge_commit_id = repo.commit(
+        let merge_commit_id = match repo.commit(
             Some("HEAD"),
             &signature,
             &signature,
             &format!("Merge branch 'origin/{}'", branch_name),
             &merge_tree,
             &[&local_commit, &remote_commit],
-        ).map_err(|e| format!("Failed to create merge commit: {}", e))?;
+        ) {
+            Ok(id) => id,
+            Err(e) => {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "ERROR".to_string(), format!("创建合并提交失败: {}", e)));
+                return Err(format!("Failed to create merge commit: {}", e));
+            }
+        };
 
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
         logs.push((timestamp, "INFO".to_string(), "合并提交创建成功".to_string()));
-        
+
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
         logs.push((timestamp, "SUCCESS".to_string(), format!("操作完成 - 合并提交成功 (commit: {})", merge_commit_id)));
 
