@@ -24,6 +24,8 @@ function App() {
     setAutoOpenEnabled,
     openRepository, 
     openRepositoryByPath,
+    removeRecentRepo,
+    updateRecentRepoEntry,
     checkoutBranch, 
     getCommitFiles, 
     getCommitsPaginated,
@@ -354,6 +356,8 @@ function App() {
       <MenuToolbar
         onOpenRepository={openRepository}
         onRepoSelect={handleRecentRepoSelect}
+        onRemoveRecentRepo={removeRecentRepo}
+        onUpdateRecentRepo={updateRecentRepoEntry}
         recentRepos={recentRepos}
         autoOpenEnabled={autoOpenEnabled}
         onToggleAutoOpen={setAutoOpenEnabled}

@@ -139,20 +139,26 @@ async fn save_recent_repo(path: String) -> Result<(), String> {
         Vec::new()
     };
     
-    // 获取仓库名称
+    // 获取仓库名称（若已有记录则保留用户重命名后的显示名）
     let repo_name = Path::new(&path)
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("Unknown")
         .to_string();
+    let preserved_name = repos
+        .iter()
+        .find(|r| r.path == path)
+        .map(|r| r.name.clone());
     
     // 移除已存在的相同路径
     repos.retain(|repo| repo.path != path);
     
+    let name = preserved_name.unwrap_or(repo_name);
+    
     // 添加新的仓库到列表开头
     let recent_repo = RecentRepo {
         path: path.clone(),
-        name: repo_name,
+        name,
         last_opened: chrono::Utc::now().to_rfc3339(),
     };
     repos.insert(0, recent_repo);
@@ -168,6 +174,101 @@ async fn save_recent_repo(path: String) -> Result<(), String> {
     fs::write(&config_file, content)
         .map_err(|e| format!("Failed to write config file: {}", e))?;
     
+    Ok(())
+}
+
+#[tauri::command]
+async fn remove_recent_repo(path: String) -> Result<(), String> {
+    let config_dir = get_config_dir();
+    let config_file = config_dir.join("recent_repos.json");
+    if !config_file.exists() {
+        return Ok(());
+    }
+    let content = fs::read_to_string(&config_file)
+        .map_err(|e| format!("Failed to read config file: {}", e))?;
+    let mut repos: Vec<RecentRepo> = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse config file: {}", e))?;
+    let before = repos.len();
+    repos.retain(|r| r.path != path);
+    if repos.len() == before {
+        return Ok(());
+    }
+    let content = serde_json::to_string_pretty(&repos)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    fs::write(&config_file, content)
+        .map_err(|e| format!("Failed to write config file: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn rename_recent_repo(path: String, new_name: String) -> Result<(), String> {
+    let new_name = new_name.trim().to_string();
+    if new_name.is_empty() {
+        return Err("名称不能为空".to_string());
+    }
+    let config_dir = get_config_dir();
+    let config_file = config_dir.join("recent_repos.json");
+    if !config_file.exists() {
+        return Err("最近列表为空".to_string());
+    }
+    let content = fs::read_to_string(&config_file)
+        .map_err(|e| format!("Failed to read config file: {}", e))?;
+    let mut repos: Vec<RecentRepo> = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse config file: {}", e))?;
+    let Some(repo) = repos.iter_mut().find(|r| r.path == path) else {
+        return Err("未找到该仓库".to_string());
+    };
+    repo.name = new_name;
+    let content = serde_json::to_string_pretty(&repos)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    fs::write(&config_file, content)
+        .map_err(|e| format!("Failed to write config file: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn update_recent_repo_entry(
+    old_path: String,
+    new_path: String,
+    new_name: String,
+) -> Result<(), String> {
+    let new_path = new_path.trim().to_string();
+    let new_name = new_name.trim().to_string();
+    if new_path.is_empty() {
+        return Err("路径不能为空".to_string());
+    }
+    if new_name.is_empty() {
+        return Err("名称不能为空".to_string());
+    }
+
+    let config_dir = get_config_dir();
+    let config_file = config_dir.join("recent_repos.json");
+    if !config_file.exists() {
+        return Err("最近列表为空".to_string());
+    }
+    let content = fs::read_to_string(&config_file)
+        .map_err(|e| format!("Failed to read config file: {}", e))?;
+    let mut repos: Vec<RecentRepo> = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse config file: {}", e))?;
+
+    if !repos.iter().any(|r| r.path == old_path) {
+        return Err("未找到该仓库".to_string());
+    }
+
+    if old_path != new_path {
+        repos.retain(|r| r.path == old_path || r.path != new_path);
+    }
+
+    let Some(repo) = repos.iter_mut().find(|r| r.path == old_path) else {
+        return Err("未找到该仓库".to_string());
+    };
+    repo.path = new_path;
+    repo.name = new_name;
+
+    let content = serde_json::to_string_pretty(&repos)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    fs::write(&config_file, content)
+        .map_err(|e| format!("Failed to write config file: {}", e))?;
     Ok(())
 }
 
@@ -3024,6 +3125,9 @@ fn main() {
             get_single_file_diff,
             get_recent_repos,
             save_recent_repo,
+            remove_recent_repo,
+            rename_recent_repo,
+            update_recent_repo_entry,
             get_workspace_status,
             stage_file,
             unstage_file,

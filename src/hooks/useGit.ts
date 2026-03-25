@@ -63,6 +63,37 @@ export function useGit() {
     }
   }, [])
 
+  const removeRecentRepo = useCallback(
+    async (path: string) => {
+      try {
+        await invoke('remove_recent_repo', { path })
+        await loadRecentRepos()
+      } catch (err) {
+        setError(formatTauriInvokeError(err, '从最近列表中删除失败'))
+      }
+    },
+    [loadRecentRepos]
+  )
+
+  const updateRecentRepoEntry = useCallback(
+    async (oldPath: string, newPath: string, newName: string) => {
+      try {
+        await invoke('update_recent_repo_entry', {
+          oldPath,
+          newPath,
+          newName,
+        })
+        await loadRecentRepos()
+        if (repoInfo?.path === oldPath && oldPath !== newPath) {
+          await openRepositoryByPath(newPath)
+        }
+      } catch (err) {
+        setError(formatTauriInvokeError(err, '更新最近项失败'))
+      }
+    },
+    [loadRecentRepos, repoInfo?.path, openRepositoryByPath]
+  )
+
   // 组件加载时获取最近仓库列表
   useEffect(() => {
     loadRecentRepos()
@@ -363,6 +394,8 @@ export function useGit() {
     setAutoOpenEnabled,
     openRepository,
     openRepositoryByPath,
+    removeRecentRepo,
+    updateRecentRepoEntry,
     checkoutBranch,
     getFileDiff,
     getCommitFiles,
