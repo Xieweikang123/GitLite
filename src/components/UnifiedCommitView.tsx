@@ -3,14 +3,17 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
-import { Search, Loader2, FileText, Plus, Edit, Trash2, GitBranch, Calendar, GitCompare } from 'lucide-react'
+import { Search, Loader2, FileText, Plus, Edit, Trash2, GitBranch, Calendar, GitCompare, Sparkles, ClipboardList } from 'lucide-react'
 import { CommitInfo, FileChange } from '../types/git'
 import { VSCodeDiff } from './CodeDiff'
 import { RemoteSyncBar } from './RemoteSyncBar'
 import { cn } from '../lib/utils'
 import { invoke } from '@tauri-apps/api/tauri'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { CommitDatePickerButton } from './CommitDatePickerButton'
 import { formatLocalYmd } from '../utils/dateYmd'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
+import { formatTauriInvokeError } from '../utils/tauriError'
 
 /** 提交页三栏宽度：提交列表 | 文件列表 | diff（与分隔条宽度一致） */
 const PANES_STORAGE_KEY = 'gitlite:unifiedCommitView:panes'
@@ -161,6 +164,37 @@ export function UnifiedCommitView({
   const [appliedSearch, setAppliedSearch] = useState('')
   const [headCommitTotal, setHeadCommitTotal] = useState<number | null>(null)
   const [headCommitTotalLoading, setHeadCommitTotalLoading] = useState(false)
+  const [summaryOpen, setSummaryOpen] = useState(false)
+  /** 弹窗内是否展示并请求 AI 总结（仅「提交列表」打开时为 false，可随后在弹窗内点「生成 AI 总结」） */
+  const [summaryIncludeAi, setSummaryIncludeAi] = useState(true)
+  const [summaryLoading, setSummaryLoading] = useState(false)
+  const [summaryText, setSummaryText] = useState('')
+  const [summaryError, setSummaryError] = useState<string | null>(null)
+  /** 与后端一致的 system / user 全文（助手为流式 summaryText） */
+  const [summaryConversationMessages, setSummaryConversationMessages] = useState<
+    { role: string; content: string }[] | null
+  >(null)
+  const [commitListCopied, setCommitListCopied] = useState(false)
+  const aiSummaryBusyRef = useRef(false)
+  /** 流式 chunk 缓冲：打破 React 18 批处理，否则会等到本轮事件结束才单次渲染，看起来像「无实时输出」 */
+  const aiSummaryStreamBufRef = useRef('')
+  const aiSummaryStreamRafRef = useRef<number | null>(null)
+  const aiSummaryScrollRef = useRef<HTMLDivElement>(null)
+
+  const scheduleAiSummaryStreamFlush = useCallback(() => {
+    if (aiSummaryStreamRafRef.current != null) return
+    aiSummaryStreamRafRef.current = window.requestAnimationFrame(() => {
+      aiSummaryStreamRafRef.current = null
+      const add = aiSummaryStreamBufRef.current
+      aiSummaryStreamBufRef.current = ''
+      if (add.length > 0) {
+        setSummaryText((prev) => prev + add)
+      }
+      if (aiSummaryStreamBufRef.current.length > 0) {
+        scheduleAiSummaryStreamFlush()
+      }
+    })
+  }, [])
   const [selectedCommit, setSelectedCommit] = useState<CommitInfo | null>(null)
   const [commitFiles, setCommitFiles] = useState<FileChange[]>([])
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
@@ -387,6 +421,136 @@ export function UnifiedCommitView({
     isSearchMode,
   ])
 
+  /** 与后端总结一致：按日期时间升序（字符串可比） */
+  const commitsSortedForCopy = useMemo(() => {
+    return [...filteredCommits].sort((a, b) => a.date.localeCompare(b.date))
+  }, [filteredCommits])
+
+  const commitsListPlainText = useMemo(() => {
+    return commitsSortedForCopy
+      .map((c, i) => `${i + 1}. ${c.date} | ${c.short_id} | ${c.author} | ${c.message}`)
+      .join('\n')
+  }, [commitsSortedForCopy])
+
+  const copyCommitListToClipboard = useCallback(async () => {
+    if (!commitsListPlainText) return
+    try {
+      await navigator.clipboard.writeText(commitsListPlainText)
+      setCommitListCopied(true)
+      window.setTimeout(() => setCommitListCopied(false), 2000)
+    } catch {
+      /* 剪贴板不可用等 */
+    }
+  }, [commitsListPlainText])
+
+  const openCommitListDialog = useCallback(() => {
+    if (filteredCommits.length === 0) return
+    setSummaryIncludeAi(false)
+    setSummaryOpen(true)
+    setSummaryLoading(false)
+    setSummaryText('')
+    setSummaryError(null)
+    setSummaryConversationMessages(null)
+  }, [filteredCommits])
+
+  const handleAiSummarize = useCallback(async () => {
+    if (filteredCommits.length === 0 || aiSummaryBusyRef.current) return
+    aiSummaryBusyRef.current = true
+    if (aiSummaryStreamRafRef.current != null) {
+      cancelAnimationFrame(aiSummaryStreamRafRef.current)
+      aiSummaryStreamRafRef.current = null
+    }
+    aiSummaryStreamBufRef.current = ''
+    setSummaryIncludeAi(true)
+    setSummaryOpen(true)
+    setSummaryLoading(true)
+    setSummaryError(null)
+    setSummaryText('')
+    setSummaryConversationMessages(null)
+
+    const payload = filteredCommits.map((c) => ({
+      short_id: c.short_id,
+      message: c.message,
+      author: c.author,
+      date: c.date,
+    }))
+
+    let unlistenChunk: UnlistenFn | undefined
+    let unlistenConv: UnlistenFn | undefined
+    let chunkRecvCount = 0
+    let chunkRecvChars = 0
+    const t0 = typeof performance !== 'undefined' ? performance.now() : 0
+    try {
+      console.log('[ai-summary] invoke start', { commits: payload.length, t0 })
+      unlistenConv = await listen<{ messages?: { role: string; content: string }[] }>(
+        'ai-summary-conversation',
+        (event) => {
+          const msgs = event.payload?.messages
+          if (Array.isArray(msgs) && msgs.length > 0) {
+            console.log('[ai-summary] conversation event', {
+              messages: msgs.length,
+              systemLen: msgs[0]?.content?.length,
+              userLen: msgs[1]?.content?.length,
+            })
+            setSummaryConversationMessages(msgs)
+          }
+        }
+      )
+      unlistenChunk = await listen<{ text?: string }>('ai-summary-chunk', (event) => {
+        const p = event.payload
+        const t = typeof p?.text === 'string' ? p.text : ''
+        if (t.length > 0) {
+          chunkRecvCount += 1
+          chunkRecvChars += t.length
+          if (chunkRecvCount <= 5 || chunkRecvCount % 40 === 0) {
+            const dt =
+              typeof performance !== 'undefined' ? (performance.now() - t0).toFixed(0) : '?'
+            console.log('[ai-summary] chunk', {
+              n: chunkRecvCount,
+              len: t.length,
+              totalChars: chunkRecvChars,
+              ms: dt,
+              sample: t.length > 48 ? `${t.slice(0, 48)}…` : t,
+            })
+          }
+          aiSummaryStreamBufRef.current += t
+          scheduleAiSummaryStreamFlush()
+        } else if (p != null && typeof p === 'object' && 'text' in p && (p as { text?: unknown }).text != null) {
+          console.warn('[ai-summary] chunk payload.text 非字符串', p)
+        }
+      })
+      await invoke('summarize_commits_ai_stream', { commits: payload })
+      const t1 = typeof performance !== 'undefined' ? performance.now() : 0
+      console.log('[ai-summary] invoke resolved', {
+        chunks: chunkRecvCount,
+        totalChars: chunkRecvChars,
+        ms: t1 && t0 ? (t1 - t0).toFixed(0) : undefined,
+      })
+    } catch (e) {
+      console.error('[ai-summary] invoke error', e)
+      setSummaryError(formatTauriInvokeError(e, '生成总结失败'))
+    } finally {
+      if (unlistenConv) unlistenConv()
+      if (unlistenChunk) unlistenChunk()
+      if (aiSummaryStreamRafRef.current != null) {
+        cancelAnimationFrame(aiSummaryStreamRafRef.current)
+        aiSummaryStreamRafRef.current = null
+      }
+      const tail = aiSummaryStreamBufRef.current
+      aiSummaryStreamBufRef.current = ''
+      if (tail.length > 0) {
+        setSummaryText((prev) => prev + tail)
+      }
+      console.log('[ai-summary] finally', {
+        tailFlushLen: tail.length,
+        chunkRecvCount,
+        chunkRecvChars,
+      })
+      setSummaryLoading(false)
+      aiSummaryBusyRef.current = false
+    }
+  }, [filteredCommits, scheduleAiSummaryStreamFlush])
+
   // 计算待推送提交集合 - 使用 useMemo 优化
   const pendingPushIds = useMemo(() => {
     return new Set(commits.slice(0, aheadCount).map(c => c.id))
@@ -458,6 +622,14 @@ export function UnifiedCommitView({
       }
     }
   }, [])
+
+  // 对话区：系统/用户展示后或流式输出时滚到底部
+  useEffect(() => {
+    if (!summaryText && !summaryConversationMessages?.length) return
+    const el = aiSummaryScrollRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  }, [summaryText, summaryConversationMessages])
 
   // 获取状态图标 - 使用 useMemo 优化
   const getStatusIcon = useCallback((status: string) => {
@@ -615,6 +787,9 @@ export function UnifiedCommitView({
                     const ymd = formatLocalYmd(new Date())
                     setPendingStart(ymd)
                     setPendingEnd(ymd)
+                    setAppliedStart(ymd)
+                    setAppliedEnd(ymd)
+                    setAppliedSearch(pendingSearch)
                   }}
                 >
                   今日
@@ -644,6 +819,34 @@ export function UnifiedCommitView({
                   title="将当前日期与关键词应用到列表筛选"
                 >
                   查询
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 shrink-0 gap-1 px-2 text-xs"
+                  disabled={filteredCommits.length === 0}
+                  onClick={openCommitListDialog}
+                  title="打开弹窗，列出当前筛选下已加载的全部提交（时间升序），便于复制"
+                >
+                  <ClipboardList className="h-3 w-3" />
+                  提交列表
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="h-7 shrink-0 gap-1 px-2 text-xs"
+                  disabled={filteredCommits.length === 0 || summaryLoading}
+                  onClick={handleAiSummarize}
+                  title="根据左侧当前筛选后的提交记录（含已加载列表）生成中文总结，需先在菜单「AI」中启用模型"
+                >
+                  {summaryLoading ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3 w-3" />
+                  )}
+                  AI 总结
                 </Button>
               </div>
               <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
@@ -960,6 +1163,123 @@ export function UnifiedCommitView({
           </div>
         )}
       </div>
+
+      <Dialog
+        open={summaryOpen}
+        onOpenChange={(open) => {
+          setSummaryOpen(open)
+          if (!open) {
+            setCommitListCopied(false)
+            setSummaryConversationMessages(null)
+          }
+        }}
+      >
+        <DialogContent className="flex max-h-[min(92vh,800px)] min-h-0 max-w-3xl flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+          <DialogHeader className="shrink-0 px-6 pb-2 pt-6">
+            <DialogTitle>
+              {summaryIncludeAi ? '提交记录 · AI 总结' : '提交记录 · 列表'}
+            </DialogTitle>
+            <p className="pt-1 text-xs text-muted-foreground">
+              当前筛选下、列表中已加载 {filteredCommits.length} 条（时间升序排列）。若需更长历史请先下拉「加载更多」。
+            </p>
+          </DialogHeader>
+          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden px-6 pb-6">
+            <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
+              <div className="flex shrink-0 flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">全部提交（可复制）</p>
+                  <p className="text-xs text-muted-foreground">
+                    每行格式：序号 · 日期 · 短哈希 · 作者 · 说明。可在框内 Ctrl+A 全选复制。
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 shrink-0 text-xs"
+                  disabled={!commitsListPlainText}
+                  onClick={copyCommitListToClipboard}
+                >
+                  {commitListCopied ? '已复制' : '复制全部'}
+                </Button>
+              </div>
+              <textarea
+                readOnly
+                value={commitsListPlainText}
+                spellCheck={false}
+                className="min-h-0 w-full flex-1 resize-y overflow-auto rounded-md border border-input bg-muted/40 px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onFocus={(e) => e.currentTarget.select()}
+              />
+            </div>
+
+            {summaryIncludeAi ? (
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden border-t border-border pt-4">
+                <p className="mb-2 shrink-0 text-sm font-medium">完整对话</p>
+                <p className="mb-3 shrink-0 text-xs text-muted-foreground">
+                  以下为发往模型的系统提示、用户消息及助手回复（与菜单「AI」中配置的接口一致）。
+                </p>
+                <div
+                  ref={aiSummaryScrollRef}
+                  className="min-h-0 flex-1 space-y-3 overflow-y-auto rounded-md border border-border/80 bg-muted/30 p-3 text-sm"
+                >
+                  {summaryConversationMessages?.map((m, idx) => (
+                    <div key={`${m.role}-${idx}`} className="space-y-1">
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        {m.role === 'system' ? '系统' : m.role === 'user' ? '用户' : m.role}
+                      </div>
+                      <pre className="max-h-[min(28vh,240px)] overflow-y-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-background/80 px-2.5 py-2 font-sans text-xs leading-relaxed text-foreground">
+                        {m.content}
+                      </pre>
+                    </div>
+                  ))}
+                  <div className="space-y-1 border-t border-border/60 pt-3">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      助手
+                    </div>
+                    {summaryLoading && (
+                      <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                        <span>正在流式生成…</span>
+                      </div>
+                    )}
+                    {summaryError && (
+                      <p className="whitespace-pre-wrap text-xs text-destructive">{summaryError}</p>
+                    )}
+                    {summaryText ? (
+                      <div className="whitespace-pre-wrap rounded border border-primary/25 bg-background/90 px-2.5 py-2 text-xs leading-relaxed">
+                        {summaryText}
+                      </div>
+                    ) : null}
+                    {!summaryLoading &&
+                    !summaryError &&
+                    !summaryText &&
+                    summaryConversationMessages &&
+                    summaryConversationMessages.length > 0 ? (
+                      <p className="text-xs text-muted-foreground">暂无助手回复</p>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="shrink-0 border-t border-border pt-4">
+                <p className="mb-2 text-xs text-muted-foreground">
+                  未请求 AI。需要时点击下方按钮（将使用菜单「AI」中的模型配置）。
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="gap-1"
+                  disabled={filteredCommits.length === 0 || summaryLoading}
+                  onClick={handleAiSummarize}
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  生成 AI 总结
+                </Button>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

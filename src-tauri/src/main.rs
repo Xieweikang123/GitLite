@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::fs;
 use anyhow::Result; 
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use tauri::{Manager, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem, CustomMenuItem, GlobalWindowEvent};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -291,6 +291,107 @@ fn openai_chat_completion_text(
     Ok(content.to_string())
 }
 
+/// OpenAI 兼容 `stream: true` 的 chat/completions；增量文本经 `tx` 送出，由异步任务调用 `window.emit`（勿在 `spawn_blocking` 内直接 emit，否则前端事件会积压到请求结束才显示）。
+fn stream_openai_chat_sse(
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+    config: &AiConfig,
+    messages: Vec<serde_json::Value>,
+    max_tokens: u32,
+) -> Result<(), String> {
+    let base_url = config.base_url.trim().trim_end_matches('/').to_string();
+    if base_url.is_empty() {
+        return Err("请填写 API 地址".to_string());
+    }
+    let model = config.model.trim().to_string();
+    if model.is_empty() {
+        return Err("请填写模型名称".to_string());
+    }
+    let api_key = config
+        .api_key
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let url = format!("{}/chat/completions", base_url);
+    let body = serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.3,
+        "stream": true
+    });
+
+    let resp = std::thread::spawn(move || {
+        let req = ureq::post(&url).set("Content-Type", "application/json");
+        let req = if let Some(ref key) = api_key {
+            req.set("Authorization", &format!("Bearer {}", key))
+        } else {
+            req
+        };
+        req.send_json(body)
+    })
+    .join()
+    .map_err(|_| "请求线程异常".to_string())?;
+
+    let resp = resp.map_err(|e| format!("请求失败: {}", e))?;
+    let status = resp.status();
+    if status >= 400 {
+        let text = resp.into_string().unwrap_or_default();
+        let short: String = text.chars().take(800).collect();
+        return Err(format!("HTTP {} — {}", status, short));
+    }
+
+    let reader = resp.into_reader();
+    let mut buf_reader = BufReader::new(reader);
+    let mut line_buf = String::new();
+    let mut got_any_content = false;
+    loop {
+        line_buf.clear();
+        let n = buf_reader
+            .read_line(&mut line_buf)
+            .map_err(|e| format!("读取流失败: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        let line = line_buf.trim_end();
+        if line.is_empty() {
+            continue;
+        }
+        if !line.starts_with("data:") {
+            continue;
+        }
+        let rest = line[5..].trim_start();
+        if rest == "[DONE]" {
+            break;
+        }
+        let v: serde_json::Value = match serde_json::from_str(rest) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if let Some(err) = v.get("error") {
+            let msg = err
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown");
+            return Err(format!("API 错误: {}", msg));
+        }
+        if let Some(content) = v
+            .pointer("/choices/0/delta/content")
+            .and_then(|c| c.as_str())
+        {
+            if !content.is_empty() {
+                got_any_content = true;
+                tx.send(content.to_string())
+                    .map_err(|_| "UI 广播通道已关闭".to_string())?;
+            }
+        }
+    }
+    if !got_any_content {
+        return Err("模型未返回有效内容（流式响应为空），请重试或检查模型是否支持 stream".to_string());
+    }
+    Ok(())
+}
+
 /// 根据暂存区 diff 调用已配置的模型生成一行中文提交说明。
 #[tauri::command]
 async fn generate_commit_message_ai(repo_path: String) -> Result<String, String> {
@@ -329,6 +430,107 @@ async fn generate_commit_message_ai(repo_path: String) -> Result<String, String>
         return Err("模型未返回有效提交说明，请重试".to_string());
     }
     Ok(msg)
+}
+
+/// 提交页「AI 总结」传入的单条记录（与前端 CommitInfo 字段对齐，无需整仓库路径）。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CommitLineForAi {
+    pub short_id: String,
+    pub message: String,
+    pub author: String,
+    pub date: String,
+}
+
+fn parse_commit_line_date(s: &str) -> Option<chrono::NaiveDateTime> {
+    chrono::NaiveDateTime::parse_from_str(s.trim(), "%Y-%m-%d %H:%M:%S").ok()
+}
+
+/// 根据当前筛选范围内的提交记录流式生成中文工作总结（经 `ai-summary-chunk` 推送增量）。
+#[tauri::command]
+async fn summarize_commits_ai_stream(
+    window: tauri::Window,
+    commits: Vec<CommitLineForAi>,
+) -> Result<(), String> {
+    let config = get_ai_config().await?;
+    if !config.enabled {
+        return Err("请先在菜单「AI」中启用并保存配置".to_string());
+    }
+    if commits.is_empty() {
+        return Err("当前筛选范围内没有可总结的提交".to_string());
+    }
+
+    let mut rows = commits;
+    rows.sort_by(|a, b| {
+        let da = parse_commit_line_date(&a.date);
+        let db = parse_commit_line_date(&b.date);
+        match (da, db) {
+            (Some(x), Some(y)) => x.cmp(&y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+    });
+
+    const MAX_ITEMS: usize = 500;
+    const MAX_CHARS: usize = 100_000;
+    let mut block = String::new();
+    for (i, c) in rows.iter().take(MAX_ITEMS).enumerate() {
+        let line = format!(
+            "{}. {} | {} | {} | {}\n",
+            i + 1,
+            c.date,
+            c.short_id,
+            c.author,
+            c.message
+        );
+        if block.len() + line.len() > MAX_CHARS {
+            block.push_str("…（提交列表过长已截断）\n");
+            break;
+        }
+        block.push_str(&line);
+    }
+
+    let system = "你是 Git 版本历史助手。用户会给出若干条提交记录（按时间从旧到新）。\
+请用简洁的中文总结这些提交主要完成了什么工作：分主题或按时间脉络组织；用要点列表；不要逐条机械复述；若只能依据提交说明推断，可简要说明。";
+    let user = format!("以下为当前筛选范围内的提交记录：\n\n{}", block.trim_end());
+
+    let messages = vec![
+        serde_json::json!({"role": "system", "content": system}),
+        serde_json::json!({"role": "user", "content": user}),
+    ];
+
+    let _ = window.emit(
+        "ai-summary-conversation",
+        serde_json::json!({
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user", "content": user },
+            ]
+        }),
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let window_emit = window.clone();
+    let emit_task = tokio::spawn(async move {
+        while let Some(text) = rx.recv().await {
+            let _ = window_emit.emit(
+                "ai-summary-chunk",
+                serde_json::json!({ "text": text }),
+            );
+        }
+    });
+
+    let config = config.clone();
+    let read_result = tokio::task::spawn_blocking(move || stream_openai_chat_sse(tx, &config, messages, 2048))
+        .await
+        .map_err(|e| format!("流式任务异常: {}", e))?;
+
+    read_result?;
+    emit_task
+        .await
+        .map_err(|e| format!("流式广播任务异常: {}", e))?;
+
+    Ok(())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -3667,6 +3869,7 @@ fn main() {
             save_ai_config,
             test_ai_connection,
             generate_commit_message_ai,
+            summarize_commits_ai_stream,
             get_git_config_info
         ])
         .run(tauri::generate_context!())
