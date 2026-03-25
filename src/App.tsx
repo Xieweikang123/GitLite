@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react' 
 import { useGit } from './hooks/useGit'
 import { useDarkMode } from './hooks/useDarkMode'
+import { useMonacoThemeSync } from './hooks/useMonacoThemeSync'
 import { invoke } from '@tauri-apps/api/tauri'
 import { listen } from '@tauri-apps/api/event'
 import { TopToolbar } from './components/TopToolbar'
@@ -14,6 +15,7 @@ import { ProxyConfigModal } from './components/ProxyConfigModal'
 import { CommitInfo, FileChange } from './types/git'
 
 function App() {
+  useMonacoThemeSync()
   // 旧的三栏聚焦状态已废弃，保留为将来扩展可用；当前用 tab 切换
   const { 
     repoInfo, 

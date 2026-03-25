@@ -3,6 +3,11 @@ import SyntaxHighlighter from './SyntaxHighlighter';
 import { Button } from './ui/button';
 import { Copy, Download, Eye, EyeOff } from 'lucide-react';
 
+function parseCssPx(value: string): number | undefined {
+  const m = /^(\d+(?:\.\d+)?)px$/i.exec(value.trim());
+  return m ? Math.round(Number(m[1])) : undefined;
+}
+
 interface CodeViewerProps {
   code: string;
   language: string;
@@ -103,6 +108,9 @@ const CodeViewer: React.FC<CodeViewerProps> = ({
           language={language}
           showLineNumbers={showLineNumbers}
           className="text-sm"
+          maxViewportHeightPx={
+            isExpanded ? undefined : parseCssPx(maxHeight) ?? 400
+          }
         />
       </div>
 

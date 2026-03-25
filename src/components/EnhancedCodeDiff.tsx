@@ -150,6 +150,7 @@ const EnhancedCodeDiff: React.FC<EnhancedCodeDiffProps> = ({
                 code={line.content}
                 language={language || getLanguageFromPath(filePath)}
                 className="inline-block"
+                inline
               />
             </div>
           </div>
@@ -203,6 +204,7 @@ const EnhancedCodeDiff: React.FC<EnhancedCodeDiffProps> = ({
                       code={leftLine.content}
                       language={language || getLanguageFromPath(filePath)}
                       className="inline-block"
+                      inline
                     />
                   </div>
                 </div>
@@ -220,6 +222,7 @@ const EnhancedCodeDiff: React.FC<EnhancedCodeDiffProps> = ({
                       code={rightLine.content}
                       language={language || getLanguageFromPath(filePath)}
                       className="inline-block"
+                      inline
                     />
                   </div>
                 </div>
