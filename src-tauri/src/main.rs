@@ -3,11 +3,73 @@
 
 use git2::{Repository, Oid};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::fs;
-use anyhow::Result; 
+use anyhow::Result;
 use std::io::{BufRead, BufReader, Write};
+use std::sync::{Mutex, Once, OnceLock};
 use tauri::{Manager, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem, CustomMenuItem, GlobalWindowEvent};
+
+/// AI 总结排查日志路径：调试构建写入仓库 `logs/ai-summary.log`；发布构建写入本机 `%LOCALAPPDATA%/GitLite/logs/`。可用环境变量 `GITLITE_AI_SUMMARY_LOG` 覆盖为绝对路径。
+fn ai_summary_log_file_path() -> PathBuf {
+    static CACHE: OnceLock<PathBuf> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            if let Ok(p) = std::env::var("GITLITE_AI_SUMMARY_LOG") {
+                return PathBuf::from(p.trim());
+            }
+            if cfg!(debug_assertions) {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../logs/ai-summary.log")
+            } else {
+                dirs::data_local_dir()
+                    .unwrap_or_else(std::env::temp_dir)
+                    .join("GitLite")
+                    .join("logs")
+                    .join("ai-summary.log")
+            }
+        })
+        .clone()
+}
+
+static AI_SUMMARY_LOG_HEADER: Once = Once::new();
+static AI_SUMMARY_LOG_MUTEX: Mutex<()> = Mutex::new(());
+
+fn ai_summary_log_line(message: &str) {
+    let path = ai_summary_log_file_path();
+    AI_SUMMARY_LOG_HEADER.call_once(|| {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let header = format!(
+            "\n======== {} [ai-summary] 日志文件: {} ========\n",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+            path.display()
+        );
+        if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = f.write_all(header.as_bytes());
+            let _ = f.flush();
+        }
+        eprintln!(
+            "[ai-summary] 详情已写入文件: {}",
+            path.display()
+        );
+    });
+    if let Ok(_g) = AI_SUMMARY_LOG_MUTEX.lock() {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let line = format!(
+            "{} {}\n",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+            message
+        );
+        if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = f.write_all(line.as_bytes());
+            let _ = f.flush();
+        }
+    }
+    eprintln!("{}", message);
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CommitInfo {
@@ -291,6 +353,55 @@ fn openai_chat_completion_text(
     Ok(content.to_string())
 }
 
+/// 从 OpenAI 兼容的 SSE `data:` JSON 中取本帧增量文本（不同网关/模型字段不一致）。
+fn openai_sse_delta_piece(v: &serde_json::Value) -> Option<String> {
+    if let Some(delta) = v.pointer("/choices/0/delta") {
+        if delta.is_object() {
+            // 最常见：delta.content 字符串
+            if let Some(s) = delta.get("content").and_then(|c| c.as_str()) {
+                if !s.is_empty() {
+                    return Some(s.to_string());
+                }
+            }
+            // 新版/网关：delta.content 为数组，元素含 text
+            if let Some(arr) = delta.get("content").and_then(|c| c.as_array()) {
+                let mut out = String::new();
+                for item in arr {
+                    if let Some(t) = item.get("text").and_then(|x| x.as_str()) {
+                        out.push_str(t);
+                    } else if let Some(t) = item.get("content").and_then(|x| x.as_str()) {
+                        out.push_str(t);
+                    } else if let Some(t) = item.as_str() {
+                        out.push_str(t);
+                    }
+                }
+                if !out.is_empty() {
+                    return Some(out);
+                }
+            }
+            // 部分兼容层使用 delta.text
+            if let Some(s) = delta.get("text").and_then(|c| c.as_str()) {
+                if !s.is_empty() {
+                    return Some(s.to_string());
+                }
+            }
+            // 推理模型常见：reasoning_content（无 content 时仍展示推理过程）
+            if let Some(s) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
+                if !s.is_empty() {
+                    return Some(s.to_string());
+                }
+            }
+        }
+    }
+    // completion 流或缺少 delta：choices[0].text
+    if let Some(s) = v.pointer("/choices/0/text").and_then(|c| c.as_str()) {
+        if !s.is_empty() {
+            return Some(s.to_string());
+        }
+    }
+    None
+}
+
 /// OpenAI 兼容 `stream: true` 的 chat/completions；增量文本经 `tx` 送出，由异步任务调用 `window.emit`（勿在 `spawn_blocking` 内直接 emit，否则前端事件会积压到请求结束才显示）。
 fn stream_openai_chat_sse(
     tx: tokio::sync::mpsc::UnboundedSender<String>,
@@ -341,10 +452,28 @@ fn stream_openai_chat_sse(
         return Err(format!("HTTP {} — {}", status, short));
     }
 
+    ai_summary_log_line(&format!(
+        "[ai-summary] sse HTTP {} 已开始读响应体（首字延迟取决于模型与 {} 字符左右的用户消息）",
+        status,
+        messages
+            .get(1)
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+            .map(|s| s.chars().count())
+            .unwrap_or(0)
+    ));
+
     let reader = resp.into_reader();
     let mut buf_reader = BufReader::new(reader);
     let mut line_buf = String::new();
     let mut got_any_content = false;
+    let mut delta_chunk_count: usize = 0;
+    let mut delta_char_count: usize = 0;
+    let mut json_parse_skips: usize = 0;
+    let mut non_data_line_logs: usize = 0;
+    let mut line_count: usize = 0;
+    let mut no_delta_shape_logs: usize = 0;
+    let t_sse = std::time::Instant::now();
     loop {
         line_buf.clear();
         let n = buf_reader
@@ -353,11 +482,26 @@ fn stream_openai_chat_sse(
         if n == 0 {
             break;
         }
+        line_count += 1;
+        if line_count == 1 {
+            ai_summary_log_line(&format!(
+                "[ai-summary] sse 首行已到达 (距读流开始 {:?})",
+                t_sse.elapsed()
+            ));
+        }
         let line = line_buf.trim_end();
         if line.is_empty() {
             continue;
         }
         if !line.starts_with("data:") {
+            if non_data_line_logs < 6 {
+                non_data_line_logs += 1;
+                let short: String = line.chars().take(160).collect();
+                ai_summary_log_line(&format!(
+                    "[ai-summary] sse 非 data: 行（跳过）#{}: {:?}",
+                    non_data_line_logs, short
+                ));
+            }
             continue;
         }
         let rest = line[5..].trim_start();
@@ -366,7 +510,17 @@ fn stream_openai_chat_sse(
         }
         let v: serde_json::Value = match serde_json::from_str(rest) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(_) => {
+                if json_parse_skips < 3 {
+                    let short: String = rest.chars().take(160).collect();
+                    ai_summary_log_line(&format!(
+                        "[ai-summary] sse 非 JSON 行（跳过）: {:?}",
+                        short
+                    ));
+                }
+                json_parse_skips += 1;
+                continue;
+            }
         };
         if let Some(err) = v.get("error") {
             let msg = err
@@ -375,17 +529,45 @@ fn stream_openai_chat_sse(
                 .unwrap_or("unknown");
             return Err(format!("API 错误: {}", msg));
         }
-        if let Some(content) = v
-            .pointer("/choices/0/delta/content")
-            .and_then(|c| c.as_str())
-        {
+        if let Some(content) = openai_sse_delta_piece(&v) {
             if !content.is_empty() {
                 got_any_content = true;
-                tx.send(content.to_string())
+                delta_chunk_count += 1;
+                delta_char_count += content.chars().count();
+                if delta_chunk_count <= 4 || delta_chunk_count % 50 == 0 {
+                    let preview: String = content.chars().take(40).collect();
+                    ai_summary_log_line(&format!(
+                        "[ai-summary] sse delta #{} len={} total_chars={} preview={:?}",
+                        delta_chunk_count,
+                        content.chars().count(),
+                        delta_char_count,
+                        preview
+                    ));
+                }
+                tx.send(content)
                     .map_err(|_| "UI 广播通道已关闭".to_string())?;
             }
+        } else if no_delta_shape_logs < 3 && v.get("choices").is_some() {
+            let short: String = serde_json::to_string(&v)
+                .unwrap_or_default()
+                .chars()
+                .take(500)
+                .collect();
+            ai_summary_log_line(&format!(
+                "[ai-summary] sse 有 choices 但未解析出增量文本，样例: {}",
+                short
+            ));
+            no_delta_shape_logs += 1;
         }
     }
+    ai_summary_log_line(&format!(
+        "[ai-summary] sse 结束 raw_lines≈{} delta_chunks={} delta_chars={} json_parse_skips={} non_data_skip_logs={}",
+        line_count,
+        delta_chunk_count,
+        delta_char_count,
+        json_parse_skips,
+        non_data_line_logs
+    ));
     if !got_any_content {
         return Err("模型未返回有效内容（流式响应为空），请重试或检查模型是否支持 stream".to_string());
     }
@@ -459,6 +641,11 @@ async fn summarize_commits_ai_stream(
         return Err("当前筛选范围内没有可总结的提交".to_string());
     }
 
+    ai_summary_log_line(&format!(
+        "[ai-summary] summarize_commits_ai_stream 开始 commits={}",
+        commits.len()
+    ));
+
     let mut rows = commits;
     rows.sort_by(|a, b| {
         let da = parse_commit_line_date(&a.date);
@@ -512,7 +699,16 @@ async fn summarize_commits_ai_stream(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let window_emit = window.clone();
     let emit_task = tokio::spawn(async move {
+        let mut emit_n = 0usize;
         while let Some(text) = rx.recv().await {
+            emit_n += 1;
+            let tlen = text.chars().count();
+            if emit_n <= 4 || emit_n % 50 == 0 {
+                ai_summary_log_line(&format!(
+                    "[ai-summary] window.emit ai-summary-chunk #{} len={}",
+                    emit_n, tlen
+                ));
+            }
             let _ = window_emit.emit(
                 "ai-summary-chunk",
                 serde_json::json!({ "text": text }),
@@ -530,6 +726,7 @@ async fn summarize_commits_ai_stream(
         .await
         .map_err(|e| format!("流式广播任务异常: {}", e))?;
 
+    ai_summary_log_line("[ai-summary] summarize_commits_ai_stream 完成（invoke 将返回）");
     Ok(())
 }
 
