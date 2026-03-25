@@ -1,5 +1,5 @@
 import { Button } from './ui/button'
-import { Download, GitPullRequest, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react'
+import { Download, GitPullRequest, RefreshCw, CheckCircle, AlertCircle, Upload } from 'lucide-react'
 import { cn } from '../lib/utils'
 
 export interface RemoteSyncBarProps {
@@ -10,6 +10,7 @@ export interface RemoteSyncBarProps {
   refreshSpinning?: boolean
   onFetchChanges?: () => void
   onPullChanges?: () => void
+  onPushChanges?: () => void
   onRefresh?: () => void
   refreshTitle?: string
   /** comfortable：工作区；compact：提交记录卡片内 */
@@ -24,6 +25,7 @@ export function RemoteSyncBar({
   refreshSpinning = false,
   onFetchChanges,
   onPullChanges,
+  onPushChanges,
   onRefresh,
   refreshTitle = '刷新远程状态',
   density = 'comfortable',
@@ -31,7 +33,7 @@ export function RemoteSyncBar({
 }: RemoteSyncBarProps) {
   const aheadN = ahead ?? 0
   const behindN = behind ?? 0
-  if (!onFetchChanges && !onPullChanges && !onRefresh) return null
+  if (!onFetchChanges && !onPullChanges && !onPushChanges && !onRefresh) return null
 
   const compact = density === 'compact'
 
@@ -119,6 +121,31 @@ export function RemoteSyncBar({
           >
             <GitPullRequest className="h-3.5 w-3.5 mr-1" />
             拉取
+          </Button>
+        )}
+        {onPushChanges && aheadN > 0 && (
+          <Button
+            size="sm"
+            onClick={onPushChanges}
+            disabled={disabled}
+            className="h-7 px-2 text-xs"
+            title="将本地提交推送到远程仓库"
+          >
+            <Upload className="h-3.5 w-3.5 mr-1" />
+            推送 ({aheadN})
+          </Button>
+        )}
+        {onPushChanges && aheadN === 0 && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onPushChanges}
+            disabled={disabled}
+            className="h-7 px-2 text-xs"
+            title="推送当前分支（即使没有待推送的提交）"
+          >
+            <Upload className="h-3.5 w-3.5 mr-1" />
+            推送
           </Button>
         )}
         {onRefresh && (

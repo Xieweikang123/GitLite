@@ -442,6 +442,7 @@ function App() {
                 behindCount={repoInfo?.behind}
                 onFetchChanges={handleFetchChanges}
                 onPullChanges={handlePullChanges}
+                onPushChanges={handlePushChangesRealtime}
                 onRefreshRepo={handleRefresh}
                 syncBusy={loading}
                 onGetCommitFiles={getCommitFiles}

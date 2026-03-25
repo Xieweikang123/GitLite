@@ -117,6 +117,7 @@ interface UnifiedCommitViewProps {
   behindCount?: number
   onFetchChanges?: () => void
   onPullChanges?: () => void
+  onPushChanges?: () => void
   onRefreshRepo?: () => void
   /** 仓库级操作进行中（如切换分支），用于禁用同步按钮 */
   syncBusy?: boolean
@@ -141,6 +142,7 @@ export function UnifiedCommitView({
   behindCount,
   onFetchChanges,
   onPullChanges,
+  onPushChanges,
   onRefreshRepo,
   syncBusy = false,
   onGetCommitFiles,
@@ -706,6 +708,7 @@ export function UnifiedCommitView({
               disabled={syncBusy}
               onFetchChanges={onFetchChanges}
               onPullChanges={onPullChanges}
+              onPushChanges={onPushChanges}
               onRefresh={onRefreshRepo}
               refreshTitle="刷新仓库与提交列表"
               density="compact"
