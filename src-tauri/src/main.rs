@@ -2083,24 +2083,17 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
         return Ok("Already up to date".to_string());
     }
 
-    // 检查工作区是否有未提交的更改
-    let index = match repo.index() {
-        Ok(i) => i,
-        Err(e) => {
-            log_message("ERROR", &format!("pull: get index failed: {}", e));
-            return Err(format!("Failed to get index: {}", e));
-        }
-    };
-
-    // 检查是否有未暂存的更改
-    let diff_count = repo.diff_index_to_workdir(Some(&index), None)
-        .map_err(|e| format!("Failed to create diff: {}", e))?
-        .stats()
-        .map_err(|e| format!("Failed to get diff stats: {}", e))?
-        .files_changed();
-
-    if diff_count > 0 {
-        log_message("WARN", &format!("pull: uncommitted changes detected | files_changed={}", diff_count));
+    // 与界面一致：用 collect_workspace_status 判断，避免与 diff_index_to_workdir 默认选项不一致导致误报
+    let ws = collect_workspace_status(&repo)?;
+    if !ws.staged_files.is_empty() || !ws.unstaged_files.is_empty() {
+        log_message(
+            "WARN",
+            &format!(
+                "pull: local changes block merge | staged={} unstaged={}",
+                ws.staged_files.len(),
+                ws.unstaged_files.len()
+            ),
+        );
         return Err("Cannot pull: You have uncommitted changes. Please commit or stash them first.".to_string());
     }
 
@@ -2913,30 +2906,31 @@ async fn pull_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     logs.push((timestamp, "INFO".to_string(), "检测到远程更新，准备合并...".to_string()));
 
-    // 检查工作区是否有未提交的更改
-    let index = match repo.index() {
-        Ok(i) => i,
+    // 与界面一致：用 collect_workspace_status 判断（与 diff_index_to_workdir 默认选项不一致时不再误报）
+    let ws = match collect_workspace_status(&repo) {
+        Ok(ws) => ws,
         Err(e) => {
             let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), format!("获取索引失败: {}", e)));
-            return Err(format!("Failed to get index: {}", e));
+            logs.push((timestamp, "ERROR".to_string(), format!("获取工作区状态失败: {}", e)));
+            return Err(e);
         }
     };
 
-    // 检查是否有未暂存的更改
-    let diff_count = repo.diff_index_to_workdir(Some(&index), None)
-        .map_err(|e| format!("Failed to create diff: {}", e))?
-        .stats()
-        .map_err(|e| format!("Failed to get diff stats: {}", e))?
-        .files_changed();
-
-    if diff_count > 0 {
+    if !ws.staged_files.is_empty() || !ws.unstaged_files.is_empty() {
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push((timestamp, "WARN".to_string(), format!("检测到 {} 个未提交的更改", diff_count)));
-        
+        logs.push((
+            timestamp,
+            "WARN".to_string(),
+            format!(
+                "存在未提交的更改（暂存 {} 项、未暂存 {} 项）",
+                ws.staged_files.len(),
+                ws.unstaged_files.len()
+            ),
+        ));
+
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
         logs.push((timestamp, "ERROR".to_string(), "无法拉取：存在未提交的更改，请先提交或贮藏".to_string()));
-        
+
         return Err("Cannot pull: You have uncommitted changes. Please commit or stash them first.".to_string());
     }
 
