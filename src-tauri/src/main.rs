@@ -1,7 +1,7 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use git2::{Repository, Oid};
+use git2::{Oid, Repository, StashFlags};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -4015,9 +4015,12 @@ async fn create_stash(repo_path: String, message: String) -> Result<String, Stri
         return Err("No changes to stash".to_string());
     }
     
-    log_message("DEBUG", "create_stash: changes detected, proceeding with stash");
+    log_message(
+        "DEBUG",
+        "create_stash: changes detected, proceeding with stash (include untracked, like git stash -u)",
+    );
 
-    let stash_id = repo.stash_save(&signature, &message, None)
+    let stash_id = repo.stash_save(&signature, &message, Some(StashFlags::INCLUDE_UNTRACKED))
         .map_err(|e| {
             let error_msg = format!("Failed to create stash: {}", e);
             log_message("ERROR", &format!("create_stash: {}", error_msg));

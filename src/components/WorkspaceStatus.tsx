@@ -729,8 +729,13 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
       </div>
 
       {error && (
-        <div className="p-3 bg-destructive/10 border border-destructive/20 rounded-lg">
-          <p className="text-destructive text-sm">{error}</p>
+        <div
+          className="fixed left-1/2 top-20 z-[100] w-[min(90vw,42rem)] -translate-x-1/2 px-4"
+          role="alert"
+        >
+          <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-3 shadow-lg backdrop-blur-sm">
+            <p className="break-words text-sm text-destructive">{error}</p>
+          </div>
         </div>
       )}
 
