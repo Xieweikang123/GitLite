@@ -373,7 +373,6 @@ function App() {
       
       {/* 顶部工具栏 */}
       <TopToolbar
-        onOpenRepository={openRepository}
         onBranchSelect={handleBranchSelect}
         onOpenRemoteRepository={handleOpenRemoteRepository}
         onPullChanges={handlePullChanges}
