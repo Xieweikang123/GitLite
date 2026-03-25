@@ -2,6 +2,27 @@ import * as React from "react"
 import { X } from "lucide-react"
 import { cn } from "../../lib/utils"
 
+/** 支持多个 Dialog 同时打开（如确认框叠在主弹窗上）时成对加解锁 */
+let bodyScrollLockCount = 0
+
+function lockBodyScroll() {
+  bodyScrollLockCount++
+  if (bodyScrollLockCount === 1) {
+    document.documentElement.style.overflow = "hidden"
+    document.body.style.overflow = "hidden"
+    document.body.style.overscrollBehavior = "none"
+  }
+}
+
+function unlockBodyScroll() {
+  bodyScrollLockCount = Math.max(0, bodyScrollLockCount - 1)
+  if (bodyScrollLockCount === 0) {
+    document.documentElement.style.overflow = ""
+    document.body.style.overflow = ""
+    document.body.style.overscrollBehavior = ""
+  }
+}
+
 interface DialogProps {
   open?: boolean
   onOpenChange?: (open: boolean) => void
@@ -58,23 +79,28 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(({
   onOpenChange,
   ...props 
 }, ref) => {
-  if (!isOpen) return null
-
-  // 处理 ESC 键关闭
   React.useEffect(() => {
+    if (!isOpen) return
     const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isOpen) {
+      if (e.key === "Escape") {
         onOpenChange?.(false)
       }
     }
-
-    if (isOpen) {
-      document.addEventListener('keydown', handleEscape)
-      return () => {
-        document.removeEventListener('keydown', handleEscape)
-      }
+    document.addEventListener("keydown", handleEscape)
+    return () => {
+      document.removeEventListener("keydown", handleEscape)
     }
   }, [isOpen, onOpenChange])
+
+  React.useEffect(() => {
+    if (!isOpen) return
+    lockBodyScroll()
+    return () => {
+      unlockBodyScroll()
+    }
+  }, [isOpen])
+
+  if (!isOpen) return null
 
   return (
     <>
