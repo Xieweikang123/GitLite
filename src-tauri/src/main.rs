@@ -3904,6 +3904,33 @@ async fn get_file_content(repo_path: String, file_path: String) -> Result<String
     Ok(content)
 }
 
+/// 优先读取工作区文件；若不存在则读取 HEAD 中的 blob（UTF-8 文本）
+#[tauri::command]
+async fn get_head_or_worktree_file_text(repo_path: String, file_path: String) -> Result<String, String> {
+    let full_path = Path::new(&repo_path).join(&file_path);
+    if full_path.is_file() {
+        return fs::read_to_string(&full_path).map_err(|e| format!("读取工作区文件失败: {}", e));
+    }
+
+    let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+    let head = repo.head().map_err(|e| format!("无法读取 HEAD: {}", e))?;
+    let oid = head
+        .target()
+        .ok_or_else(|| "无法解析 HEAD 目标".to_string())?;
+    let commit = repo
+        .find_commit(oid)
+        .map_err(|e| format!("无法读取提交: {}", e))?;
+    let tree = commit.tree().map_err(|e| format!("无法读取树: {}", e))?;
+    let entry = tree
+        .get_path(Path::new(&file_path))
+        .map_err(|_| "工作区无此文件且 HEAD 中不存在".to_string())?;
+    let blob = repo
+        .find_blob(entry.id())
+        .map_err(|e| format!("无法读取 blob: {}", e))?;
+    let content = blob.content();
+    String::from_utf8(content.to_vec()).map_err(|_| "二进制文件，无法以文本显示".to_string())
+}
+
 // 获取贮藏列表
 #[tauri::command]
 async fn get_stash_list(repo_path: String) -> Result<Vec<StashInfo>, String> {
@@ -4248,6 +4275,7 @@ fn main() {
             get_unstaged_file_diff,
             get_untracked_file_content,
             get_file_content,
+            get_head_or_worktree_file_text,
             get_stash_list,
             create_stash,
             apply_stash,

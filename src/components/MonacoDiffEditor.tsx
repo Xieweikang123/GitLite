@@ -1,7 +1,7 @@
 import { useMemo, useCallback, useSyncExternalStore, useRef, useEffect, useState } from 'react'
 import type { editor } from 'monaco-editor'
 import { DiffEditor, type DiffOnMount } from '@monaco-editor/react'
-import { toMonacoLanguage } from '@/utils/monacoLanguage'
+import { getMonacoLanguageFromPath } from '@/utils/monacoLanguage'
 import { parseUnifiedDiffToPair } from '@/utils/parseUnifiedDiff'
 
 /** Shift + 滚轮：转为横向滚动；兼容 deltaMode 与触控板横向 deltaX */
@@ -30,12 +30,6 @@ function subscribeDarkClass(cb: () => void) {
 
 function getDarkClass(): boolean {
   return document.documentElement.classList.contains('dark')
-}
-
-function getMonacoLanguageFromPath(path?: string): string {
-  if (!path) return 'plaintext'
-  const ext = path.split('.').pop()?.toLowerCase() ?? ''
-  return toMonacoLanguage(ext)
 }
 
 export interface VSCodeDiffProps {

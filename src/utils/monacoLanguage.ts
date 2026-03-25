@@ -51,3 +51,10 @@ export function toMonacoLanguage(language: string): string {
   const key = language.trim().toLowerCase();
   return LANGUAGE_MAP[key] || key || "plaintext";
 }
+
+/** 从仓库内相对路径推断 Monaco 语言 id */
+export function getMonacoLanguageFromPath(path?: string): string {
+  if (!path) return "plaintext";
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  return toMonacoLanguage(ext);
+}
