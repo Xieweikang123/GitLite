@@ -9,13 +9,8 @@ import { VSCodeDiff } from './CodeDiff'
 import { RemoteSyncBar } from './RemoteSyncBar'
 import { cn } from '../lib/utils'
 import { invoke } from '@tauri-apps/api/tauri'
-
-function formatLocalYmd(d: Date): string {
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
-}
+import { CommitDatePickerButton } from './CommitDatePickerButton'
+import { formatLocalYmd } from '../utils/dateYmd'
 
 /** 提交页三栏宽度：提交列表 | 文件列表 | diff（与分隔条宽度一致） */
 const PANES_STORAGE_KEY = 'gitlite:unifiedCommitView:panes'
@@ -550,20 +545,18 @@ export function UnifiedCommitView({
             <div className="flex min-w-0 flex-col gap-1.5">
               <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
                 <Calendar className="h-3 w-3 shrink-0 text-muted-foreground" />
-                <input
-                  type="date"
+                <CommitDatePickerButton
                   value={dateRangeStart}
-                  onChange={(e) => setDateRangeStart(e.target.value)}
-                  className="h-7 min-w-0 max-w-full shrink rounded-md border bg-background px-2 text-xs text-foreground"
-                  title="开始日期"
+                  onChange={setDateRangeStart}
+                  placeholder="开始日期"
+                  title="开始日期（点击打开日历）"
                 />
                 <span className="shrink-0 text-xs text-muted-foreground">至</span>
-                <input
-                  type="date"
+                <CommitDatePickerButton
                   value={dateRangeEnd}
-                  onChange={(e) => setDateRangeEnd(e.target.value)}
-                  className="h-7 min-w-0 max-w-full shrink rounded-md border bg-background px-2 text-xs text-foreground"
-                  title="结束日期"
+                  onChange={setDateRangeEnd}
+                  placeholder="结束日期"
+                  title="结束日期（点击打开日历）"
                 />
                 <Button
                   type="button"
