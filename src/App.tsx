@@ -48,7 +48,9 @@ function App() {
   const [selectedCommit, setSelectedCommit] = useState<CommitInfo | null>(null)
   const [commitFiles, setCommitFiles] = useState<FileChange[]>([])
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
-  const [allCommits, setAllCommits] = useState<CommitInfo[]>([])
+  /** 待拉取区间（远端领先于 HEAD 的提交），与本地分页列表分开，便于 load more 的 offset 仍指向 HEAD 历史 */
+  const [incomingCommits, setIncomingCommits] = useState<CommitInfo[]>([])
+  const [localCommits, setLocalCommits] = useState<CommitInfo[]>([])
   const [loadingMore, setLoadingMore] = useState(false)
   const [hasMoreCommits, setHasMoreCommits] = useState(true)
   const [searchResults, setSearchResults] = useState<CommitInfo[] | null>(null)
@@ -103,7 +105,8 @@ function App() {
     setSelectedCommit(null)
     setCommitFiles([])
     setSelectedFile(null)
-    setAllCommits([])
+    setIncomingCommits([])
+    setLocalCommits([])
     setHasMoreCommits(true)
     setSearchResults(null)
   }
@@ -131,11 +134,11 @@ function App() {
     
     setLoadingMore(true)
     try {
-      const newCommits = await getCommitsPaginated(50, allCommits.length)
+      const newCommits = await getCommitsPaginated(50, localCommits.length)
       if (newCommits.length === 0) {
         setHasMoreCommits(false)
       } else {
-        setAllCommits(prev => [...prev, ...newCommits])
+        setLocalCommits(prev => [...prev, ...newCommits])
         if (newCommits.length < 50) {
           setHasMoreCommits(false)
         }
@@ -198,7 +201,8 @@ function App() {
       setSelectedCommit(null)
       setCommitFiles([])
       setSelectedFile(null)
-      setAllCommits([])
+      setIncomingCommits([])
+      setLocalCommits([])
       setHasMoreCommits(true)
     } catch (error) {
       console.error('拉取失败:', error)
@@ -237,7 +241,8 @@ function App() {
       setIsOperationRunning(false)
       
       // 获取成功后重置状态（获取不会改变工作区，所以不需要重置文件状态）
-      setAllCommits([])
+      setIncomingCommits([])
+      setLocalCommits([])
       setHasMoreCommits(true)
     } catch (error) {
       console.error('获取失败:', error)
@@ -285,7 +290,8 @@ function App() {
         setSelectedCommit(null)
         setCommitFiles([])
         setSelectedFile(null)
-        setAllCommits([])
+        setIncomingCommits([])
+        setLocalCommits([])
         setHasMoreCommits(true)
       }
     } catch (error) {
@@ -321,7 +327,8 @@ function App() {
       setSelectedCommit(null)
       setCommitFiles([])
       setSelectedFile(null)
-      setAllCommits([])
+      setIncomingCommits([])
+      setLocalCommits([])
       setHasMoreCommits(true)
     } catch (error) {
       console.error('推送失败:', error)
@@ -376,14 +383,19 @@ function App() {
   // 当仓库信息更新时，重置提交列表并退出全仓库搜索模式
   React.useEffect(() => {
     if (repoInfo) {
-      setAllCommits(repoInfo.commits)
+      setIncomingCommits(repoInfo.incoming_commits ?? [])
+      setLocalCommits(repoInfo.commits)
       setHasMoreCommits(repoInfo.commits.length >= 50)
     } else {
-      setAllCommits([])
+      setIncomingCommits([])
+      setLocalCommits([])
       setHasMoreCommits(true)
     }
     setSearchResults(null)
   }, [repoInfo])
+
+  const mergedCommitsForView =
+    searchResults ?? [...incomingCommits, ...localCommits]
 
   const [activeTab, setActiveTab] = useState<'workspace' | 'commits' | 'files'>('workspace')
 
@@ -485,7 +497,7 @@ function App() {
           <div className="flex-1 flex flex-col min-h-0 px-4">
             {repoInfo ? (
               <UnifiedCommitView
-                commits={searchResults ?? allCommits}
+                commits={mergedCommitsForView}
                 onLoadMore={handleLoadMore}
                 hasMore={!searchResults && hasMoreCommits}
                 loading={loadingMore}
@@ -494,6 +506,7 @@ function App() {
                 onSearchFullRepo={handleSearchFullRepo}
                 onClearSearchMode={handleClearSearchMode}
                 aheadCount={repoInfo?.ahead ?? 0}
+                incomingCommitCount={searchResults ? 0 : incomingCommits.length}
                 behindCount={repoInfo?.behind}
                 onFetchChanges={handleFetchChanges}
                 onPullChanges={handlePullChanges}

@@ -120,6 +120,8 @@ interface UnifiedCommitViewProps {
   onSearchFullRepo?: (term: string) => void
   onClearSearchMode?: () => void
   aheadCount?: number
+  /** 列表前部为「待拉取」提交时的条数（与 commits 中前置的 incoming 段一致） */
+  incomingCommitCount?: number
   behindCount?: number
   onFetchChanges?: () => void
   onPullChanges?: () => void
@@ -149,6 +151,7 @@ export function UnifiedCommitView({
   onSearchFullRepo,
   onClearSearchMode,
   aheadCount = 0,
+  incomingCommitCount = 0,
   behindCount,
   onFetchChanges,
   onPullChanges,
@@ -632,10 +635,18 @@ export function UnifiedCommitView({
     }
   }, [filteredCommits, scheduleAiSummaryStreamFlush])
 
-  // 计算待推送提交集合 - 使用 useMemo 优化
+  // 待拉取：列表最前 incomingCommitCount 条（与远端领先于 HEAD 的区间一致）
+  const pendingPullIds = useMemo(() => {
+    const n = Math.max(0, incomingCommitCount)
+    if (n <= 0) return new Set<string>()
+    return new Set(commits.slice(0, n).map((c) => c.id))
+  }, [commits, incomingCommitCount])
+
+  // 待推送：在本地历史段内取前 aheadCount 条（跳过前置的待拉取段）
   const pendingPushIds = useMemo(() => {
-    return new Set(commits.slice(0, aheadCount).map(c => c.id))
-  }, [commits, aheadCount])
+    const start = Math.max(0, incomingCommitCount)
+    return new Set(commits.slice(start, start + aheadCount).map((c) => c.id))
+  }, [commits, aheadCount, incomingCommitCount])
 
   /** 与 RepoInfo.head_short_id / 列表 short_id 对齐，用于标记当前检出提交 */
   const headShortNormalized = useMemo(
@@ -1152,6 +1163,14 @@ export function UnifiedCommitView({
                         ))}
                         {refNames && refNames.length > 2 && (
                           <span className="text-[9px] text-muted-foreground">+{refNames.length - 2}</span>
+                        )}
+                        {pendingPullIds.has(commit.id) && (
+                          <Badge
+                            className="shrink-0 bg-amber-600 px-1 py-0 text-[10px] text-white hover:bg-amber-600/90"
+                            title="远程已有、本地尚未拉取合并的提交"
+                          >
+                            待拉取
+                          </Badge>
                         )}
                         {pendingPushIds.has(commit.id) && (
                           <Badge className="shrink-0 bg-blue-600 px-1 py-0 text-[10px] text-white hover:bg-blue-600/90">

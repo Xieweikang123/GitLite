@@ -49,6 +49,8 @@ export interface RepoInfo {
   commits: CommitInfo[]
   ahead: number // 本地比远端超前（待推送）
   behind: number // 本地比远端落后（待拉取）
+  /** 远程有而本地尚未拉取合并的提交（与 `git log HEAD..@{upstream}` 一致），展示在列表顶部 */
+  incoming_commits?: CommitInfo[]
   remote_url?: string // 远程仓库URL
 }
 
