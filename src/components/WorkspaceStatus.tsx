@@ -134,9 +134,11 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
     }
   }
 
+  /** 工作区页完整刷新：文件变更 + stash + 父级仓库信息（ahead/behind 等）。RemoteSyncBar 的刷新也走此路径，避免只刷新远程数字、列表仍陈旧。 */
   const handleManualRefresh = async () => {
     await fetchWorkspaceStatus()
     await fetchStashList()
+    await Promise.resolve(onRefresh())
   }
 
   // 打开贮藏对话框时加载列表
@@ -769,7 +771,8 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
           refreshSpinning={loading}
           onFetchChanges={onFetchChanges}
           onPullChanges={onPullChanges}
-          onRefresh={onRefresh}
+          onRefresh={handleManualRefresh}
+          refreshTitle="刷新远程状态与工作区文件"
         />
       )}
 
