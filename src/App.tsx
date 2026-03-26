@@ -4,6 +4,7 @@ import { useDarkMode } from './hooks/useDarkMode'
 import { useMonacoThemeSync } from './hooks/useMonacoThemeSync'
 import { invoke } from '@tauri-apps/api/tauri'
 import { listen } from '@tauri-apps/api/event'
+import { getCurrent } from '@tauri-apps/api/window'
 import { TopToolbar } from './components/TopToolbar'
 import { MenuToolbar } from './components/MenuToolbar'
 import { OperationsPanel } from './components/OperationsPanel'
@@ -335,6 +336,25 @@ function App() {
       setLogs(prev => [...prev, errorLog])
     }
   }
+
+  // 主界面 Esc：隐藏窗口（与点关闭一致，缩到托盘）；有弹层时由弹层先消费 Esc
+  useEffect(() => {
+    const overlayOpen = () => {
+      if (document.querySelector('div.fixed.inset-0.z-50')) return true
+      if (document.querySelector('[data-state="open"][data-side]')) return true
+      return false
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (overlayOpen()) return
+      e.preventDefault()
+      void getCurrent().hide().catch((err) => {
+        console.warn('隐藏窗口失败（非桌面壳或缺少权限）:', err)
+      })
+    }
+    document.addEventListener('keydown', onKeyDown, true)
+    return () => document.removeEventListener('keydown', onKeyDown, true)
+  }, [])
 
   // 监听实时日志事件
   useEffect(() => {
