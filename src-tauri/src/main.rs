@@ -750,6 +750,8 @@ pub struct RepoInfo {
     pub commits: Vec<CommitInfo>,
     pub ahead: u32,   // 本地比远端超前的提交数（待推送）
     pub behind: u32,  // 本地比远端落后的提交数（待拉取）
+    /// 远程有而本地尚未合并的提交（等价于 `git log HEAD..@{upstream}`），用于列表顶部展示
+    pub incoming_commits: Vec<CommitInfo>,
     pub remote_url: Option<String>, // 远程仓库URL
 }
 
@@ -1500,6 +1502,8 @@ fn get_repository_info(repo: &Repository, path: &str) -> Result<RepoInfo> {
             }
         }
     }
+
+    let incoming_commits = get_incoming_commits(repo, &current_branch, behind);
     
     // 获取远程仓库URL
     let remote_url = repo.find_remote("origin")
@@ -1514,8 +1518,73 @@ fn get_repository_info(repo: &Repository, path: &str) -> Result<RepoInfo> {
         commits,
         ahead,
         behind,
+        incoming_commits,
         remote_url,
     })
+}
+
+/// 列出 `git log HEAD..@{upstream}` 中的提交（需已 fetch，对象在本地远程跟踪分支上）。
+/// 失败或无上游时返回空列表，不阻断打开仓库。
+fn get_incoming_commits(repo: &Repository, current_branch: &str, behind: u32) -> Vec<CommitInfo> {
+    if behind == 0 {
+        return Vec::new();
+    }
+    let Ok(branch) = repo.find_branch(current_branch, git2::BranchType::Local) else {
+        return Vec::new();
+    };
+    let Some(local_oid) = branch.get().target() else {
+        return Vec::new();
+    };
+    let Ok(upstream_ref) = branch.upstream() else {
+        return Vec::new();
+    };
+    let Some(upstream_oid) = upstream_ref.get().target() else {
+        return Vec::new();
+    };
+
+    let mut revwalk = match repo.revwalk() {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    if revwalk
+        .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+        .is_err()
+    {
+        return Vec::new();
+    }
+    if revwalk.push(upstream_oid).is_err() || revwalk.hide(local_oid).is_err() {
+        return Vec::new();
+    }
+
+    let limit = (behind as usize).min(500);
+    let mut out = Vec::new();
+    for oid_result in revwalk {
+        if out.len() >= limit {
+            break;
+        }
+        let Ok(oid) = oid_result else {
+            continue;
+        };
+        let Ok(commit) = repo.find_commit(oid) else {
+            continue;
+        };
+        let author = commit.author();
+        let message = commit.message().unwrap_or("No message").to_string();
+        let date = chrono::DateTime::from_timestamp(commit.time().seconds(), 0)
+            .unwrap_or_default()
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        out.push(CommitInfo {
+            id: oid.to_string(),
+            short_id: format!("{:.7}", oid),
+            message: message.lines().next().unwrap_or("").to_string(),
+            author: author.name().unwrap_or("Unknown").to_string(),
+            email: author.email().unwrap_or("").to_string(),
+            date,
+            parent_ids: commit_parent_ids(&commit),
+        });
+    }
+    out
 }
 
 // 获取提交历史（初始加载，只获取前50个）
@@ -1983,21 +2052,6 @@ async fn get_commit_files(repo_path: String, commit_id: String) -> Result<Vec<Fi
 #[tauri::command]
 async fn get_single_file_diff(repo_path: String, commit_id: String, file_path: String) -> Result<String, String> {
     use git2::{Repository, Oid, DiffOptions, DiffFormat};
-use std::fs::{OpenOptions, create_dir_all};
-use std::io::Write;
-use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn append_repo_log(repo_path: &str, message: &str) {
-    // 写入到 <repo>/.gitlite/logs/debug.log
-    let dir = Path::new(repo_path).join(".gitlite").join("logs");
-    if let Err(_) = create_dir_all(&dir) { return; }
-    let file_path = dir.join("gitlite.log");
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(file_path) {
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        let _ = writeln!(f, "[{}] {}", ts, message);
-    }
-}
 
     let repo = Repository::open(&repo_path)
         .map_err(|e| format!("Failed to open repository: {}", e))?;
@@ -2032,20 +2086,6 @@ fn append_repo_log(repo_path: &str, message: &str) {
         text.push_str(&format!("{}\n", std::str::from_utf8(line.content()).unwrap_or("")));
         true
     }).map_err(|e| format!("Failed to print diff: {}", e))?;
-    // 调试：打印 git2 生成的 patch 概要
-    {
-        let preview: String = text.chars().take(400).collect();
-        let lines_total = text.lines().count();
-        let plus_cnt = text.lines().filter(|l| l.starts_with('+')).count();
-        let minus_cnt = text.lines().filter(|l| l.starts_with('-')).count();
-        let space_cnt = text.lines().filter(|l| l.starts_with(' ')).count();
-        let at_cnt = text.lines().filter(|l| l.starts_with("@@")).count();
-        let msg = format!(
-            "[git2 to_buf] bytes: {}, lines: {}, +: {}, -: {}, space: {}, @@: {}, preview: {}",
-            text.len(), lines_total, plus_cnt, minus_cnt, space_cnt, at_cnt, preview
-        );
-        append_repo_log(&repo_path, &msg);
-    }
 
     // Fallback: 如果含有 hunk 但几乎没有 +/- 行，尝试调用 git 原生命令生成统一补丁
     let plus = text.lines().filter(|l| l.starts_with('+')).count();
@@ -2064,18 +2104,6 @@ fn append_repo_log(repo_path: &str, message: &str) {
                     if out.status.success() {
                         let t = String::from_utf8_lossy(&out.stdout).to_string();
                         if !t.trim().is_empty() {
-                            // 调试：打印 git 原生命令生成的文本概要
-                            let lines_total = t.lines().count();
-                            let plus_cnt = t.lines().filter(|l| l.starts_with('+')).count();
-                            let minus_cnt = t.lines().filter(|l| l.starts_with('-')).count();
-                            let space_cnt = t.lines().filter(|l| l.starts_with(' ')).count();
-                            let at_cnt = t.lines().filter(|l| l.starts_with("@@")).count();
-                            let preview: String = t.chars().take(400).collect();
-                            let msg = format!(
-                                "[git diff fallback] bytes: {}, lines: {}, +: {}, -: {}, space: {}, @@: {}, preview: {}",
-                                t.len(), lines_total, plus_cnt, minus_cnt, space_cnt, at_cnt, preview
-                            );
-                            append_repo_log(&repo_path, &msg);
                             text = t;
                         }
                     }
