@@ -869,10 +869,12 @@ export function UnifiedCommitView({
         className="flex h-full min-h-0 shrink-0 flex-col overflow-hidden"
       >
         <Card className="flex h-full min-h-0 flex-col border-border/80">
-          <CardHeader className="py-1 px-3 space-y-1">
+          <CardHeader className="space-y-2 px-3 pb-2 pt-2">
             {/* 标题单独一行，避免与多行筛选区并排时 items-center 把标题挤到日期行中间造成重叠 */}
-            <div className="flex items-center justify-between gap-2 min-w-0">
-              <CardTitle className="text-sm shrink-0">提交记录</CardTitle>
+            <div className="flex min-w-0 items-center justify-between gap-2">
+              <CardTitle className="shrink-0 text-sm font-semibold tracking-tight">
+                提交记录
+              </CardTitle>
               {hasActiveFilters && (
                 <Button
                   type="button"
@@ -885,131 +887,152 @@ export function UnifiedCommitView({
                 </Button>
               )}
             </div>
-            <div className="flex min-w-0 flex-col gap-1.5">
-              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
-                <Calendar className="h-3 w-3 shrink-0 text-muted-foreground" />
-                <CommitDatePickerButton
-                  value={pendingStart}
-                  onChange={setPendingStart}
-                  placeholder="开始日期"
-                  title="开始日期（点击打开日历，确定后写入待查询条件）"
-                />
-                <span className="shrink-0 text-xs text-muted-foreground">至</span>
-                <CommitDatePickerButton
-                  value={pendingEnd}
-                  onChange={setPendingEnd}
-                  placeholder="结束日期"
-                  title="结束日期（点击打开日历，确定后写入待查询条件）"
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-7 shrink-0 px-2 text-xs"
-                  onClick={() => {
-                    const ymd = formatLocalYmd(new Date())
-                    setPendingStart(ymd)
-                    setPendingEnd(ymd)
-                    setAppliedStart(ymd)
-                    setAppliedEnd(ymd)
-                    setAppliedSearch(pendingSearch)
-                  }}
-                >
-                  今日
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-7 shrink-0 px-2 text-xs"
-                  onClick={() => {
-                    const end = new Date()
-                    const start = new Date(end)
-                    start.setDate(start.getDate() - 6)
-                    setPendingStart(formatLocalYmd(start))
-                    setPendingEnd(formatLocalYmd(end))
-                  }}
-                  title="含今日共 7 个自然日"
-                >
-                  最近7天
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  className="h-7 shrink-0 px-3 text-xs"
-                  disabled={!canApplyFilters}
-                  onClick={applyFilters}
-                  title="将当前日期与关键词应用到列表筛选"
-                >
-                  查询
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-7 shrink-0 gap-1 px-2 text-xs"
-                  disabled={filteredCommits.length === 0}
-                  onClick={openCommitListDialog}
-                  title="打开弹窗，列出当前筛选下已加载的全部提交（时间升序），便于复制"
-                >
-                  <ClipboardList className="h-3 w-3" />
-                  提交列表
-                </Button>
-              </div>
-              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
-                <div className="relative min-w-0 flex-1 basis-[8rem] sm:basis-auto sm:flex-none sm:w-40">
-                  <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    placeholder="搜索提交..."
-                    value={pendingSearch}
-                    onChange={(e) => setPendingSearch(e.target.value)}
-                    className="h-7 w-full min-w-0 pl-6 text-xs"
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && canApplyFilters) {
-                        e.preventDefault()
-                        applyFilters()
-                      }
-                    }}
-                  />
+            {/* 日期与关键词分区：减轻「查询」与搜索栏的视觉竞争 */}
+            <div className="space-y-2 rounded-lg border border-border/60 bg-muted/25 p-2.5 dark:bg-muted/15">
+              {/* 网格固定「开始 | 至 | 结束」同行，避免窄栏 flex-wrap 把「至」与按钮挤乱；操作单独一行右对齐 */}
+              <div className="min-w-0 space-y-2">
+                <div className="min-w-0 space-y-1.5">
+                  <span className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                    <Calendar className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                    日期
+                  </span>
+                  <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-1.5">
+                    <CommitDatePickerButton
+                      value={pendingStart}
+                      onChange={setPendingStart}
+                      placeholder="开始日期"
+                      title="开始日期（点击打开日历，确定后写入待查询条件）"
+                      className="h-7 min-w-0 w-full max-w-none justify-start"
+                    />
+                    <span className="shrink-0 select-none px-0.5 text-center text-xs text-muted-foreground">
+                      至
+                    </span>
+                    <CommitDatePickerButton
+                      value={pendingEnd}
+                      onChange={setPendingEnd}
+                      placeholder="结束日期"
+                      title="结束日期（点击打开日历，确定后写入待查询条件）"
+                      className="h-7 min-w-0 w-full max-w-none justify-start"
+                    />
+                  </div>
                 </div>
-                {pendingSearch.trim() && !isSearchMode && (
+                {/* 关键词在「查询」之前：先填条件再点查询 */}
+                <div className="border-t border-border/50 pt-2">
+                  <div className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
+                    <span className="shrink-0 text-[11px] font-medium text-muted-foreground">
+                      关键词
+                    </span>
+                    <div className="relative min-w-0 flex-1 basis-[8rem]">
+                      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        placeholder="筛选当前已加载列表，Enter 同「查询」…"
+                        value={pendingSearch}
+                        onChange={(e) => setPendingSearch(e.target.value)}
+                        className="h-7 w-full min-w-0 border-border/70 bg-background/80 pl-8 text-xs"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && canApplyFilters) {
+                            e.preventDefault()
+                            applyFilters()
+                          }
+                        }}
+                      />
+                    </div>
+                    {pendingSearch.trim() && !isSearchMode && (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="h-7 shrink-0 text-xs"
+                        disabled={searchLoading}
+                        onClick={() => onSearchFullRepo?.(pendingSearch.trim())}
+                      >
+                        {searchLoading ? (
+                          <>
+                            <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                            搜索中…
+                          </>
+                        ) : (
+                          '全仓库搜索'
+                        )}
+                      </Button>
+                    )}
+                    {isSearchMode && (
+                      <>
+                        <span className="whitespace-nowrap text-[11px] text-muted-foreground">
+                          全仓库结果
+                        </span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 shrink-0 text-xs"
+                          onClick={() => {
+                            setPendingSearch('')
+                            onClearSearchMode?.()
+                          }}
+                        >
+                          恢复列表
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
                   <Button
                     type="button"
-                    variant="outline"
+                    variant="secondary"
                     size="sm"
-                    className="h-7 shrink-0 text-xs"
-                    disabled={searchLoading}
-                    onClick={() => onSearchFullRepo?.(pendingSearch.trim())}
+                    className="h-7 shrink-0 px-2 text-xs"
+                    onClick={() => {
+                      const ymd = formatLocalYmd(new Date())
+                      setPendingStart(ymd)
+                      setPendingEnd(ymd)
+                      setAppliedStart(ymd)
+                      setAppliedEnd(ymd)
+                      setAppliedSearch(pendingSearch)
+                    }}
                   >
-                    {searchLoading ? (
-                      <>
-                        <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                        搜索中...
-                      </>
-                    ) : (
-                      '在全仓库中搜索'
-                    )}
+                    今日
                   </Button>
-                )}
-                {isSearchMode && (
-                  <>
-                    <span className="whitespace-nowrap text-[10px] text-muted-foreground">
-                      全仓库结果
-                    </span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 shrink-0 text-xs"
-                      onClick={() => {
-                        setPendingSearch('')
-                        onClearSearchMode?.()
-                      }}
-                    >
-                      恢复列表
-                    </Button>
-                  </>
-                )}
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="h-7 shrink-0 px-2 text-xs"
+                    onClick={() => {
+                      const end = new Date()
+                      const start = new Date(end)
+                      start.setDate(start.getDate() - 6)
+                      setPendingStart(formatLocalYmd(start))
+                      setPendingEnd(formatLocalYmd(end))
+                    }}
+                    title="含今日共 7 个自然日"
+                  >
+                    最近7天
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-7 shrink-0 px-3 text-xs"
+                    disabled={!canApplyFilters}
+                    onClick={applyFilters}
+                    title="将当前日期与关键词应用到列表筛选"
+                  >
+                    查询
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 shrink-0 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+                    disabled={filteredCommits.length === 0}
+                    onClick={openCommitListDialog}
+                    title="打开弹窗，列出当前筛选下已加载的全部提交（时间升序），便于复制"
+                  >
+                    <ClipboardList className="h-3.5 w-3.5" />
+                    提交列表
+                  </Button>
+                </div>
               </div>
             </div>
             <RemoteSyncBar
@@ -1022,9 +1045,10 @@ export function UnifiedCommitView({
               onRefresh={onRefreshRepo}
               refreshTitle="刷新仓库与提交列表"
               density="compact"
+              className="mt-0.5"
             />
             <p
-              className="text-[11px] text-muted-foreground leading-snug px-0.5 pb-0.5"
+              className="border-t border-border/40 px-0.5 pb-0.5 pt-2 text-[11px] leading-relaxed text-muted-foreground/95 dark:text-muted-foreground"
               title="「已加载」为当前列表中的条数，可向下滚动继续加载。「当前分支」总数为 HEAD 可达提交数（与 git rev-list --count HEAD 一致），含合并带来的历史。"
             >
               {isSearchMode ? (
@@ -1084,11 +1108,11 @@ export function UnifiedCommitView({
                 <div
                   key={commit.id}
                   className={cn(
-                    'flex h-14 shrink-0 cursor-pointer flex-col justify-center px-2 py-0 transition-colors',
+                    'flex min-h-[3.5rem] shrink-0 cursor-pointer flex-col justify-center px-2 py-1.5 transition-colors',
                     atHead && 'border-l-[3px] border-l-emerald-600 dark:border-l-emerald-500',
                     selectedCommit?.id === commit.id
                       ? 'bg-accent'
-                      : 'hover:bg-accent'
+                      : 'hover:bg-accent/80'
                   )}
                   onClick={() => handleCommitSelect(commit)}
                   onContextMenu={(e) => {
@@ -1098,16 +1122,16 @@ export function UnifiedCommitView({
                     setCommitContextMenu({ x: e.clientX, y: e.clientY, commit })
                   }}
                 >
-                  <div className="min-h-0 space-y-0.5">
-                    {/* 提交信息 */}
-                    <div className="flex items-start justify-between gap-1">
+                  <div className="min-h-0 space-y-1">
+                    {/* 提交信息：哈希单独右列，避免与分支标签抢位 */}
+                    <div className="flex items-start gap-2">
                       <p
-                        className="line-clamp-2 flex-1 min-w-0 pr-1 text-xs font-medium text-foreground"
+                        className="line-clamp-2 min-w-0 flex-1 text-xs font-medium leading-snug text-foreground"
                         title={commit.message}
                       >
                         {commit.message}
                       </p>
-                      <div className="flex max-w-[48%] flex-shrink-0 flex-wrap items-center justify-end gap-0.5">
+                      <div className="flex min-w-0 max-w-[46%] flex-shrink-0 flex-wrap items-center justify-end gap-0.5 sm:max-w-[40%]">
                         {atHead && (
                           <Badge
                             className="shrink-0 bg-emerald-600 px-1 py-0 text-[10px] text-white hover:bg-emerald-600/90"
@@ -1120,7 +1144,7 @@ export function UnifiedCommitView({
                           <Badge
                             key={name}
                             variant="secondary"
-                            className="max-w-[7rem] shrink-0 truncate px-1 py-0 text-[9px]"
+                            className="max-w-[6.5rem] shrink-0 truncate px-1 py-0 text-[9px]"
                             title={name}
                           >
                             {name}
@@ -1134,7 +1158,12 @@ export function UnifiedCommitView({
                             待推送
                           </Badge>
                         )}
-                        <Badge variant="outline" className="shrink-0 px-1 py-0 text-[10px]">
+                      </div>
+                      <div className="w-[4.25rem] shrink-0 self-start pt-px text-right">
+                        <Badge
+                          variant="outline"
+                          className="inline-flex min-w-[3.5rem] justify-center px-1.5 py-0 font-mono text-[10px] tabular-nums"
+                        >
                           {commit.short_id}
                         </Badge>
                       </div>
@@ -1142,10 +1171,10 @@ export function UnifiedCommitView({
 
                     {/* 作者和日期 */}
                     <div className="flex items-center justify-between gap-1">
-                      <div className="flex min-w-0 items-center gap-1 text-[10px] text-muted-foreground">
-                        <span className="truncate font-medium">{commit.author}</span>
-                        <span className="shrink-0">•</span>
-                        <span className="shrink-0">{commit.date}</span>
+                      <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground/95">
+                        <span className="truncate font-medium text-foreground/85">{commit.author}</span>
+                        <span className="shrink-0 opacity-60">·</span>
+                        <span className="shrink-0 tabular-nums">{commit.date}</span>
                       </div>
                     </div>
                   </div>
