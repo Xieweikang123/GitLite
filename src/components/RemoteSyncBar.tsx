@@ -41,7 +41,7 @@ export function RemoteSyncBar({
     <div
       className={cn(
         'flex items-center justify-between bg-muted/30 rounded-md border border-border',
-        compact ? 'gap-2 flex-wrap px-2 py-1.5' : 'p-3',
+        compact ? 'gap-1.5 flex-wrap px-2 py-1' : 'p-3',
         className
       )}
     >
