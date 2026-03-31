@@ -1587,11 +1587,6 @@ fn get_incoming_commits(repo: &Repository, current_branch: &str, behind: u32) ->
     out
 }
 
-// 获取提交历史（初始加载，只获取前50个）
-fn get_commit_history(repo: &Repository) -> Result<Vec<CommitInfo>> {
-    get_commit_history_paginated(repo, Some(50), Some(0))
-}
-
 fn commit_parent_ids(commit: &git2::Commit) -> Vec<String> {
     (0..commit.parent_count())
         .filter_map(|i| commit.parent_id(i).ok())
@@ -1599,16 +1594,79 @@ fn commit_parent_ids(commit: &git2::Commit) -> Vec<String> {
         .collect()
 }
 
+/// 提交列表范围：当前 HEAD 可达历史，或所有本地分支 / 远程跟踪 / 标签可达（类似 `git log --all` 的引用集合）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommitLogScope {
+    Head,
+    AllRefs,
+}
+
+fn commit_log_scope_from_opt(scope: Option<&str>) -> CommitLogScope {
+    match scope.map(str::trim).filter(|t| !t.is_empty()) {
+        Some("all") => CommitLogScope::AllRefs,
+        _ => CommitLogScope::Head,
+    }
+}
+
+fn revwalk_push_scope(
+    repo: &Repository,
+    revwalk: &mut git2::Revwalk,
+    scope: CommitLogScope,
+) -> Result<()> {
+    match scope {
+        CommitLogScope::Head => {
+            revwalk
+                .push_head()
+                .map_err(|e| anyhow::anyhow!("Failed to push HEAD: {}", e))?;
+        }
+        CommitLogScope::AllRefs => {
+            let mut tips: HashSet<Oid> = HashSet::new();
+            let refs = repo
+                .references()
+                .map_err(|e| anyhow::anyhow!("Failed to iterate refs: {}", e))?;
+            for r in refs {
+                let r = r.map_err(|e| anyhow::anyhow!("Failed to read ref: {}", e))?;
+                let name = r.name().unwrap_or("");
+                if !(name.starts_with("refs/heads/")
+                    || name.starts_with("refs/remotes/")
+                    || name.starts_with("refs/tags/"))
+                {
+                    continue;
+                }
+                if let Ok(obj) = r.peel(git2::ObjectType::Commit) {
+                    tips.insert(obj.id());
+                }
+            }
+            if tips.is_empty() {
+                revwalk
+                    .push_head()
+                    .map_err(|e| anyhow::anyhow!("Failed to push HEAD: {}", e))?;
+            } else {
+                for oid in tips {
+                    revwalk
+                        .push(oid)
+                        .map_err(|e| anyhow::anyhow!("Failed to push ref tip: {}", e))?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 // 获取分页提交历史
-fn get_commit_history_paginated(repo: &Repository, limit: Option<usize>, offset: Option<usize>) -> Result<Vec<CommitInfo>> {
+fn get_commit_history_paginated(
+    repo: &Repository,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    scope: CommitLogScope,
+) -> Result<Vec<CommitInfo>> {
     let mut revwalk = repo.revwalk()
         .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
     revwalk
         .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
         .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
 
-    revwalk.push_head()
-        .map_err(|e| anyhow::anyhow!("Failed to push HEAD: {}", e))?;
+    revwalk_push_scope(repo, &mut revwalk, scope)?;
     
     let mut commits = Vec::new();
     let limit = limit.unwrap_or(50);
@@ -1655,14 +1713,20 @@ fn get_commit_history_paginated(repo: &Repository, limit: Option<usize>, offset:
     Ok(commits)
 }
 
-/// HEAD 可达的提交总数，等价于 `git rev-list --count HEAD`（当前检出分支/HEAD 的历史长度）。
-fn count_commits_head(repo: &Repository) -> Result<usize> {
+// 获取提交历史（初始加载，只获取前50个；始终为当前 HEAD，与打开仓库时列表一致）
+fn get_commit_history(repo: &Repository) -> Result<Vec<CommitInfo>> {
+    get_commit_history_paginated(repo, Some(50), Some(0), CommitLogScope::Head)
+}
+
+/// 按范围统计可达提交总数（与分页遍历使用相同的 revwalk 起点与排序）。
+fn count_commits_scoped(repo: &Repository, scope: CommitLogScope) -> Result<usize> {
     let mut revwalk = repo
         .revwalk()
         .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
     revwalk
-        .push_head()
-        .map_err(|e| anyhow::anyhow!("Failed to push HEAD: {}", e))?;
+        .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+        .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
+    revwalk_push_scope(repo, &mut revwalk, scope)?;
     let mut n = 0usize;
     for oid_result in revwalk {
         oid_result.map_err(|e| anyhow::anyhow!("Failed to walk commits: {}", e))?;
@@ -1672,34 +1736,47 @@ fn count_commits_head(repo: &Repository) -> Result<usize> {
 }
 
 #[tauri::command]
-async fn get_commit_count_head(repo_path: String) -> Result<u64, String> {
+async fn get_commit_count_head(repo_path: String, scope: Option<String>) -> Result<u64, String> {
     let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
-    let n = count_commits_head(&repo).map_err(|e| format!("Failed to count commits: {}", e))?;
+    let s = commit_log_scope_from_opt(scope.as_deref());
+    let n = count_commits_scoped(&repo, s).map_err(|e| format!("Failed to count commits: {}", e))?;
     Ok(n as u64)
 }
 
 // 获取分页提交历史
 #[tauri::command]
-async fn get_commits_paginated(repo_path: String, limit: Option<usize>, offset: Option<usize>) -> Result<Vec<CommitInfo>, String> {
+async fn get_commits_paginated(
+    repo_path: String,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    scope: Option<String>,
+) -> Result<Vec<CommitInfo>, String> {
     let repo = Repository::open(&repo_path)
         .map_err(|e| format!("Failed to open repository: {}", e))?;
-    
-    let commits = get_commit_history_paginated(&repo, limit, offset)
+    let s = commit_log_scope_from_opt(scope.as_deref());
+    let commits = get_commit_history_paginated(&repo, limit, offset, s)
         .map_err(|e| format!("Failed to get commit history: {}", e))?;
-    
+
     Ok(commits)
 }
 
 // 全仓库历史搜索：按关键词匹配 message / author / short_id，返回最多 limit 条
-fn get_commit_history_search(repo: &Repository, query: &str, limit: usize) -> Result<Vec<CommitInfo>> {
+fn get_commit_history_search(
+    repo: &Repository,
+    query: &str,
+    limit: usize,
+    scope: CommitLogScope,
+) -> Result<Vec<CommitInfo>> {
     let query_lower = query.to_lowercase();
     if query_lower.trim().is_empty() {
         return Ok(Vec::new());
     }
     let mut revwalk = repo.revwalk()
         .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
-    revwalk.push_head()
-        .map_err(|e| anyhow::anyhow!("Failed to push HEAD: {}", e))?;
+    revwalk
+        .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+        .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
+    revwalk_push_scope(repo, &mut revwalk, scope)?;
     let mut commits = Vec::new();
     for oid_result in revwalk {
         if commits.len() >= limit {
@@ -1738,11 +1815,17 @@ fn get_commit_history_search(repo: &Repository, query: &str, limit: usize) -> Re
 }
 
 #[tauri::command]
-async fn search_commits(repo_path: String, query: String, limit: Option<usize>) -> Result<Vec<CommitInfo>, String> {
+async fn search_commits(
+    repo_path: String,
+    query: String,
+    limit: Option<usize>,
+    scope: Option<String>,
+) -> Result<Vec<CommitInfo>, String> {
     let limit = limit.unwrap_or(500);
     let repo = Repository::open(&repo_path)
         .map_err(|e| format!("Failed to open repository: {}", e))?;
-    let commits = get_commit_history_search(&repo, query.trim(), limit)
+    let s = commit_log_scope_from_opt(scope.as_deref());
+    let commits = get_commit_history_search(&repo, query.trim(), limit, s)
         .map_err(|e| format!("Search failed: {}", e))?;
     Ok(commits)
 }
@@ -2800,8 +2883,16 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
             }
         }
 
+        // HEAD 常为符号引用（指向 refs/heads/…）；对符号引用直接 set_target(OID) 会报
+        // "cannot set OID on symbolic reference"。先 resolve 到直接引用再快进。
         let mut reference = match repo.find_reference("HEAD") {
-            Ok(r) => r,
+            Ok(r) => match r.resolve() {
+                Ok(direct) => direct,
+                Err(e) => {
+                    log_message("ERROR", &format!("pull: resolve HEAD failed: {}", e));
+                    return Err(format!("Failed to resolve HEAD reference: {}", e));
+                }
+            },
             Err(e) => {
                 log_message("ERROR", &format!("pull: find HEAD reference failed: {}", e));
                 return Err(format!("Failed to find HEAD reference: {}", e));
@@ -2811,6 +2902,18 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
         if let Err(e) = reference.set_target(remote_branch_oid, "Fast-forward merge") {
             log_message("ERROR", &format!("pull: fast-forward failed: {}", e));
             return Err(format!("Failed to fast-forward: {}", e));
+        }
+
+        // 仅 set_target 会只移动分支指针，索引/工作区仍停留在拉取前；此时 HEAD 已是新提交，
+        // 与索引不一致，git status 会把「索引 vs 新 HEAD」误显示为大量「已暂存」，像改动被挪进暂存区。
+        // 与命令行 git pull 快进一致：更新指针后再检出树，同步索引与工作区。
+        let treeish = remote_commit.as_object();
+        if let Err(e) = repo.checkout_tree(&treeish, None) {
+            log_message("ERROR", &format!("pull: checkout after fast-forward failed: {}", e));
+            return Err(format!(
+                "Branch fast-forwarded but work tree failed to sync: {}. You may need to run: git reset --hard HEAD",
+                e
+            ));
         }
 
         log_message("INFO", &format!("pull: fast-forward success | branch={}", branch_name));
@@ -3725,10 +3828,17 @@ async fn pull_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
         logs.push((timestamp, "INFO".to_string(), "检测到快进合并，执行快进操作...".to_string()));
 
         let mut reference = match repo.find_reference("HEAD") {
-            Ok(r) => {
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "INFO".to_string(), "找到HEAD引用".to_string()));
-                r
+            Ok(r) => match r.resolve() {
+                Ok(direct) => {
+                    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                    logs.push((timestamp, "INFO".to_string(), "已解析 HEAD 为直接引用（用于快进）".to_string()));
+                    direct
+                },
+                Err(e) => {
+                    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                    logs.push((timestamp, "ERROR".to_string(), format!("解析 HEAD 引用失败: {}", e)));
+                    return Err(format!("Failed to resolve HEAD reference: {}", e));
+                }
             },
             Err(e) => {
                 let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
@@ -3742,6 +3852,18 @@ async fn pull_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
             logs.push((timestamp, "ERROR".to_string(), format!("快进合并失败: {}", e)));
             return Err(format!("Failed to fast-forward: {}", e));
         }
+
+        let treeish = remote_commit.as_object();
+        if let Err(e) = repo.checkout_tree(&treeish, None) {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), format!("快进后同步工作区失败: {}", e)));
+            return Err(format!(
+                "Branch fast-forwarded but work tree failed to sync: {}. You may need to run: git reset --hard HEAD",
+                e
+            ));
+        }
+        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        logs.push((timestamp, "INFO".to_string(), "已同步索引与工作区（与 git pull 快进一致）".to_string()));
 
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
         logs.push((timestamp, "INFO".to_string(), "快进合并成功".to_string()));

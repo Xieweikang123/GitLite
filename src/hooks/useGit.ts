@@ -230,33 +230,41 @@ export function useGit() {
     }
   }, [repoInfo])
 
-  const getCommitsPaginated = useCallback(async (limit?: number, offset?: number) => {
-    try {
-      if (!repoInfo) throw new Error('No repository selected')
-      return await invoke<CommitInfo[]>('get_commits_paginated', { 
-        repoPath: repoInfo.path, 
-        limit, 
-        offset 
-      })
-    } catch (error) {
-      console.error('Failed to get paginated commits:', error)
-      throw error
-    }
-  }, [repoInfo])
+  const getCommitsPaginated = useCallback(
+    async (limit?: number, offset?: number, scope?: 'head' | 'all') => {
+      try {
+        if (!repoInfo) throw new Error('No repository selected')
+        return await invoke<CommitInfo[]>('get_commits_paginated', {
+          repoPath: repoInfo.path,
+          limit,
+          offset,
+          scope: scope === 'all' ? 'all' : null,
+        })
+      } catch (error) {
+        console.error('Failed to get paginated commits:', error)
+        throw error
+      }
+    },
+    [repoInfo]
+  )
 
-  const searchCommits = useCallback(async (query: string, limit?: number) => {
-    try {
-      if (!repoInfo) throw new Error('No repository selected')
-      return await invoke<CommitInfo[]>('search_commits', {
-        repoPath: repoInfo.path,
-        query: query.trim(),
-        limit: limit ?? 500,
-      })
-    } catch (error) {
-      console.error('Failed to search commits:', error)
-      throw error
-    }
-  }, [repoInfo])
+  const searchCommits = useCallback(
+    async (query: string, limit?: number, scope?: 'head' | 'all') => {
+      try {
+        if (!repoInfo) throw new Error('No repository selected')
+        return await invoke<CommitInfo[]>('search_commits', {
+          repoPath: repoInfo.path,
+          query: query.trim(),
+          limit: limit ?? 500,
+          scope: scope === 'all' ? 'all' : null,
+        })
+      } catch (error) {
+        console.error('Failed to search commits:', error)
+        throw error
+      }
+    },
+    [repoInfo]
+  )
 
   const getWorkspaceStatus = useCallback(async (): Promise<WorkspaceStatus> => {
     if (!repoInfo) throw new Error('No repository open')

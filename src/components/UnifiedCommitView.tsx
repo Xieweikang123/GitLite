@@ -119,6 +119,9 @@ interface UnifiedCommitViewProps {
   isSearchMode?: boolean
   onSearchFullRepo?: (term: string) => void
   onClearSearchMode?: () => void
+  /** 提交历史范围：当前分支 HEAD 或全部分支/远程/标签 */
+  commitLogScope?: 'head' | 'all'
+  onCommitLogScopeChange?: (scope: 'head' | 'all') => void
   aheadCount?: number
   /** 列表前部为「待拉取」提交时的条数（与 commits 中前置的 incoming 段一致） */
   incomingCommitCount?: number
@@ -150,6 +153,8 @@ export function UnifiedCommitView({
   isSearchMode = false,
   onSearchFullRepo,
   onClearSearchMode,
+  commitLogScope = 'head',
+  onCommitLogScopeChange,
   aheadCount = 0,
   incomingCommitCount = 0,
   behindCount,
@@ -314,7 +319,10 @@ export function UnifiedCommitView({
     let cancelled = false
     setHeadCommitTotal(null)
     setHeadCommitTotalLoading(true)
-    invoke<number>('get_commit_count_head', { repoPath })
+    invoke<number>('get_commit_count_head', {
+      repoPath,
+      scope: commitLogScope === 'all' ? 'all' : null,
+    })
       .then((n) => {
         if (!cancelled) {
           setHeadCommitTotal(n)
@@ -330,7 +338,7 @@ export function UnifiedCommitView({
     return () => {
       cancelled = true
     }
-  }, [repoPath, currentBranch])
+  }, [repoPath, currentBranch, commitLogScope])
 
   // 分支/远程引用指向，用于在提交旁显示标签
   useEffect(() => {
@@ -883,9 +891,25 @@ export function UnifiedCommitView({
           <CardHeader className="space-y-2 px-3 pb-2 pt-2">
             {/* 标题单独一行，避免与多行筛选区并排时 items-center 把标题挤到日期行中间造成重叠 */}
             <div className="flex min-w-0 items-center justify-between gap-2">
-              <CardTitle className="shrink-0 text-sm font-semibold tracking-tight">
-                提交记录
-              </CardTitle>
+              <div className="flex min-w-0 items-center gap-2">
+                <CardTitle className="shrink-0 text-sm font-semibold tracking-tight">
+                  提交记录
+                </CardTitle>
+                {onCommitLogScopeChange && (
+                  <select
+                    className="h-7 max-w-[9.5rem] shrink-0 rounded-md border border-input bg-background px-2 text-xs"
+                    value={commitLogScope}
+                    onChange={(e) =>
+                      onCommitLogScopeChange(e.target.value as 'head' | 'all')
+                    }
+                    aria-label="提交历史范围"
+                    title="当前分支：与 git log HEAD 一致；全部分支：含本地分支、远程跟踪分支与标签可达提交"
+                  >
+                    <option value="head">当前分支</option>
+                    <option value="all">全部分支</option>
+                  </select>
+                )}
+              </div>
               {hasActiveFilters && (
                 <Button
                   type="button"
@@ -1060,14 +1084,24 @@ export function UnifiedCommitView({
             />
             <p
               className="border-t border-border/40 px-0.5 pb-0.5 pt-2 text-[11px] leading-relaxed text-muted-foreground/95 dark:text-muted-foreground"
-              title="「已加载」为当前列表中的条数，可向下滚动继续加载。「当前分支」总数为 HEAD 可达提交数（与 git rev-list --count HEAD 一致），含合并带来的历史。"
+              title={
+                commitLogScope === 'all'
+                  ? '「已加载」为当前列表条数，可继续加载。总数为所有本地分支、远程跟踪与标签可达的去重提交数（与 git log --all 类似）。'
+                  : '「已加载」为当前列表中的条数，可向下滚动继续加载。「当前分支」总数为 HEAD 可达提交数（与 git rev-list --count HEAD 一致），含合并带来的历史。'
+              }
             >
               {isSearchMode ? (
                 <>
                   全仓库搜索到 {commits.length} 条
                   {headCommitTotalLoading && ' · 统计分支总数中…'}
                   {!headCommitTotalLoading && headCommitTotal !== null && (
-                    <> · 当前分支共 {headCommitTotal} 个提交</>
+                    <>
+                      {' '}
+                      ·{' '}
+                      {commitLogScope === 'all'
+                        ? `全部引用共 ${headCommitTotal} 个提交`
+                        : `当前分支共 ${headCommitTotal} 个提交`}
+                    </>
                   )}
                   {headShortNormalized && (
                     <>
@@ -1085,7 +1119,13 @@ export function UnifiedCommitView({
                   {hasMore && '（列表可继续下拉加载）'}
                   {headCommitTotalLoading && ' · 统计分支总数中…'}
                   {!headCommitTotalLoading && headCommitTotal !== null && (
-                    <> · 当前分支共 {headCommitTotal} 个提交</>
+                    <>
+                      {' '}
+                      ·{' '}
+                      {commitLogScope === 'all'
+                        ? `全部引用共 ${headCommitTotal} 个提交`
+                        : `当前分支共 ${headCommitTotal} 个提交`}
+                    </>
                   )}
                   {filteredCommits.length !== commits.length && (
                     <> · 筛选后显示 {filteredCommits.length} 条</>
