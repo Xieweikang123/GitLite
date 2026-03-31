@@ -96,6 +96,20 @@ pub struct BranchInfo {
 pub struct BranchRefTip {
     pub name: String,
     pub commit_id: String,
+    pub is_remote: bool,
+}
+
+/// 某条分支是否包含指定提交（在分支 tip 的历史上）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BranchOnCommit {
+    pub name: String,
+    pub is_remote: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CommitBranchLabels {
+    pub commit_id: String,
+    pub branches: Vec<BranchOnCommit>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1886,9 +1900,7 @@ async fn get_head_file_paths(repo_path: String, max_entries: Option<usize>) -> R
     Ok(paths)
 }
 
-#[tauri::command]
-async fn get_branch_ref_tips(repo_path: String) -> Result<Vec<BranchRefTip>, String> {
-    let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+fn collect_branch_tip_pairs(repo: &Repository) -> Result<Vec<(String, Oid, bool)>, String> {
     let mut tips = Vec::new();
     let refs = repo.references().map_err(|e| format!("references: {}", e))?;
     for reference in refs {
@@ -1899,26 +1911,77 @@ async fn get_branch_ref_tips(repo_path: String) -> Result<Vec<BranchRefTip>, Str
         if name == "HEAD" || name.ends_with("/HEAD") {
             continue;
         }
-        if !(name.starts_with("refs/heads/") || name.starts_with("refs/remotes/")) {
+        let is_remote = name.starts_with("refs/remotes/");
+        if !(name.starts_with("refs/heads/") || is_remote) {
             continue;
         }
-        let Ok(resolved) = reference.resolve() else {
+        let Ok(obj) = reference.peel(git2::ObjectType::Commit) else {
             continue;
         };
-        let Some(oid) = resolved.target() else {
-            continue;
-        };
+        let commit_oid = obj.id();
         let short_name = name
             .strip_prefix("refs/heads/")
             .or_else(|| name.strip_prefix("refs/remotes/"))
             .unwrap_or(name)
             .to_string();
-        tips.push(BranchRefTip {
-            name: short_name,
-            commit_id: oid.to_string(),
-        });
+        tips.push((short_name, commit_oid, is_remote));
     }
     Ok(tips)
+}
+
+#[tauri::command]
+async fn get_branch_ref_tips(repo_path: String) -> Result<Vec<BranchRefTip>, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+    let pairs = collect_branch_tip_pairs(&repo)?;
+    Ok(pairs
+        .into_iter()
+        .map(|(name, oid, is_remote)| BranchRefTip {
+            name,
+            commit_id: oid.to_string(),
+            is_remote,
+        })
+        .collect())
+}
+
+/// 批量查询：每个提交在哪些本地/远程分支的历史上（分支 tip 为该提交的后代或等于该提交）。
+#[tauri::command]
+async fn get_commits_branch_labels(
+    repo_path: String,
+    commit_ids: Vec<String>,
+) -> Result<Vec<CommitBranchLabels>, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+    let tips = collect_branch_tip_pairs(&repo)?;
+    let mut out = Vec::with_capacity(commit_ids.len());
+    for id_str in commit_ids {
+        let Ok(oid) = Oid::from_str(&id_str) else {
+            out.push(CommitBranchLabels {
+                commit_id: id_str,
+                branches: vec![],
+            });
+            continue;
+        };
+        let mut branches: Vec<BranchOnCommit> = Vec::new();
+        for (name, tip_oid, is_remote) in &tips {
+            let on_branch = *tip_oid == oid || repo.graph_descendant_of(*tip_oid, oid).unwrap_or(false);
+            if on_branch {
+                branches.push(BranchOnCommit {
+                    name: name.clone(),
+                    is_remote: *is_remote,
+                });
+            }
+        }
+        branches.sort_by(|a, b| {
+            a.is_remote
+                .cmp(&b.is_remote)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        branches.dedup_by(|a, b| a.name == b.name && a.is_remote == b.is_remote);
+        out.push(CommitBranchLabels {
+            commit_id: id_str,
+            branches,
+        });
+    }
+    Ok(out)
 }
 
 // 切换分支
@@ -4451,6 +4514,7 @@ fn main() {
             search_commits,
             get_head_file_paths,
             get_branch_ref_tips,
+            get_commits_branch_labels,
             checkout_branch,
             create_branch,
             reset_to_commit,

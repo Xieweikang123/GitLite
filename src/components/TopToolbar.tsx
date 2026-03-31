@@ -1,13 +1,20 @@
-import { useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from 'react'
 import { Button } from './ui/button'
 import { Badge } from './ui/badge'
 import { invoke } from '@tauri-apps/api/tauri'
-import { Select, SelectContent, SelectItem, SelectTrigger } from './ui/select'
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
 import { Switch } from './ui/switch'
-import { GitBranch, Moon, Sun, GitPullRequest, Plus } from 'lucide-react'
+import { GitBranch, Moon, Sun, GitPullRequest, Plus, ChevronDown } from 'lucide-react'
 import { BranchInfo } from '../types/git'
 import { cn } from '../lib/utils'
 
@@ -36,6 +43,12 @@ export function TopToolbar({
   const [newBranchName, setNewBranchName] = useState('')
   const [checkoutAfterCreate, setCheckoutAfterCreate] = useState(true)
 
+  const [branchPopoverOpen, setBranchPopoverOpen] = useState(false)
+  const [branchSearch, setBranchSearch] = useState('')
+  const [branchActiveIdx, setBranchActiveIdx] = useState(0)
+  const branchSearchInputRef = useRef<HTMLInputElement>(null)
+  const branchListRef = useRef<HTMLDivElement>(null)
+
   const handleOpenCreateBranch = () => {
     setNewBranchName('')
     setCheckoutAfterCreate(true)
@@ -51,6 +64,67 @@ export function TopToolbar({
       setNewBranchName('')
     }
   }
+  const branches = (repoInfo?.branches ?? []) as BranchInfo[]
+  const filteredBranches = useMemo(() => {
+    const q = branchSearch.trim().toLowerCase()
+    if (!q) return branches
+    return branches.filter((b) => b.name.toLowerCase().includes(q))
+  }, [branches, branchSearch])
+
+  useEffect(() => {
+    setBranchActiveIdx(0)
+  }, [branchSearch, branchPopoverOpen])
+
+  useEffect(() => {
+    if (branchActiveIdx >= filteredBranches.length) {
+      setBranchActiveIdx(Math.max(0, filteredBranches.length - 1))
+    }
+  }, [filteredBranches.length, branchActiveIdx])
+
+  useEffect(() => {
+    if (!branchPopoverOpen || filteredBranches.length === 0) return
+    const root = branchListRef.current
+    if (!root) return
+    const btn = root.querySelector<HTMLButtonElement>(
+      `button:nth-of-type(${branchActiveIdx + 1})`
+    )
+    btn?.scrollIntoView({ block: 'nearest' })
+  }, [branchActiveIdx, branchPopoverOpen, filteredBranches.length])
+
+  const pickBranch = useCallback(
+    (name: string) => {
+      if (!repoInfo) return
+      if (name === repoInfo.current_branch) {
+        setBranchPopoverOpen(false)
+        setBranchSearch('')
+        return
+      }
+      onBranchSelect(name)
+      setBranchPopoverOpen(false)
+      setBranchSearch('')
+    },
+    [onBranchSelect, repoInfo]
+  )
+
+  const onBranchPopoverOpenChange = (open: boolean) => {
+    setBranchPopoverOpen(open)
+    if (!open) setBranchSearch('')
+  }
+
+  const onBranchSearchKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setBranchActiveIdx((i) => Math.min(i + 1, Math.max(0, filteredBranches.length - 1)))
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setBranchActiveIdx((i) => Math.max(0, i - 1))
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      const b = filteredBranches[branchActiveIdx]
+      if (b) pickBranch(b.name)
+    }
+  }
+
   const handleOpenFolder = async () => {
     try {
       if (repoInfo?.path) {
@@ -80,63 +154,96 @@ export function TopToolbar({
                 className="h-4 w-4 text-muted-foreground cursor-pointer hover:text-foreground"
                 onClick={onOpenRemoteRepository}
               />
-              <Select value={repoInfo.current_branch} onValueChange={onBranchSelect}>
-                <SelectTrigger className="w-40 h-8 text-sm min-w-0">
-                  <span className="truncate">{repoInfo.current_branch}</span>
-                </SelectTrigger>
-                <SelectContent
-                  className={cn(
-                    'w-auto min-w-[280px] max-w-[min(92vw,520px)] max-h-[min(70vh,400px)] p-1',
-                    'overflow-y-auto overflow-x-hidden'
-                  )}
+              <Popover open={branchPopoverOpen} onOpenChange={onBranchPopoverOpenChange}>
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={loading}
+                    className="h-8 min-w-[10.5rem] max-w-[min(22rem,40vw)] justify-between gap-2 px-2.5 font-normal sm:min-w-[12rem]"
+                    title="选择分支（可搜索，↑↓ 选择，回车切换）"
+                  >
+                    <span className="min-w-0 truncate text-left text-sm">
+                      {repoInfo.current_branch}
+                    </span>
+                    <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent
+                  align="start"
+                  sideOffset={6}
+                  className="w-[min(92vw,22rem)] p-2"
+                  onOpenAutoFocus={(ev) => {
+                    ev.preventDefault()
+                    requestAnimationFrame(() => branchSearchInputRef.current?.focus())
+                  }}
                 >
-                  {(repoInfo.branches as BranchInfo[]).map((branch) => {
-                    const isCheckout = branch.name === repoInfo.current_branch
-                    return (
-                      <SelectItem
-                        key={branch.name}
-                        value={branch.name}
-                        className="items-start gap-2 py-2.5 px-3 text-sm"
-                      >
-                        <span
-                          className={cn(
-                            'min-w-0 flex-1 break-all text-left leading-snug',
-                            isCheckout && 'font-medium'
-                          )}
-                        >
-                          {branch.name}
-                        </span>
-                        <span className="flex shrink-0 flex-row flex-wrap items-center justify-end gap-1">
-                          {branch.is_current && (
-                            <Badge
-                              variant={isCheckout ? 'outline' : 'default'}
+                  <div className="flex flex-col gap-2">
+                    <Input
+                      ref={branchSearchInputRef}
+                      value={branchSearch}
+                      onChange={(e) => setBranchSearch(e.target.value)}
+                      onKeyDown={onBranchSearchKeyDown}
+                      placeholder="搜索分支名…"
+                      className="h-8 text-sm"
+                      disabled={loading}
+                      aria-label="搜索分支"
+                    />
+                    <div
+                      ref={branchListRef}
+                      className="max-h-[min(55vh,320px)] overflow-y-auto overflow-x-hidden rounded-md border border-border/60"
+                    >
+                      {filteredBranches.length === 0 ? (
+                        <p className="px-3 py-6 text-center text-xs text-muted-foreground">
+                          无匹配分支
+                        </p>
+                      ) : (
+                        filteredBranches.map((branch, idx) => {
+                          const isCurrent = branch.name === repoInfo.current_branch
+                          const isActive = idx === branchActiveIdx
+                          return (
+                            <button
+                              key={branch.name}
+                              type="button"
+                              disabled={loading}
                               className={cn(
-                                'text-[10px] px-1.5 py-0',
-                                isCheckout &&
-                                  'border-primary-foreground/40 bg-primary-foreground/15 text-primary-foreground'
+                                'flex w-full items-start gap-2 border-b border-border/40 px-3 py-2.5 text-left text-sm last:border-b-0',
+                                'hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                                isActive && 'bg-accent',
+                                isCurrent && 'bg-muted/50'
                               )}
+                              onClick={() => pickBranch(branch.name)}
+                              onMouseEnter={() => setBranchActiveIdx(idx)}
                             >
-                              当前
-                            </Badge>
-                          )}
-                          {branch.is_remote && (
-                            <Badge
-                              variant={isCheckout ? 'outline' : 'secondary'}
-                              className={cn(
-                                'text-[10px] px-1.5 py-0',
-                                isCheckout &&
-                                  'border-primary-foreground/40 bg-transparent text-primary-foreground'
-                              )}
-                            >
-                              远程
-                            </Badge>
-                          )}
-                        </span>
-                      </SelectItem>
-                    )
-                  })}
-                </SelectContent>
-              </Select>
+                              <span
+                                className={cn(
+                                  'min-w-0 flex-1 break-all leading-snug',
+                                  isCurrent && 'font-medium text-foreground'
+                                )}
+                              >
+                                {branch.name}
+                              </span>
+                              <span className="flex shrink-0 flex-row flex-wrap items-center justify-end gap-1 pt-0.5">
+                                {branch.is_current && (
+                                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                                    当前
+                                  </Badge>
+                                )}
+                                {branch.is_remote && (
+                                  <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                                    远程
+                                  </Badge>
+                                )}
+                              </span>
+                            </button>
+                          )
+                        })
+                      )}
+                    </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
               {onCreateBranch && (
                 <Button
                   type="button"

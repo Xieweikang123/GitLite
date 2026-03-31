@@ -13,6 +13,19 @@ export interface CommitInfo {
 export interface BranchRefTip {
   name: string
   commit_id: string
+  /** 是否为远程跟踪引用（refs/remotes/） */
+  is_remote?: boolean
+}
+
+/** 某提交所在分支（在分支 tip 的历史上） */
+export interface BranchOnCommit {
+  name: string
+  is_remote: boolean
+}
+
+export interface CommitBranchLabels {
+  commit_id: string
+  branches: BranchOnCommit[]
 }
 
 export interface BranchInfo {

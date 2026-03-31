@@ -66,3 +66,13 @@ export function computeCommitGraph(
   const maxLane = lanes.length ? Math.max(...lanes) : 0
   return { lanes, maxLane, edges }
 }
+
+/** 分支名 → 稳定调色板下标（同名字始终同色） */
+export function hashBranchNameToPaletteIndex(name: string, modulo: number): number {
+  let h = 2166136261 >>> 0
+  for (let i = 0; i < name.length; i++) {
+    h ^= name.charCodeAt(i)
+    h = Math.imul(h, 16777619) >>> 0
+  }
+  return modulo > 0 ? h % modulo : 0
+}

@@ -5,7 +5,13 @@ import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Search, Loader2, FileText, Plus, Edit, Trash2, GitBranch, Calendar, GitCompare, Sparkles, ClipboardList, RotateCcw } from 'lucide-react'
-import { CommitInfo, FileChange, type GitResetMode, type BranchRefTip } from '../types/git'
+import {
+  CommitInfo,
+  FileChange,
+  type GitResetMode,
+  type BranchOnCommit,
+  type CommitBranchLabels,
+} from '../types/git'
 import { VSCodeDiff } from './CodeDiff'
 import { RemoteSyncBar } from './RemoteSyncBar'
 import { cn } from '../lib/utils'
@@ -236,7 +242,9 @@ export function UnifiedCommitView({
   const currentLoadingFileRef = useRef<string | null>(null)
   const commitListScrollRef = useRef<HTMLDivElement>(null)
   const loadMoreSentinelRef = useRef<HTMLDivElement>(null)
-  const [branchTips, setBranchTips] = useState<BranchRefTip[]>([])
+  const [branchLabelsByCommit, setBranchLabelsByCommit] = useState<
+    Map<string, BranchOnCommit[]>
+  >(() => new Map())
   const hasMoreRef = useRef(hasMore)
   const loadingRef = useRef(loading)
   const onLoadMoreRef = useRef(onLoadMore)
@@ -340,25 +348,6 @@ export function UnifiedCommitView({
     }
   }, [repoPath, currentBranch, commitLogScope])
 
-  // 分支/远程引用指向，用于在提交旁显示标签
-  useEffect(() => {
-    if (!repoPath) {
-      setBranchTips([])
-      return
-    }
-    let cancelled = false
-    invoke<BranchRefTip[]>('get_branch_ref_tips', { repoPath })
-      .then((tips) => {
-        if (!cancelled) setBranchTips(tips)
-      })
-      .catch(() => {
-        if (!cancelled) setBranchTips([])
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [repoPath])
-
   // 提交列表右键菜单：点击外部、滚动、Esc 关闭
   useEffect(() => {
     if (!commitContextMenu) return
@@ -381,19 +370,6 @@ export function UnifiedCommitView({
       document.removeEventListener('keydown', onKey)
     }
   }, [commitContextMenu])
-
-  const branchNamesByCommit = useMemo(() => {
-    const m = new Map<string, string[]>()
-    for (const t of branchTips) {
-      const arr = m.get(t.commit_id) ?? []
-      arr.push(t.name)
-      m.set(t.commit_id, arr)
-    }
-    for (const arr of m.values()) {
-      arr.sort()
-    }
-    return m
-  }, [branchTips])
 
   // 滚动到底部自动加载更多
   useEffect(() => {
@@ -510,6 +486,51 @@ export function UnifiedCommitView({
     getCommitDate,
     isSearchMode,
   ])
+
+  const branchLabelIdsKey = useMemo(
+    () => filteredCommits.map((c) => c.id).join(','),
+    [filteredCommits]
+  )
+
+  // 每个提交在哪些分支历史上（本地 / 远程区分样式）
+  useEffect(() => {
+    if (!repoPath || filteredCommits.length === 0) {
+      setBranchLabelsByCommit(new Map())
+      return
+    }
+    const commitIds = filteredCommits.map((c) => c.id)
+    let cancelled = false
+    invoke<CommitBranchLabels[]>('get_commits_branch_labels', {
+      repoPath,
+      commitIds,
+    })
+      .then((rows) => {
+        if (cancelled) return
+        const m = new Map<string, BranchOnCommit[]>()
+        for (const row of rows) {
+          m.set(row.commit_id, row.branches)
+        }
+        setBranchLabelsByCommit(m)
+      })
+      .catch(() => {
+        if (!cancelled) setBranchLabelsByCommit(new Map())
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [repoPath, branchLabelIdsKey, currentBranch])
+
+  /** 左侧分支图着色：优先本地分支名，稳定映射到调色板（同分支同色） */
+  const branchColorKeyByCommitId = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of filteredCommits) {
+      const labels = branchLabelsByCommit.get(c.id)
+      if (!labels?.length) continue
+      const local = labels.find((b) => !b.is_remote)?.name
+      m.set(c.id, local ?? labels[0].name)
+    }
+    return m
+  }, [filteredCommits, branchLabelsByCommit])
 
   /** 与后端总结一致：按日期时间升序（字符串可比） */
   const commitsSortedForCopy = useMemo(() => {
@@ -896,18 +917,38 @@ export function UnifiedCommitView({
                   提交记录
                 </CardTitle>
                 {onCommitLogScopeChange && (
-                  <select
-                    className="h-7 max-w-[9.5rem] shrink-0 rounded-md border border-input bg-background px-2 text-xs"
-                    value={commitLogScope}
-                    onChange={(e) =>
-                      onCommitLogScopeChange(e.target.value as 'head' | 'all')
-                    }
+                  <div
+                    className="flex h-7 shrink-0 rounded-md border border-input bg-muted/45 p-0.5 dark:bg-muted/25"
+                    role="group"
                     aria-label="提交历史范围"
-                    title="当前分支：与 git log HEAD 一致；全部分支：含本地分支、远程跟踪分支与标签可达提交"
                   >
-                    <option value="head">当前分支</option>
-                    <option value="all">全部分支</option>
-                  </select>
+                    <button
+                      type="button"
+                      className={cn(
+                        'whitespace-nowrap rounded px-2 py-0 text-xs font-medium transition-colors',
+                        commitLogScope === 'head'
+                          ? 'bg-background text-foreground shadow-sm'
+                          : 'text-muted-foreground hover:text-foreground'
+                      )}
+                      onClick={() => onCommitLogScopeChange('head')}
+                      title="仅当前检出分支（HEAD）的提交历史"
+                    >
+                      当前分支
+                    </button>
+                    <button
+                      type="button"
+                      className={cn(
+                        'whitespace-nowrap rounded px-2 py-0 text-xs font-medium transition-colors',
+                        commitLogScope === 'all'
+                          ? 'bg-background text-foreground shadow-sm ring-1 ring-primary/40'
+                          : 'text-muted-foreground hover:text-foreground'
+                      )}
+                      onClick={() => onCommitLogScopeChange('all')}
+                      title="本地分支、远程跟踪与标签的合并历史"
+                    >
+                      全部分支
+                    </button>
+                  </div>
                 )}
               </div>
               {hasActiveFilters && (
@@ -922,6 +963,14 @@ export function UnifiedCommitView({
                 </Button>
               )}
             </div>
+            {commitLogScope === 'all' && (
+              <p className="rounded-md border border-primary/35 bg-primary/5 px-2 py-1 text-[11px] leading-relaxed text-muted-foreground">
+                <span className="font-medium text-foreground/90">全部分支视图</span>
+                ：列表为各本地分支、远程跟踪与标签的合并历史，与「当前分支」范围不同。
+                提交右侧标签中，<span className="text-foreground/85">实心</span>
+                为本地分支，<span className="text-foreground/85">线框</span>为远程（如 origin/main）。
+              </p>
+            )}
             {/* 日期与关键词分区：减轻「查询」与搜索栏的视觉竞争 */}
             <div className="space-y-2 rounded-lg border border-border/60 bg-muted/25 p-2.5 dark:bg-muted/15">
               {/* 网格固定「开始 | 至 | 结束」同行，避免窄栏 flex-wrap 把「至」与按钮挤乱；操作单独一行右对齐 */}
@@ -1149,12 +1198,27 @@ export function UnifiedCommitView({
               className="flex h-full min-h-0 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent"
             >
               {filteredCommits.length > 0 && !isSearchMode && (
-                <CommitGraphStrip commits={filteredCommits} />
+                <CommitGraphStrip
+                  commits={filteredCommits}
+                  branchColorKeyByCommitId={branchColorKeyByCommitId}
+                />
               )}
               <div className="min-w-0 flex-1 flex flex-col divide-y divide-border/60">
               {filteredCommits.map((commit) => {
                 const atHead = isCommitCheckedOut(commit)
-                const refNames = branchNamesByCommit.get(commit.id)
+                const branchLabels = branchLabelsByCommit.get(commit.id)
+                const maxBranchBadges = 6
+                const shownBranches = branchLabels?.slice(0, maxBranchBadges)
+                const moreBranchCount =
+                  branchLabels && branchLabels.length > maxBranchBadges
+                    ? branchLabels.length - maxBranchBadges
+                    : 0
+                const allBranchesTitle =
+                  branchLabels && branchLabels.length > 0
+                    ? branchLabels
+                        .map((b) => `${b.is_remote ? '远程' : '本地'} ${b.name}`)
+                        .join('\n')
+                    : undefined
                 return (
                 <div
                   key={commit.id}
@@ -1174,7 +1238,7 @@ export function UnifiedCommitView({
                   }}
                 >
                   <div className="min-h-0 space-y-1">
-                    {/* 提交信息：哈希单独右列，避免与分支标签抢位 */}
+                    {/* 第一行：说明 + 哈希（分支标签单独一行，避免窄栏被挤没） */}
                     <div className="flex items-start gap-2">
                       <p
                         className="line-clamp-2 min-w-0 flex-1 text-xs font-medium leading-snug text-foreground"
@@ -1182,42 +1246,6 @@ export function UnifiedCommitView({
                       >
                         {commit.message}
                       </p>
-                      <div className="flex min-w-0 max-w-[46%] flex-shrink-0 flex-wrap items-center justify-end gap-0.5 sm:max-w-[40%]">
-                        {atHead && (
-                          <Badge
-                            className="shrink-0 bg-emerald-600 px-1 py-0 text-[10px] text-white hover:bg-emerald-600/90"
-                            title="当前工作区检出（HEAD）"
-                          >
-                            HEAD
-                          </Badge>
-                        )}
-                        {refNames?.slice(0, 2).map((name) => (
-                          <Badge
-                            key={name}
-                            variant="secondary"
-                            className="max-w-[6.5rem] shrink-0 truncate px-1 py-0 text-[9px]"
-                            title={name}
-                          >
-                            {name}
-                          </Badge>
-                        ))}
-                        {refNames && refNames.length > 2 && (
-                          <span className="text-[9px] text-muted-foreground">+{refNames.length - 2}</span>
-                        )}
-                        {pendingPullIds.has(commit.id) && (
-                          <Badge
-                            className="shrink-0 bg-amber-600 px-1 py-0 text-[10px] text-white hover:bg-amber-600/90"
-                            title="远程已有、本地尚未拉取合并的提交"
-                          >
-                            待拉取
-                          </Badge>
-                        )}
-                        {pendingPushIds.has(commit.id) && (
-                          <Badge className="shrink-0 bg-blue-600 px-1 py-0 text-[10px] text-white hover:bg-blue-600/90">
-                            待推送
-                          </Badge>
-                        )}
-                      </div>
                       <div className="w-[4.25rem] shrink-0 self-start pt-px text-right">
                         <Badge
                           variant="outline"
@@ -1236,6 +1264,60 @@ export function UnifiedCommitView({
                         <span className="shrink-0 tabular-nums">{commit.date}</span>
                       </div>
                     </div>
+
+                    {/* 分支 / HEAD / 同步状态：独占一行可换行，列表里能直接看到所属分支 */}
+                    {(atHead ||
+                      (shownBranches && shownBranches.length > 0) ||
+                      moreBranchCount > 0 ||
+                      pendingPullIds.has(commit.id) ||
+                      pendingPushIds.has(commit.id)) && (
+                      <div className="flex min-w-0 flex-wrap items-center gap-0.5 pt-0.5">
+                        {atHead && (
+                          <Badge
+                            className="shrink-0 bg-emerald-600 px-1 py-0 text-[10px] text-white hover:bg-emerald-600/90"
+                            title="当前工作区检出（HEAD）"
+                          >
+                            HEAD
+                          </Badge>
+                        )}
+                        {shownBranches?.map((b) => (
+                          <Badge
+                            key={`${b.name}-${b.is_remote ? 'r' : 'l'}`}
+                            variant={b.is_remote ? 'outline' : 'secondary'}
+                            className={cn(
+                              'max-w-[10rem] shrink-0 truncate px-1.5 py-0 text-[10px]',
+                              b.is_remote && 'border-muted-foreground/45'
+                            )}
+                            title={
+                              b.is_remote ? `远程分支：${b.name}` : `本地分支：${b.name}`
+                            }
+                          >
+                            {b.name}
+                          </Badge>
+                        ))}
+                        {moreBranchCount > 0 && (
+                          <span
+                            className="shrink-0 text-[10px] text-muted-foreground"
+                            title={allBranchesTitle}
+                          >
+                            +{moreBranchCount}
+                          </span>
+                        )}
+                        {pendingPullIds.has(commit.id) && (
+                          <Badge
+                            className="shrink-0 bg-amber-600 px-1 py-0 text-[10px] text-white hover:bg-amber-600/90"
+                            title="远程已有、本地尚未拉取合并的提交"
+                          >
+                            待拉取
+                          </Badge>
+                        )}
+                        {pendingPushIds.has(commit.id) && (
+                          <Badge className="shrink-0 bg-blue-600 px-1 py-0 text-[10px] text-white hover:bg-blue-600/90">
+                            待推送
+                          </Badge>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
                 )
