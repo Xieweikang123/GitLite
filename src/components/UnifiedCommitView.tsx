@@ -22,17 +22,18 @@ import { formatLocalYmd } from '../utils/dateYmd'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { Label } from './ui/label'
 import { formatTauriInvokeError } from '../utils/tauriError'
-import { CommitGraphStrip } from './CommitGraphStrip'
 
-/** 提交页三栏宽度：提交列表 | 文件列表 | diff（与分隔条宽度一致） */
+/** 提交页分栏：上方提交区高度 commit；下方为「文件列表 | diff」，其中文件列宽度 file（与分隔条尺寸一致） */
 const PANES_STORAGE_KEY = 'gitlite:unifiedCommitView:panes'
 const SPLITTER_PX = 6
 const MIN_COMMIT_W = 220
 const MIN_FILE_W = 160
 const MIN_DIFF_W = 240
-/** 未选中提交时右侧占位区的最小宽度（过小不利阅读，过大则浪费提交列表空间） */
-const MIN_RIGHT_EMPTY_W = 112
-const DEFAULT_PANES = { commit: 420, file: 240 } as const
+/** 未选中提交时下方占位区的最小高度 */
+const MIN_BOTTOM_EMPTY_H = 112
+/** 下方详情区（文件+diff）最小高度 */
+const MIN_BOTTOM_DETAIL_H = 160
+const DEFAULT_PANES = { commit: 360, file: 240 } as const
 
 function loadPanes(): { commit: number; file: number } {
   if (typeof window === 'undefined') return { ...DEFAULT_PANES }
@@ -120,6 +121,70 @@ function VerticalResizeHandle({
       tabIndex={0}
       className={cn(
         'w-1.5 shrink-0 cursor-col-resize touch-none select-none rounded-full bg-border/70 hover:bg-primary/45',
+        'active:bg-primary/60',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+        className
+      )}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={end}
+      onPointerCancel={end}
+      onDoubleClick={(e) => {
+        e.preventDefault()
+        onDoubleClick?.()
+      }}
+    />
+  )
+}
+
+function HorizontalResizeHandle({
+  onDrag,
+  onDragEnd,
+  onDoubleClick,
+  title: handleTitle,
+  className,
+}: {
+  onDrag: (deltaY: number) => void
+  onDragEnd?: () => void
+  onDoubleClick?: () => void
+  title?: string
+  className?: string
+}) {
+  const dragRef = useRef({ active: false, y: 0 })
+
+  const handlePointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    dragRef.current = { active: true, y: e.clientY }
+    e.currentTarget.setPointerCapture(e.pointerId)
+  }
+
+  const handlePointerMove = (e: PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current.active) return
+    const dy = e.clientY - dragRef.current.y
+    dragRef.current.y = e.clientY
+    if (dy !== 0) onDrag(dy)
+  }
+
+  const end = (e: PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current.active) return
+    dragRef.current.active = false
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    } catch {
+      /* 已释放 */
+    }
+    onDragEnd?.()
+  }
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label={handleTitle ?? '拖动调整高度'}
+      title={handleTitle}
+      tabIndex={0}
+      className={cn(
+        'h-1.5 w-full shrink-0 cursor-row-resize touch-none select-none rounded-full bg-border/70 hover:bg-primary/45',
         'active:bg-primary/60',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
         className
@@ -282,33 +347,31 @@ export function UnifiedCommitView({
   }, [])
 
   const onDragOuter = useCallback(
-    (dx: number) => {
+    (dy: number) => {
       setPanes(({ commit, file }) => {
         const root = rootRef.current
-        if (!root) return { commit: commit + dx, file }
-        const cw = root.clientWidth
+        if (!root) return { commit: commit + dy, file }
+        const ch = root.clientHeight
         const s = SPLITTER_PX
-        const maxCommit = selectedCommit
-          ? cw - file - MIN_DIFF_W - s * 2
-          : cw - MIN_RIGHT_EMPTY_W - s
+        const minBot = selectedCommit ? MIN_BOTTOM_DETAIL_H : MIN_BOTTOM_EMPTY_H
+        const maxCommit = ch - s - minBot
         const cappedMax = Math.max(MIN_COMMIT_W, maxCommit)
-        const next = Math.max(MIN_COMMIT_W, Math.min(commit + dx, cappedMax))
+        const next = Math.max(MIN_COMMIT_W, Math.min(commit + dy, cappedMax))
         return { commit: next, file }
       })
     },
     [selectedCommit]
   )
 
-  /** 双击提交列与右侧之间的分隔条：把提交列拉到当前布局下允许的最大宽度 */
+  /** 双击提交区与下方详情之间的分隔条：把提交区拉到当前可用最大高度 */
   const snapCommitColumnMax = useCallback(() => {
     setPanes((prev) => {
       const root = rootRef.current
       if (!root) return prev
-      const cw = root.clientWidth
+      const ch = root.clientHeight
       const s = SPLITTER_PX
-      const maxCommit = selectedCommit
-        ? Math.max(MIN_COMMIT_W, cw - prev.file - MIN_DIFF_W - s * 2)
-        : Math.max(MIN_COMMIT_W, cw - MIN_RIGHT_EMPTY_W - s)
+      const minBot = selectedCommit ? MIN_BOTTOM_DETAIL_H : MIN_BOTTOM_EMPTY_H
+      const maxCommit = Math.max(MIN_COMMIT_W, ch - s - minBot)
       const next = { commit: maxCommit, file: prev.file }
       queueMicrotask(() => savePanes(next))
       return next
@@ -321,7 +384,7 @@ export function UnifiedCommitView({
       if (!root) return { commit, file: file + dx }
       const cw = root.clientWidth
       const s = SPLITTER_PX
-      const maxFile = cw - commit - MIN_DIFF_W - s * 2
+      const maxFile = cw - MIN_DIFF_W - s * 2
       const cappedMax = Math.max(MIN_FILE_W, maxFile)
       const next = Math.max(MIN_FILE_W, Math.min(file + dx, cappedMax))
       return { commit, file: next }
@@ -332,21 +395,21 @@ export function UnifiedCommitView({
     const root = rootRef.current
     if (!root) return
     const ro = new ResizeObserver(() => {
-      setPanes(({ commit, file }) => {
+      setPanes(({ commit: c, file: f }) => {
         const cw = root.clientWidth
-        if (cw <= 0) return { commit, file }
+        const ch = root.clientHeight
+        if (cw <= 0 || ch <= 0) return { commit: c, file: f }
         const s = SPLITTER_PX
-        let c = commit
-        let f = file
-        const maxC = selectedCommit
-          ? cw - f - MIN_DIFF_W - s * 2
-          : cw - MIN_RIGHT_EMPTY_W - s
-        c = Math.max(MIN_COMMIT_W, Math.min(c, Math.max(MIN_COMMIT_W, maxC)))
+        const minBot = selectedCommit ? MIN_BOTTOM_DETAIL_H : MIN_BOTTOM_EMPTY_H
+        let c2 = c
+        let f2 = f
+        const maxC = Math.max(MIN_COMMIT_W, ch - s - minBot)
+        c2 = Math.max(MIN_COMMIT_W, Math.min(c2, Math.max(MIN_COMMIT_W, maxC)))
         if (selectedCommit) {
-          const maxF = cw - c - MIN_DIFF_W - s * 2
-          f = Math.max(MIN_FILE_W, Math.min(f, Math.max(MIN_FILE_W, maxF)))
+          const maxF = cw - MIN_DIFF_W - s * 2
+          f2 = Math.max(MIN_FILE_W, Math.min(f2, Math.max(MIN_FILE_W, maxF)))
         }
-        return { commit: c, file: f }
+        return { commit: c2, file: f2 }
       })
     })
     ro.observe(root)
@@ -555,18 +618,6 @@ export function UnifiedCommitView({
       cancelled = true
     }
   }, [repoPath, branchLabelIdsKey, currentBranch])
-
-  /** 左侧分支图着色：优先本地分支名，稳定映射到调色板（同分支同色） */
-  const branchColorKeyByCommitId = useMemo(() => {
-    const m = new Map<string, string>()
-    for (const c of filteredCommits) {
-      const labels = branchLabelsByCommit.get(c.id)
-      if (!labels?.length) continue
-      const local = labels.find((b) => !b.is_remote)?.name
-      m.set(c.id, local ?? labels[0].name)
-    }
-    return m
-  }, [filteredCommits, branchLabelsByCommit])
 
   /** 与后端总结一致：按日期时间升序（字符串可比） */
   const commitsSortedForCopy = useMemo(() => {
@@ -938,11 +989,11 @@ export function UnifiedCommitView({
   return (
     <div
       ref={rootRef}
-      className="flex h-full min-h-0 min-w-0 flex-1 flex-row overflow-hidden"
+      className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
     >
       <div
-        style={{ width: panes.commit }}
-        className="flex h-full min-h-0 shrink-0 flex-col overflow-hidden"
+        style={{ height: panes.commit }}
+        className="flex min-h-0 shrink-0 flex-col overflow-hidden"
       >
         <Card className="flex h-full min-h-0 flex-col border-border/80">
           <CardHeader className="space-y-1 px-2.5 pb-1 pt-1.5 sm:px-3">
@@ -1226,15 +1277,9 @@ export function UnifiedCommitView({
           <CardContent className="flex-1 min-h-0 overflow-hidden py-1 px-2 sm:px-3">
             <div
               ref={commitListScrollRef}
-              className="flex h-full min-h-0 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent"
+              className="h-full min-h-0 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent"
             >
-              {filteredCommits.length > 0 && !isSearchMode && (
-                <CommitGraphStrip
-                  commits={filteredCommits}
-                  branchColorKeyByCommitId={branchColorKeyByCommitId}
-                />
-              )}
-              <div className="min-w-0 flex-1 flex flex-col divide-y divide-border/60">
+              <div className="flex min-w-0 flex-col divide-y divide-border/60">
               {filteredCommits.map((commit) => {
                 const atHead = isCommitCheckedOut(commit)
                 const branchLabels = branchLabelsByCommit.get(commit.id)
@@ -1380,15 +1425,13 @@ export function UnifiedCommitView({
           </CardContent>
         </Card>
       </div>
-
-      <VerticalResizeHandle
+      <HorizontalResizeHandle
         onDrag={onDragOuter}
         onDragEnd={persistPanes}
         onDoubleClick={snapCommitColumnMax}
-        title="拖动调整宽度；双击将提交列拉至当前可用最大宽度"
+        title="拖动调整上方提交区与下方详情区高度；双击将提交区拉至当前可用最大高度"
       />
-
-      {/* 右侧：未选提交时为一块说明；选中后为 文件变更 | 代码差异 */}
+      {/* 下方：未选提交时为一块说明；选中后为 文件变更 | 代码差异 */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {!selectedCommit ? (
           <Card className="flex h-full min-h-0 flex-1 flex-col border-border/80">
@@ -1396,7 +1439,7 @@ export function UnifiedCommitView({
               <GitCompare className="h-14 w-14 shrink-0 opacity-40" />
               <p className="text-sm font-medium text-foreground">选择提交查看变更</p>
               <p className="max-w-sm text-xs leading-relaxed opacity-80">
-                在左侧提交记录中点击任意一条，即可查看该提交的文件列表与代码差异。在提交项上右键可选择「重置到此提交」。
+                在上方提交记录中点击任意一条，即可查看该提交的文件列表与代码差异。在提交项上右键可选择「重置到此提交」。
               </p>
             </CardContent>
           </Card>
