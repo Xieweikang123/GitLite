@@ -996,7 +996,7 @@ export function UnifiedCommitView({
         className="flex min-h-0 shrink-0 flex-col overflow-hidden"
       >
         <Card className="flex h-full min-h-0 flex-col border-border/80">
-          <CardHeader className="space-y-1 px-2.5 pb-1 pt-1.5 sm:px-3">
+          <CardHeader className="space-y-0.5 px-2.5 py-1 sm:px-3">
             {/* 标题单独一行，避免与多行筛选区并排时 items-center 把标题挤到日期行中间造成重叠 */}
             <div className="flex min-w-0 items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
@@ -1051,48 +1051,43 @@ export function UnifiedCommitView({
               )}
             </div>
             {commitLogScope === 'all' && (
-              <details className="rounded border border-primary/30 bg-primary/5 text-[10px] leading-snug">
-                <summary className="cursor-pointer select-none list-none px-1.5 py-0.5 text-muted-foreground [&::-webkit-details-marker]:hidden">
-                  <span className="font-medium text-foreground/90">全部分支</span>
+              <details className="text-[10px] leading-tight text-muted-foreground">
+                <summary className="cursor-pointer select-none list-none rounded-sm px-0 py-0 [&::-webkit-details-marker]:hidden hover:text-foreground">
+                  <span className="font-medium text-foreground/85">全部分支</span>
                   <span className="opacity-90"> 实心=本地，线框=远程</span>
                   <span className="text-primary/70"> · 展开说明</span>
                 </summary>
-                <p className="border-t border-primary/15 px-1.5 py-1 text-[10px] text-muted-foreground">
+                <p className="mt-0.5 pl-0 text-[10px] text-muted-foreground">
                   列表为各本地分支、远程跟踪与标签的合并历史，与「当前分支」范围不同。
                 </p>
               </details>
             )}
-            <div className="space-y-1 rounded-md border border-border/60 bg-muted/25 p-1.5 dark:bg-muted/15">
-              {/* 日期一行 */}
-              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
-                <span className="flex shrink-0 items-center gap-1 text-[10px] font-medium text-muted-foreground">
-                  <Calendar className="h-3 w-3 shrink-0" aria-hidden />
-                  日期
+            <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 rounded-md border border-border/60 bg-muted/25 p-1 dark:bg-muted/15">
+              <span className="flex shrink-0 items-center gap-0.5 text-[10px] font-medium text-muted-foreground">
+                <Calendar className="h-3 w-3 shrink-0" aria-hidden />
+                日期
+              </span>
+              <div className="grid min-w-0 basis-[min(100%,14rem)] flex-1 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-1 sm:max-w-md">
+                <CommitDatePickerButton
+                  value={pendingStart}
+                  onChange={setPendingStart}
+                  placeholder="开始"
+                  title="开始日期"
+                  className="h-6 min-w-0 w-full max-w-none justify-start text-xs"
+                />
+                <span className="shrink-0 px-0.5 text-center text-[10px] text-muted-foreground">
+                  至
                 </span>
-                <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-1 sm:max-w-md">
-                  <CommitDatePickerButton
-                    value={pendingStart}
-                    onChange={setPendingStart}
-                    placeholder="开始"
-                    title="开始日期"
-                    className="h-6 min-w-0 w-full max-w-none justify-start text-xs"
-                  />
-                  <span className="shrink-0 px-0.5 text-center text-[10px] text-muted-foreground">
-                    至
-                  </span>
-                  <CommitDatePickerButton
-                    value={pendingEnd}
-                    onChange={setPendingEnd}
-                    placeholder="结束"
-                    title="结束日期"
-                    className="h-6 min-w-0 w-full max-w-none justify-start text-xs"
-                  />
-                </div>
+                <CommitDatePickerButton
+                  value={pendingEnd}
+                  onChange={setPendingEnd}
+                  placeholder="结束"
+                  title="结束日期"
+                  className="h-6 min-w-0 w-full max-w-none justify-start text-xs"
+                />
               </div>
-              {/* 关键词 + 快捷按钮同一带内换行 */}
-              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
-                <span className="shrink-0 text-[10px] font-medium text-muted-foreground">关键词</span>
-                <div className="relative min-h-6 min-w-0 flex-1 basis-[6rem] sm:basis-[10rem]">
+              <span className="shrink-0 text-[10px] font-medium text-muted-foreground">关键词</span>
+              <div className="relative min-h-6 min-w-0 flex-1 basis-[8rem] sm:basis-[12rem]">
                   <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     placeholder="筛选已加载列表，Enter 查询"
@@ -1143,7 +1138,7 @@ export function UnifiedCommitView({
                     </Button>
                   </>
                 )}
-                <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-1 sm:ml-auto sm:w-auto">
+              <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-1 sm:ml-auto sm:w-auto sm:flex-1">
                   <Button
                     type="button"
                     variant="secondary"
@@ -1198,7 +1193,6 @@ export function UnifiedCommitView({
                     <ClipboardList className="h-3 w-3" />
                     列表
                   </Button>
-                </div>
               </div>
             </div>
             <RemoteSyncBar
@@ -1214,7 +1208,7 @@ export function UnifiedCommitView({
               className="mt-0"
             />
             <p
-              className="border-t border-border/40 px-0.5 pb-0 pt-1 text-[10px] leading-snug text-muted-foreground/95 dark:text-muted-foreground"
+              className="border-t border-border/40 px-0.5 pb-0 pt-0.5 text-[10px] leading-tight text-muted-foreground/95 dark:text-muted-foreground"
               title={
                 commitLogScope === 'all'
                   ? '「已加载」为当前列表条数，可继续加载。总数为所有本地分支、远程跟踪与标签可达的去重提交数（与 git log --all 类似）。'

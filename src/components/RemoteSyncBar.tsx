@@ -41,7 +41,7 @@ export function RemoteSyncBar({
     <div
       className={cn(
         'flex items-center justify-between bg-muted/30 rounded-md border border-border',
-        compact ? 'gap-1.5 flex-wrap px-2 py-1' : 'p-3',
+        compact ? 'gap-1 flex-wrap px-1.5 py-0.5' : 'p-3',
         className
       )}
     >
@@ -91,7 +91,7 @@ export function RemoteSyncBar({
             size="sm"
             onClick={onFetchChanges}
             disabled={disabled}
-            className="h-7 px-2 text-xs"
+            className={cn('px-2 text-xs', compact ? 'h-6' : 'h-7')}
             title="获取远程仓库的最新信息（不合并到本地）"
           >
             <Download className="h-3.5 w-3.5 mr-1" />
@@ -103,7 +103,7 @@ export function RemoteSyncBar({
             size="sm"
             onClick={onPullChanges}
             disabled={disabled}
-            className="h-7 px-2 text-xs"
+            className={cn('px-2 text-xs', compact ? 'h-6' : 'h-7')}
             title="拉取并合并远程更改到当前分支"
           >
             <GitPullRequest className="h-3.5 w-3.5 mr-1" />
@@ -116,7 +116,7 @@ export function RemoteSyncBar({
             size="sm"
             onClick={onPullChanges}
             disabled={disabled}
-            className="h-7 px-2 text-xs"
+            className={cn('px-2 text-xs', compact ? 'h-6' : 'h-7')}
             title="拉取远程更改（即使没有待拉取的提交）"
           >
             <GitPullRequest className="h-3.5 w-3.5 mr-1" />
@@ -128,7 +128,7 @@ export function RemoteSyncBar({
             size="sm"
             onClick={onPushChanges}
             disabled={disabled}
-            className="h-7 px-2 text-xs"
+            className={cn('px-2 text-xs', compact ? 'h-6' : 'h-7')}
             title="将本地提交推送到远程仓库"
           >
             <Upload className="h-3.5 w-3.5 mr-1" />
@@ -141,7 +141,7 @@ export function RemoteSyncBar({
             size="sm"
             onClick={onPushChanges}
             disabled={disabled}
-            className="h-7 px-2 text-xs"
+            className={cn('px-2 text-xs', compact ? 'h-6' : 'h-7')}
             title="推送当前分支（即使没有待推送的提交）"
           >
             <Upload className="h-3.5 w-3.5 mr-1" />
@@ -154,7 +154,7 @@ export function RemoteSyncBar({
             size="sm"
             onClick={onRefresh}
             disabled={disabled}
-            className="h-7 w-7 p-0"
+            className={cn('p-0', compact ? 'h-6 w-6' : 'h-7 w-7')}
             title={refreshTitle}
           >
             <RefreshCw className={`h-3.5 w-3.5 ${refreshSpinning ? 'animate-spin' : ''}`} />
