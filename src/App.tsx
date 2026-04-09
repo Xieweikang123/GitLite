@@ -57,6 +57,8 @@ function App() {
   const [searchLoading, setSearchLoading] = useState(false)
   /** 提交列表范围：当前 HEAD 历史，或所有分支/远程/标签可达（与后端 scope 一致） */
   const [commitLogScope, setCommitLogScope] = useState<'head' | 'all'>('head')
+  /** 「当前分支」模式下可选：查看指定本地分支的历史（不经检出）；null 表示当前检出 HEAD */
+  const [commitLogRev, setCommitLogRev] = useState<string | null>(null)
   
   // 日志弹窗状态
   const [logModalOpen, setLogModalOpen] = useState(false)
@@ -115,6 +117,17 @@ function App() {
 
   const handleCommitLogScopeChange = (scope: 'head' | 'all') => {
     setCommitLogScope(scope)
+    if (scope === 'all') {
+      setCommitLogRev(null)
+    }
+    setSearchResults(null)
+    setSelectedCommit(null)
+    setCommitFiles([])
+    setSelectedFile(null)
+  }
+
+  const handleCommitLogRevChange = (rev: string | null) => {
+    setCommitLogRev(rev)
     setSearchResults(null)
     setSelectedCommit(null)
     setCommitFiles([])
@@ -126,7 +139,12 @@ function App() {
     setSearchLoading(true)
     setSearchResults(null)
     try {
-      const list = await searchCommits(term, 500, commitLogScope)
+      const list = await searchCommits(
+        term,
+        500,
+        commitLogScope,
+        commitLogScope === 'head' ? commitLogRev : null
+      )
       setSearchResults(list)
     } catch (e) {
       console.error('全仓库搜索失败:', e)
@@ -147,7 +165,8 @@ function App() {
       const newCommits = await getCommitsPaginated(
         50,
         localCommits.length,
-        commitLogScope === 'all' ? 'all' : 'head'
+        commitLogScope === 'all' ? 'all' : 'head',
+        commitLogScope === 'head' ? commitLogRev : null
       )
       if (newCommits.length === 0) {
         setHasMoreCommits(false)
@@ -412,6 +431,7 @@ function App() {
 
     if (pathChanged) {
       prevRepoPathRef.current = path
+      setCommitLogRev(null)
       if (commitLogScope !== 'head') {
         setCommitLogScope('head')
         setSearchResults(null)
@@ -421,11 +441,32 @@ function App() {
 
     setSearchResults(null)
 
-    if (commitLogScope === 'head') {
+    if (commitLogScope === 'head' && !commitLogRev) {
       setIncomingCommits(repoInfo.incoming_commits ?? [])
       setLocalCommits(repoInfo.commits)
       setHasMoreCommits(repoInfo.commits.length >= 50)
       return
+    }
+
+    if (commitLogScope === 'head' && commitLogRev) {
+      setIncomingCommits([])
+      let cancelled = false
+      void (async () => {
+        try {
+          const first = await getCommitsPaginated(50, 0, 'head', commitLogRev)
+          if (cancelled) return
+          setLocalCommits(first)
+          setHasMoreCommits(first.length >= 50)
+        } catch {
+          if (!cancelled) {
+            setLocalCommits([])
+            setHasMoreCommits(false)
+          }
+        }
+      })()
+      return () => {
+        cancelled = true
+      }
     }
 
     setIncomingCommits([])
@@ -446,11 +487,13 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [repoInfo, commitLogScope, getCommitsPaginated])
+  }, [repoInfo, commitLogScope, commitLogRev, getCommitsPaginated])
 
   const mergedCommitsForView =
     searchResults ??
-    (commitLogScope === 'all' ? localCommits : [...incomingCommits, ...localCommits])
+    (commitLogScope === 'all' || commitLogRev
+      ? localCommits
+      : [...incomingCommits, ...localCommits])
 
   const [activeTab, setActiveTab] = useState<'workspace' | 'commits' | 'files'>('workspace')
 
@@ -562,9 +605,18 @@ function App() {
                 onClearSearchMode={handleClearSearchMode}
                 commitLogScope={commitLogScope}
                 onCommitLogScopeChange={handleCommitLogScopeChange}
-                aheadCount={commitLogScope === 'all' ? 0 : (repoInfo?.ahead ?? 0)}
+                commitLogRev={commitLogRev}
+                onCommitLogRevChange={handleCommitLogRevChange}
+                branchNames={repoInfo.branches.map((b) => b.name)}
+                aheadCount={
+                  commitLogScope === 'all' || commitLogRev
+                    ? 0
+                    : (repoInfo?.ahead ?? 0)
+                }
                 incomingCommitCount={
-                  searchResults || commitLogScope === 'all' ? 0 : incomingCommits.length
+                  searchResults || commitLogScope === 'all' || commitLogRev
+                    ? 0
+                    : incomingCommits.length
                 }
                 behindCount={repoInfo?.behind}
                 onFetchChanges={handleFetchChanges}

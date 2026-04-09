@@ -1,4 +1,13 @@
-import { useState, useCallback, useMemo, memo, useRef, useEffect, type PointerEvent } from 'react'
+import {
+  useState,
+  useCallback,
+  useMemo,
+  memo,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  type PointerEvent,
+} from 'react'
 import { createPortal } from 'react-dom'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
@@ -19,10 +28,11 @@ import { invoke } from '@tauri-apps/api/tauri'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { CommitDatePickerButton } from './CommitDatePickerButton'
 import { formatLocalYmd } from '../utils/dateYmd'
-import { formatBranchLabelShort } from '../utils/branchDisplayName'
+import { branchBadgeClassName, formatBranchLabelShort } from '../utils/branchDisplayName'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { Label } from './ui/label'
 import { formatTauriInvokeError } from '../utils/tauriError'
+import { CommitGraphStrip, COMMIT_GRAPH_ROW_HEIGHT } from './CommitGraphStrip'
 
 /** 提交页分栏：上方提交区高度 commit；下方为「文件列表 | diff」，其中文件列宽度 file（与分隔条尺寸一致） */
 const PANES_STORAGE_KEY = 'gitlite:unifiedCommitView:panes'
@@ -214,6 +224,11 @@ interface UnifiedCommitViewProps {
   /** 提交历史范围：当前分支 HEAD 或全部分支/远程/标签 */
   commitLogScope?: 'head' | 'all'
   onCommitLogScopeChange?: (scope: 'head' | 'all') => void
+  /** 「当前分支」模式下查看的引用（本地分支名）；null 表示当前检出 HEAD */
+  commitLogRev?: string | null
+  onCommitLogRevChange?: (rev: string | null) => void
+  /** 下拉可选分支名（通常为本地分支） */
+  branchNames?: string[]
   aheadCount?: number
   /** 列表前部为「待拉取」提交时的条数（与 commits 中前置的 incoming 段一致） */
   incomingCommitCount?: number
@@ -247,6 +262,9 @@ export function UnifiedCommitView({
   onClearSearchMode,
   commitLogScope = 'head',
   onCommitLogScopeChange,
+  commitLogRev = null,
+  onCommitLogRevChange,
+  branchNames = [],
   aheadCount = 0,
   incomingCommitCount = 0,
   behindCount,
@@ -331,6 +349,9 @@ export function UnifiedCommitView({
   const [branchLabelsByCommit, setBranchLabelsByCommit] = useState<
     Map<string, BranchOnCommit[]>
   >(() => new Map())
+  /** 与左侧 CommitGraphStrip 行对齐：每行提交条高度（px） */
+  const commitRowElsRef = useRef<(HTMLDivElement | null)[]>([])
+  const [commitGraphRowHeights, setCommitGraphRowHeights] = useState<number[]>([])
   const hasMoreRef = useRef(hasMore)
   const loadingRef = useRef(loading)
   const onLoadMoreRef = useRef(onLoadMore)
@@ -430,6 +451,10 @@ export function UnifiedCommitView({
     invoke<number>('get_commit_count_head', {
       repoPath,
       scope: commitLogScope === 'all' ? 'all' : null,
+      rev:
+        commitLogScope === 'head' && commitLogRev && commitLogRev.trim()
+          ? commitLogRev.trim()
+          : null,
     })
       .then((n) => {
         if (!cancelled) {
@@ -446,7 +471,7 @@ export function UnifiedCommitView({
     return () => {
       cancelled = true
     }
-  }, [repoPath, currentBranch, commitLogScope])
+  }, [repoPath, currentBranch, commitLogScope, commitLogRev])
 
   // 提交列表右键菜单：点击外部、滚动、Esc 关闭
   useEffect(() => {
@@ -506,6 +531,19 @@ export function UnifiedCommitView({
   }, [isSearchMode, pendingSearch, onClearSearchMode])
 
   // 过滤提交 - 非搜索模式下按关键词过滤；始终按自定义日期范围过滤
+  const branchNamesSorted = useMemo(() => {
+    if (branchNames.length === 0) return []
+    const cur = currentBranch?.trim()
+    const set = new Set(branchNames)
+    const rest = branchNames
+      .filter((n) => n !== cur)
+      .sort((a, b) => a.localeCompare(b))
+    if (cur && set.has(cur)) {
+      return [cur, ...rest]
+    }
+    return [...branchNames].sort((a, b) => a.localeCompare(b))
+  }, [branchNames, currentBranch])
+
   const hasActiveFilters = useMemo(
     () =>
       !!(
@@ -619,6 +657,58 @@ export function UnifiedCommitView({
       cancelled = true
     }
   }, [repoPath, branchLabelIdsKey, currentBranch])
+
+  /** 左侧连线图着色：优先当前分支对应的远程名，否则取列表中第一个分支名 */
+  const graphBranchColorByCommit = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of filteredCommits) {
+      const labels = branchLabelsByCommit.get(c.id)
+      if (!labels?.length) continue
+      const prefer =
+        labels.find(
+          (b) =>
+            b.name === `origin/${currentBranch}` ||
+            b.name === currentBranch ||
+            b.name.endsWith(`/${currentBranch}`)
+        ) ?? labels[0]
+      m.set(c.id, prefer.name)
+    }
+    return m
+  }, [filteredCommits, branchLabelsByCommit, currentBranch])
+
+  useLayoutEffect(() => {
+    const n = filteredCommits.length
+    if (n === 0) {
+      commitRowElsRef.current = []
+      setCommitGraphRowHeights([])
+      return
+    }
+    commitRowElsRef.current.length = n
+    const measure = () => {
+      const next: number[] = []
+      for (let i = 0; i < n; i++) {
+        const el = commitRowElsRef.current[i]
+        next.push(
+          el ? Math.round(el.getBoundingClientRect().height) : COMMIT_GRAPH_ROW_HEIGHT
+        )
+      }
+      setCommitGraphRowHeights((prev) => {
+        if (prev.length === next.length && prev.every((v, i) => v === next[i])) {
+          return prev
+        }
+        return next
+      })
+    }
+    measure()
+    const ro = new ResizeObserver(() => {
+      window.requestAnimationFrame(measure)
+    })
+    for (let i = 0; i < n; i++) {
+      const el = commitRowElsRef.current[i]
+      if (el) ro.observe(el)
+    }
+    return () => ro.disconnect()
+  }, [filteredCommits, branchLabelIdsKey, branchLabelsByCommit])
 
   /** 与后端总结一致：按日期时间升序（字符串可比） */
   const commitsSortedForCopy = useMemo(() => {
@@ -1038,6 +1128,27 @@ export function UnifiedCommitView({
                     </button>
                   </div>
                 )}
+                {commitLogScope === 'head' &&
+                  onCommitLogRevChange &&
+                  branchNamesSorted.length > 0 && (
+                    <select
+                      className="h-6 max-w-[11rem] shrink rounded-md border border-input bg-background px-1.5 text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      value={commitLogRev ?? ''}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        onCommitLogRevChange(v === '' ? null : v)
+                      }}
+                      title="查看任意本地分支的提交历史（无需切换检出）"
+                      aria-label="选择要查看的历史分支"
+                    >
+                      <option value="">当前检出</option>
+                      {branchNamesSorted.map((name) => (
+                        <option key={name} value={name}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
               </div>
               {hasActiveFilters && (
                 <Button
@@ -1213,7 +1324,9 @@ export function UnifiedCommitView({
               title={
                 commitLogScope === 'all'
                   ? '「已加载」为当前列表条数，可继续加载。总数为所有本地分支、远程跟踪与标签可达的去重提交数（与 git log --all 类似）。'
-                  : '「已加载」为当前列表中的条数，可向下滚动继续加载。「当前分支」总数为 HEAD 可达提交数（与 git rev-list --count HEAD 一致），含合并带来的历史。'
+                  : commitLogRev
+                    ? `「已加载」为当前列表条数。所选分支「${commitLogRev}」的可达提交总数与 git rev-list --count ${commitLogRev} 一致。`
+                    : '「已加载」为当前列表中的条数，可向下滚动继续加载。「当前分支」总数为 HEAD 可达提交数（与 git rev-list --count HEAD 一致），含合并带来的历史。'
               }
             >
               {isSearchMode ? (
@@ -1226,7 +1339,9 @@ export function UnifiedCommitView({
                       ·{' '}
                       {commitLogScope === 'all'
                         ? `全部引用共 ${headCommitTotal} 个提交`
-                        : `当前分支共 ${headCommitTotal} 个提交`}
+                        : commitLogRev
+                          ? `分支「${commitLogRev}」共 ${headCommitTotal} 个提交`
+                          : `当前分支共 ${headCommitTotal} 个提交`}
                     </>
                   )}
                   {headShortNormalized && (
@@ -1250,7 +1365,9 @@ export function UnifiedCommitView({
                       ·{' '}
                       {commitLogScope === 'all'
                         ? `全部引用共 ${headCommitTotal} 个提交`
-                        : `当前分支共 ${headCommitTotal} 个提交`}
+                        : commitLogRev
+                          ? `分支「${commitLogRev}」共 ${headCommitTotal} 个提交`
+                          : `当前分支共 ${headCommitTotal} 个提交`}
                     </>
                   )}
                   {filteredCommits.length !== commits.length && (
@@ -1274,8 +1391,19 @@ export function UnifiedCommitView({
               ref={commitListScrollRef}
               className="h-full min-h-0 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent"
             >
-              <div className="flex min-w-0 flex-col divide-y divide-border/60">
-              {filteredCommits.map((commit) => {
+              <div className="flex min-w-0 flex-row items-stretch">
+                <CommitGraphStrip
+                  className="border-r border-border/50 pl-0.5 pr-0.5"
+                  commits={filteredCommits}
+                  branchColorKeyByCommitId={graphBranchColorByCommit}
+                  rowHeights={
+                    commitGraphRowHeights.length === filteredCommits.length
+                      ? commitGraphRowHeights
+                      : undefined
+                  }
+                />
+                <div className="flex min-w-0 flex-1 flex-col divide-y divide-border/60">
+              {filteredCommits.map((commit, i) => {
                 const atHead = isCommitCheckedOut(commit)
                 const branchLabels = branchLabelsByCommit.get(commit.id)
                 /** 宽屏一行可排更多标签；仅作上限，窄屏仍由 flex-wrap 换行 */
@@ -1294,6 +1422,9 @@ export function UnifiedCommitView({
                 return (
                 <div
                   key={commit.id}
+                  ref={(el) => {
+                    commitRowElsRef.current[i] = el
+                  }}
                   className={cn(
                     'flex min-h-[3.5rem] shrink-0 cursor-pointer flex-col justify-center px-2 py-1.5 transition-colors',
                     atHead && 'border-l-[3px] border-l-emerald-600 dark:border-l-emerald-500',
@@ -1355,10 +1486,10 @@ export function UnifiedCommitView({
                         {shownBranches?.map((b) => (
                           <Badge
                             key={`${b.name}-${b.is_remote ? 'r' : 'l'}`}
-                            variant={b.is_remote ? 'outline' : 'secondary'}
+                            variant="outline"
                             className={cn(
-                              'max-w-[10rem] shrink-0 truncate px-1 py-0 text-[10px]',
-                              b.is_remote && 'border-muted-foreground/45'
+                              'max-w-[10rem] shrink-0 truncate px-1 py-0 text-[10px] font-medium',
+                              branchBadgeClassName(b.name)
                             )}
                             title={
                               b.is_remote ? `远程分支：${b.name}` : `本地分支：${b.name}`
@@ -1394,6 +1525,8 @@ export function UnifiedCommitView({
                 </div>
                 )
               })}
+                </div>
+              </div>
                 {hasMore && (
                   <div ref={loadMoreSentinelRef} className="h-2 shrink-0" aria-hidden="true" />
                 )}
@@ -1416,7 +1549,6 @@ export function UnifiedCommitView({
                     </Button>
                   </div>
                 )}
-              </div>
             </div>
           </CardContent>
         </Card>

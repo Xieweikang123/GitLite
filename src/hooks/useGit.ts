@@ -231,14 +231,21 @@ export function useGit() {
   }, [repoInfo])
 
   const getCommitsPaginated = useCallback(
-    async (limit?: number, offset?: number, scope?: 'head' | 'all') => {
+    async (
+      limit?: number,
+      offset?: number,
+      scope?: 'head' | 'all',
+      rev?: string | null
+    ) => {
       try {
         if (!repoInfo) throw new Error('No repository selected')
+        const r = rev?.trim() || null
         return await invoke<CommitInfo[]>('get_commits_paginated', {
           repoPath: repoInfo.path,
           limit,
           offset,
           scope: scope === 'all' ? 'all' : null,
+          rev: r,
         })
       } catch (error) {
         console.error('Failed to get paginated commits:', error)
@@ -249,14 +256,21 @@ export function useGit() {
   )
 
   const searchCommits = useCallback(
-    async (query: string, limit?: number, scope?: 'head' | 'all') => {
+    async (
+      query: string,
+      limit?: number,
+      scope?: 'head' | 'all',
+      rev?: string | null
+    ) => {
       try {
         if (!repoInfo) throw new Error('No repository selected')
+        const r = rev?.trim() || null
         return await invoke<CommitInfo[]>('search_commits', {
           repoPath: repoInfo.path,
           query: query.trim(),
           limit: limit ?? 500,
           scope: scope === 'all' ? 'all' : null,
+          rev: r,
         })
       } catch (error) {
         console.error('Failed to search commits:', error)

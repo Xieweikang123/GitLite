@@ -1608,14 +1608,19 @@ fn commit_parent_ids(commit: &git2::Commit) -> Vec<String> {
         .collect()
 }
 
-/// 提交列表范围：当前 HEAD 可达历史，或所有本地分支 / 远程跟踪 / 标签可达（类似 `git log --all` 的引用集合）。
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// 提交列表范围：当前 HEAD 可达历史，或所有本地分支 / 远程跟踪 / 标签可达（类似 `git log --all` 的引用集合），或指定引用（如某本地分支名，不经检出）。
+#[derive(Clone, PartialEq, Eq)]
 enum CommitLogScope {
     Head,
     AllRefs,
+    /// `git rev-parse` 可解析的引用（分支名、origin/main 等）
+    Rev(String),
 }
 
-fn commit_log_scope_from_opt(scope: Option<&str>) -> CommitLogScope {
+fn commit_log_scope_from_parts(scope: Option<&str>, rev: Option<&str>) -> CommitLogScope {
+    if let Some(r) = rev.map(str::trim).filter(|t| !t.is_empty()) {
+        return CommitLogScope::Rev(r.to_string());
+    }
     match scope.map(str::trim).filter(|t| !t.is_empty()) {
         Some("all") => CommitLogScope::AllRefs,
         _ => CommitLogScope::Head,
@@ -1662,6 +1667,14 @@ fn revwalk_push_scope(
                         .map_err(|e| anyhow::anyhow!("Failed to push ref tip: {}", e))?;
                 }
             }
+        }
+        CommitLogScope::Rev(ref_spec) => {
+            let obj = repo
+                .revparse_single(ref_spec.as_str())
+                .map_err(|e| anyhow::anyhow!("无法解析引用 \"{}\": {}", ref_spec, e))?;
+            revwalk
+                .push(obj.id())
+                .map_err(|e| anyhow::anyhow!("Failed to push rev: {}", e))?;
         }
     }
     Ok(())
@@ -1750,9 +1763,13 @@ fn count_commits_scoped(repo: &Repository, scope: CommitLogScope) -> Result<usiz
 }
 
 #[tauri::command]
-async fn get_commit_count_head(repo_path: String, scope: Option<String>) -> Result<u64, String> {
+async fn get_commit_count_head(
+    repo_path: String,
+    scope: Option<String>,
+    rev: Option<String>,
+) -> Result<u64, String> {
     let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
-    let s = commit_log_scope_from_opt(scope.as_deref());
+    let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
     let n = count_commits_scoped(&repo, s).map_err(|e| format!("Failed to count commits: {}", e))?;
     Ok(n as u64)
 }
@@ -1764,10 +1781,11 @@ async fn get_commits_paginated(
     limit: Option<usize>,
     offset: Option<usize>,
     scope: Option<String>,
+    rev: Option<String>,
 ) -> Result<Vec<CommitInfo>, String> {
     let repo = Repository::open(&repo_path)
         .map_err(|e| format!("Failed to open repository: {}", e))?;
-    let s = commit_log_scope_from_opt(scope.as_deref());
+    let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
     let commits = get_commit_history_paginated(&repo, limit, offset, s)
         .map_err(|e| format!("Failed to get commit history: {}", e))?;
 
@@ -1834,11 +1852,12 @@ async fn search_commits(
     query: String,
     limit: Option<usize>,
     scope: Option<String>,
+    rev: Option<String>,
 ) -> Result<Vec<CommitInfo>, String> {
     let limit = limit.unwrap_or(500);
     let repo = Repository::open(&repo_path)
         .map_err(|e| format!("Failed to open repository: {}", e))?;
-    let s = commit_log_scope_from_opt(scope.as_deref());
+    let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
     let commits = get_commit_history_search(&repo, query.trim(), limit, s)
         .map_err(|e| format!("Search failed: {}", e))?;
     Ok(commits)

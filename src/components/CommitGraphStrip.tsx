@@ -6,6 +6,24 @@ import { cn } from '../lib/utils'
 const LANE_W = 12
 export const ROW_H = 56
 
+function resolveRowHeights(n: number, rowHeights: number[] | undefined): number[] {
+  return Array.from({ length: n }, (_, i) => {
+    const h = rowHeights?.[i]
+    return typeof h === 'number' && h > 0 ? h : ROW_H
+  })
+}
+
+function cumulativeCenterY(heights: number[], row: number): number {
+  let top = 0
+  for (let j = 0; j < row; j++) top += heights[j] ?? ROW_H
+  return top + (heights[row] ?? ROW_H) / 2
+}
+
+function totalSvgHeight(heights: number[]): number {
+  if (heights.length === 0) return 0
+  return heights.reduce((a, b) => a + b, 0)
+}
+
 /** 与 SourceTree 类似：不同分支/车道不同颜色（类名须为字面量） */
 const GRAPH_PALETTE = [
   { stroke: 'stroke-sky-500 dark:stroke-sky-400', fill: 'fill-sky-500 dark:fill-sky-400' },
@@ -26,6 +44,8 @@ type Props = {
   commits: CommitInfo[]
   /** 提交 id → 用于选色的分支名（优先展示本地名）；有数据则按分支名稳定映射颜色 */
   branchColorKeyByCommitId?: Map<string, string>
+  /** 与左侧列表每行实际高度一致（像素），用于竖线与节点与文字行对齐 */
+  rowHeights?: number[]
   className?: string
 }
 
@@ -46,11 +66,15 @@ function paletteAt(i: number) {
 }
 
 /** 提交列表左侧 DAG：连线与节点按分支名（或车道）映射多色 */
-export function CommitGraphStrip({ commits, branchColorKeyByCommitId, className }: Props) {
+export function CommitGraphStrip({ commits, branchColorKeyByCommitId, rowHeights, className }: Props) {
   const model = useMemo(() => computeCommitGraph(commits), [commits])
   const { maxLane, edges, lanes } = model
   const width = Math.max(1, maxLane + 1) * LANE_W + 8
-  const h = commits.length * ROW_H
+  const heights = useMemo(
+    () => resolveRowHeights(commits.length, rowHeights),
+    [commits.length, rowHeights]
+  )
+  const h = totalSvgHeight(heights)
 
   if (commits.length === 0) return null
 
@@ -68,8 +92,8 @@ export function CommitGraphStrip({ commits, branchColorKeyByCommitId, className 
           const pal = paletteAt(pi)
           const x1 = (e.fromLane + 0.5) * LANE_W + 4
           const x2 = (e.toLane + 0.5) * LANE_W + 4
-          const y1 = (e.fromRow + 0.5) * ROW_H
-          const y2 = (e.toRow + 0.5) * ROW_H
+          const y1 = cumulativeCenterY(heights, e.fromRow)
+          const y2 = cumulativeCenterY(heights, e.toRow)
           const mid = (y1 + y2) / 2
           const d = `M ${x1} ${y1} L ${x1} ${mid} L ${x2} ${mid} L ${x2} ${y2}`
           return (
@@ -88,7 +112,7 @@ export function CommitGraphStrip({ commits, branchColorKeyByCommitId, className 
           const pi = pickPaletteIndex(c, lane, branchColorKeyByCommitId)
           const pal = paletteAt(pi)
           const cx = (lane + 0.5) * LANE_W + 4
-          const cy = (i + 0.5) * ROW_H
+          const cy = cumulativeCenterY(heights, i)
           return (
             <circle
               key={c.id}
