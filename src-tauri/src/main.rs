@@ -1943,14 +1943,18 @@ async fn get_branch_ref_tips(repo_path: String) -> Result<Vec<BranchRefTip>, Str
         .collect())
 }
 
-/// 批量查询：每个提交在哪些本地/远程分支的历史上（分支 tip 为该提交的后代或等于该提交）。
+/// 批量查询：每个提交在哪些**远程跟踪**分支的历史上（分支 tip 为该提交的后代或等于该提交）。
+/// 不包含 `refs/heads/` 本地分支，避免与 `origin/…` 等同名引用重复展示。
 #[tauri::command]
 async fn get_commits_branch_labels(
     repo_path: String,
     commit_ids: Vec<String>,
 ) -> Result<Vec<CommitBranchLabels>, String> {
     let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
-    let tips = collect_branch_tip_pairs(&repo)?;
+    let tips: Vec<_> = collect_branch_tip_pairs(&repo)?
+        .into_iter()
+        .filter(|(_, _, is_remote)| *is_remote)
+        .collect();
     let mut out = Vec::with_capacity(commit_ids.len());
     for id_str in commit_ids {
         let Ok(oid) = Oid::from_str(&id_str) else {

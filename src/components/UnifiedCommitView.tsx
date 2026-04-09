@@ -19,6 +19,7 @@ import { invoke } from '@tauri-apps/api/tauri'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { CommitDatePickerButton } from './CommitDatePickerButton'
 import { formatLocalYmd } from '../utils/dateYmd'
+import { formatBranchLabelShort } from '../utils/branchDisplayName'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { Label } from './ui/label'
 import { formatTauriInvokeError } from '../utils/tauriError'
@@ -591,7 +592,7 @@ export function UnifiedCommitView({
     [filteredCommits]
   )
 
-  // 每个提交在哪些分支历史上（本地 / 远程区分样式）
+  // 每个提交在哪些远程跟踪分支历史上（与后端一致，不重复列本地分支）
   useEffect(() => {
     if (!repoPath || filteredCommits.length === 0) {
       setBranchLabelsByCommit(new Map())
@@ -1054,11 +1055,11 @@ export function UnifiedCommitView({
               <details className="text-[10px] leading-tight text-muted-foreground">
                 <summary className="cursor-pointer select-none list-none rounded-sm px-0 py-0 [&::-webkit-details-marker]:hidden hover:text-foreground">
                   <span className="font-medium text-foreground/85">全部分支</span>
-                  <span className="opacity-90"> 实心=本地，线框=远程</span>
+                  <span className="opacity-90"> 提交旁标签仅显示远程跟踪分支</span>
                   <span className="text-primary/70"> · 展开说明</span>
                 </summary>
                 <p className="mt-0.5 pl-0 text-[10px] text-muted-foreground">
-                  列表为各本地分支、远程跟踪与标签的合并历史，与「当前分支」范围不同。
+                  历史范围仍为各本地分支、远程跟踪与标签可达的合并历史；每条提交旁的分支名仅列远程跟踪（如 origin/…），避免与本地同名重复。
                 </p>
               </details>
             )}
@@ -1277,7 +1278,8 @@ export function UnifiedCommitView({
               {filteredCommits.map((commit) => {
                 const atHead = isCommitCheckedOut(commit)
                 const branchLabels = branchLabelsByCommit.get(commit.id)
-                const maxBranchBadges = 6
+                /** 宽屏一行可排更多标签；仅作上限，窄屏仍由 flex-wrap 换行 */
+                const maxBranchBadges = 20
                 const shownBranches = branchLabels?.slice(0, maxBranchBadges)
                 const moreBranchCount =
                   branchLabels && branchLabels.length > maxBranchBadges
@@ -1341,7 +1343,7 @@ export function UnifiedCommitView({
                       moreBranchCount > 0 ||
                       pendingPullIds.has(commit.id) ||
                       pendingPushIds.has(commit.id)) && (
-                      <div className="flex min-w-0 flex-wrap items-center gap-0.5 pt-0.5">
+                      <div className="flex w-full min-w-0 flex-wrap items-center gap-0.5 pt-0.5">
                         {atHead && (
                           <Badge
                             className="shrink-0 bg-emerald-600 px-1 py-0 text-[10px] text-white hover:bg-emerald-600/90"
@@ -1355,14 +1357,14 @@ export function UnifiedCommitView({
                             key={`${b.name}-${b.is_remote ? 'r' : 'l'}`}
                             variant={b.is_remote ? 'outline' : 'secondary'}
                             className={cn(
-                              'max-w-[10rem] shrink-0 truncate px-1.5 py-0 text-[10px]',
+                              'max-w-[10rem] shrink-0 truncate px-1 py-0 text-[10px]',
                               b.is_remote && 'border-muted-foreground/45'
                             )}
                             title={
                               b.is_remote ? `远程分支：${b.name}` : `本地分支：${b.name}`
                             }
                           >
-                            {b.name}
+                            {formatBranchLabelShort(b.name)}
                           </Badge>
                         ))}
                         {moreBranchCount > 0 && (
