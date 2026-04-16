@@ -114,9 +114,10 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(({
   React.useEffect(() => {
     if (!isOpen) return
     const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onOpenChange?.(false)
-      }
+      if (e.key !== "Escape") return
+      // 弹窗内的自定义 Select 等打开时，先由子层关下拉，勿整窗关闭
+      if (document.querySelector("[data-app-interactive-overlay]")) return
+      onOpenChange?.(false)
     }
     document.addEventListener("keydown", handleEscape)
     return () => {

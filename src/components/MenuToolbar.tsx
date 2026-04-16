@@ -338,6 +338,7 @@ export function MenuToolbar({
       {contextMenu && (
         <div
           ref={menuRef}
+          data-app-interactive-overlay=""
           className="fixed z-[200] min-w-[140px] rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
           style={{
             left: Math.min(

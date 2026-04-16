@@ -2015,6 +2015,7 @@ export function UnifiedCommitView({
           <div
             ref={commitContextMenuRef}
             role="menu"
+            data-app-interactive-overlay=""
             className="fixed z-[200] min-w-[11rem] rounded-lg border border-border/60 bg-popover p-1 text-popover-foreground shadow-lg shadow-black/20 outline-none backdrop-blur-sm dark:border-white/[0.08] dark:shadow-black/50"
             style={{
               left: Math.min(Math.max(6, commitContextMenu.x), window.innerWidth - 220),

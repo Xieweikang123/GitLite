@@ -40,10 +40,24 @@ export function Select({ value, onValueChange, children, className }: SelectProp
       document.removeEventListener('mousedown', handleClickOutside)
     }
   }, [open])
-  
+
+  // Esc 关闭下拉，且与 App 全局 Esc、Dialog Esc 协调（data-app-interactive-overlay）
+  React.useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false)
+    }
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+  }, [open])
+
   return (
     <SelectContext.Provider value={{ value, onValueChange, open, setOpen }}>
-      <div ref={selectRef} className={cn("relative", className)}>
+      <div
+        ref={selectRef}
+        className={cn("relative", className)}
+        data-app-interactive-overlay={open ? "" : undefined}
+      >
         {children}
       </div>
     </SelectContext.Provider>

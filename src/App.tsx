@@ -390,6 +390,8 @@ function App() {
     const overlayOpen = () => {
       if (document.querySelector('div.fixed.inset-0.z-50')) return true
       if (document.querySelector('[data-state="open"][data-side]')) return true
+      // 自定义下拉、右键菜单等（见各组件上的 data-app-interactive-overlay）
+      if (document.querySelector('[data-app-interactive-overlay]')) return true
       return false
     }
     const onKeyDown = (e: KeyboardEvent) => {
