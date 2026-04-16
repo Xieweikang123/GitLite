@@ -3,8 +3,8 @@ import { computeCommitGraph, hashBranchNameToPaletteIndex } from '../utils/commi
 import type { CommitInfo } from '../types/git'
 import { cn } from '../lib/utils'
 
-const LANE_W = 12
-export const ROW_H = 56
+const LANE_W = 11
+export const ROW_H = 46
 
 function resolveRowHeights(n: number, rowHeights: number[] | undefined): number[] {
   return Array.from({ length: n }, (_, i) => {
@@ -24,18 +24,18 @@ function totalSvgHeight(heights: number[]): number {
   return heights.reduce((a, b) => a + b, 0)
 }
 
-/** 与 SourceTree 类似：不同分支/车道不同颜色（类名须为字面量） */
+/** 柔和低饱和配色，接近 IDE 时间线观感（类名须为字面量） */
 const GRAPH_PALETTE = [
-  { stroke: 'stroke-sky-500 dark:stroke-sky-400', fill: 'fill-sky-500 dark:fill-sky-400' },
-  { stroke: 'stroke-fuchsia-500 dark:stroke-fuchsia-400', fill: 'fill-fuchsia-500 dark:fill-fuchsia-400' },
-  { stroke: 'stroke-amber-500 dark:stroke-amber-400', fill: 'fill-amber-500 dark:fill-amber-400' },
-  { stroke: 'stroke-emerald-500 dark:stroke-emerald-400', fill: 'fill-emerald-500 dark:fill-emerald-400' },
-  { stroke: 'stroke-rose-500 dark:stroke-rose-400', fill: 'fill-rose-500 dark:fill-rose-400' },
-  { stroke: 'stroke-violet-500 dark:stroke-violet-400', fill: 'fill-violet-500 dark:fill-violet-400' },
-  { stroke: 'stroke-cyan-500 dark:stroke-cyan-400', fill: 'fill-cyan-500 dark:fill-cyan-400' },
-  { stroke: 'stroke-orange-500 dark:stroke-orange-400', fill: 'fill-orange-500 dark:fill-orange-400' },
-  { stroke: 'stroke-lime-500 dark:stroke-lime-400', fill: 'fill-lime-500 dark:fill-lime-400' },
-  { stroke: 'stroke-indigo-500 dark:stroke-indigo-400', fill: 'fill-indigo-500 dark:fill-indigo-400' },
+  { stroke: 'stroke-sky-600/40 dark:stroke-sky-400/35', fill: 'fill-sky-500/50 dark:fill-sky-400/45' },
+  { stroke: 'stroke-fuchsia-600/35 dark:stroke-fuchsia-400/30', fill: 'fill-fuchsia-500/45 dark:fill-fuchsia-400/40' },
+  { stroke: 'stroke-amber-600/40 dark:stroke-amber-400/35', fill: 'fill-amber-500/50 dark:fill-amber-400/45' },
+  { stroke: 'stroke-emerald-600/40 dark:stroke-emerald-400/35', fill: 'fill-emerald-500/50 dark:fill-emerald-400/45' },
+  { stroke: 'stroke-rose-600/35 dark:stroke-rose-400/30', fill: 'fill-rose-500/45 dark:fill-rose-400/40' },
+  { stroke: 'stroke-violet-600/40 dark:stroke-violet-400/35', fill: 'fill-violet-500/50 dark:fill-violet-400/45' },
+  { stroke: 'stroke-cyan-600/40 dark:stroke-cyan-400/35', fill: 'fill-cyan-500/50 dark:fill-cyan-400/45' },
+  { stroke: 'stroke-orange-600/35 dark:stroke-orange-400/30', fill: 'fill-orange-500/45 dark:fill-orange-400/40' },
+  { stroke: 'stroke-lime-600/35 dark:stroke-lime-400/30', fill: 'fill-lime-500/45 dark:fill-lime-400/40' },
+  { stroke: 'stroke-indigo-600/40 dark:stroke-indigo-400/35', fill: 'fill-indigo-500/50 dark:fill-indigo-400/45' },
 ] as const
 
 const PALETTE_LEN = GRAPH_PALETTE.length
@@ -102,7 +102,7 @@ export function CommitGraphStrip({ commits, branchColorKeyByCommitId, rowHeights
               d={d}
               fill="none"
               className={pal.stroke}
-              strokeWidth={1.35}
+              strokeWidth={1}
               vectorEffect="non-scaling-stroke"
             />
           )
@@ -118,8 +118,12 @@ export function CommitGraphStrip({ commits, branchColorKeyByCommitId, rowHeights
               key={c.id}
               cx={cx}
               cy={cy}
-              r={3.75}
-              className={cn(pal.fill, pal.stroke, 'stroke-[1.5]')}
+              r={3.1}
+              className={cn(
+                pal.fill,
+                'stroke-background/80 dark:stroke-zinc-950/80',
+                'stroke-[1px]'
+              )}
             />
           )
         })}

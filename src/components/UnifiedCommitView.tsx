@@ -119,11 +119,11 @@ function CommitDetailStrip({ commit }: { commit: CommitInfo }) {
   const metaOneLine = [commit.short_id, commit.author, commit.date].filter(Boolean).join(' · ')
 
   return (
-    <div className="shrink-0 border-b border-border/80 bg-muted/15">
-      <div className="flex items-start gap-1.5 px-2 py-1 sm:gap-2 sm:px-2.5 sm:py-1.5">
+    <div className="shrink-0 border-b border-border/40 bg-muted/10 dark:bg-muted/5">
+      <div className="flex items-start gap-1.5 px-2 py-1.5 sm:gap-2 sm:px-3">
         <div className="min-w-0 flex-1">
           <p
-            className="text-sm font-semibold leading-snug text-foreground line-clamp-2"
+            className="line-clamp-2 text-sm font-semibold leading-snug tracking-tight text-foreground"
             title={messageBody || undefined}
           >
             {messageBody || '（无提交说明）'}
@@ -379,6 +379,8 @@ export function UnifiedCommitView({
     commit: CommitInfo
   } | null>(null)
   const commitContextMenuRef = useRef<HTMLDivElement>(null)
+  /** 行内「复制短哈希」反馈 */
+  const [copiedCommitShortId, setCopiedCommitShortId] = useState<string | null>(null)
   const aiSummaryBusyRef = useRef(false)
   /** 流式 chunk 缓冲：打破 React 18 批处理，否则会等到本轮事件结束才单次渲染，看起来像「无实时输出」 */
   const aiSummaryStreamBufRef = useRef('')
@@ -933,6 +935,18 @@ export function UnifiedCommitView({
     [headShortNormalized]
   )
 
+  const copyCommitShortId = useCallback(async (commit: CommitInfo) => {
+    try {
+      await navigator.clipboard.writeText(commit.short_id)
+      setCopiedCommitShortId(commit.id)
+      window.setTimeout(() => {
+        setCopiedCommitShortId((cur) => (cur === commit.id ? null : cur))
+      }, 1500)
+    } catch {
+      /* 忽略剪贴板不可用 */
+    }
+  }, [])
+
   const openResetDialogForCommit = useCallback((commit: CommitInfo) => {
     setResetTargetCommit(commit)
     setResetMode('mixed')
@@ -1148,17 +1162,17 @@ export function UnifiedCommitView({
         style={{ width: panes.list }}
         className="flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden"
       >
-        <Card className="flex h-full min-h-0 flex-col border-border/80">
-          <CardHeader className="space-y-0.5 px-2.5 py-1 sm:px-3">
+        <Card className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border-border/45 bg-card shadow-none dark:border-white/[0.07] dark:bg-zinc-950/40">
+          <CardHeader className="space-y-1.5 border-b border-border/35 bg-muted/15 px-2.5 py-2 sm:px-3 dark:bg-muted/5">
             {/* 标题单独一行，避免与多行筛选区并排时 items-center 把标题挤到日期行中间造成重叠 */}
             <div className="flex min-w-0 items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
-                <CardTitle className="shrink-0 text-sm font-semibold tracking-tight">
+                <CardTitle className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                   提交记录
                 </CardTitle>
                 {onCommitLogScopeChange && (
                   <div
-                    className="flex h-6 shrink-0 rounded-md border border-input bg-muted/45 p-0.5 dark:bg-muted/25"
+                    className="flex h-6 shrink-0 rounded-md border border-border/50 bg-background/70 p-0.5 dark:bg-background/40"
                     role="group"
                     aria-label="提交历史范围"
                   >
@@ -1236,20 +1250,20 @@ export function UnifiedCommitView({
                 </p>
               </details>
             )}
-            <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 rounded-md border border-border/60 bg-muted/25 p-1 dark:bg-muted/15">
+            <div className="flex min-w-0 flex-nowrap items-center gap-x-1 gap-y-0 overflow-x-auto overflow-y-hidden rounded-md border border-border/40 bg-background/55 py-0.5 pl-1 pr-0.5 scrollbar-thin scrollbar-thumb-muted-foreground/25 scrollbar-track-transparent dark:border-white/[0.06] dark:bg-background/25 dark:scrollbar-thumb-muted-foreground/30">
               <span className="flex shrink-0 items-center gap-0.5 text-[10px] font-medium text-muted-foreground">
                 <Calendar className="h-3 w-3 shrink-0" aria-hidden />
                 日期
               </span>
-              <div className="grid min-w-0 basis-[min(100%,14rem)] flex-1 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-1 sm:max-w-md">
+              <div className="grid w-[9.5rem] shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-0.5 sm:w-[10.5rem]">
                 <CommitDatePickerButton
                   value={pendingStart}
                   onChange={setPendingStart}
                   placeholder="开始"
                   title="开始日期"
-                  className="h-6 min-w-0 w-full max-w-none justify-start text-xs"
+                  className="h-6 min-w-0 w-full max-w-none justify-start px-1.5 text-xs"
                 />
-                <span className="shrink-0 px-0.5 text-center text-[10px] text-muted-foreground">
+                <span className="shrink-0 px-0 text-center text-[10px] text-muted-foreground">
                   至
                 </span>
                 <CommitDatePickerButton
@@ -1257,17 +1271,17 @@ export function UnifiedCommitView({
                   onChange={setPendingEnd}
                   placeholder="结束"
                   title="结束日期"
-                  className="h-6 min-w-0 w-full max-w-none justify-start text-xs"
+                  className="h-6 min-w-0 w-full max-w-none justify-start px-1.5 text-xs"
                 />
               </div>
               <span className="shrink-0 text-[10px] font-medium text-muted-foreground">关键词</span>
-              <div className="relative min-h-6 min-w-0 flex-1 basis-[8rem] sm:basis-[12rem]">
-                  <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+              <div className="relative min-h-6 min-w-[5rem] flex-1">
+                  <Search className="pointer-events-none absolute left-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
                   <Input
-                    placeholder="筛选已加载列表，Enter 查询"
+                    placeholder="已加载列表内筛选，Enter"
                     value={pendingSearch}
                     onChange={(e) => setPendingSearch(e.target.value)}
-                    className="h-6 w-full min-w-0 border-border/70 bg-background/80 py-0 pl-7 text-xs"
+                    className="h-6 w-full min-w-0 border-border/70 bg-background/80 py-0 pl-6 pr-1 text-xs"
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && canApplyFilters) {
                         e.preventDefault()
@@ -1281,28 +1295,29 @@ export function UnifiedCommitView({
                     type="button"
                     variant="secondary"
                     size="sm"
-                    className="h-6 shrink-0 px-2 text-xs"
+                    className="h-6 shrink-0 px-1.5 text-[10px] sm:px-2 sm:text-xs"
                     disabled={searchLoading}
                     onClick={() => onSearchFullRepo?.(pendingSearch.trim())}
+                    title="在整个仓库历史中搜索关键词"
                   >
                     {searchLoading ? (
                       <>
-                        <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                        搜索中
+                        <Loader2 className="mr-1 h-3 w-3 shrink-0 animate-spin" />
+                        <span className="hidden sm:inline">搜索中</span>
                       </>
                     ) : (
-                      '全库搜索'
+                      '全库'
                     )}
                   </Button>
                 )}
                 {isSearchMode && (
                   <>
-                    <span className="whitespace-nowrap text-[10px] text-muted-foreground">全库结果</span>
+                    <span className="shrink-0 whitespace-nowrap text-[10px] text-muted-foreground">全库</span>
                     <Button
                       type="button"
                       variant="ghost"
                       size="sm"
-                      className="h-6 shrink-0 px-2 text-xs"
+                      className="h-6 shrink-0 px-1.5 text-[10px] sm:text-xs"
                       onClick={() => {
                         setPendingSearch('')
                         onClearSearchMode?.()
@@ -1312,12 +1327,12 @@ export function UnifiedCommitView({
                     </Button>
                   </>
                 )}
-              <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-1 sm:ml-auto sm:w-auto sm:flex-1">
+              <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-0.5">
                   <Button
                     type="button"
                     variant="secondary"
                     size="sm"
-                    className="h-6 shrink-0 px-2 text-xs"
+                    className="h-6 shrink-0 px-1.5 text-[10px] sm:px-2 sm:text-xs"
                     onClick={() => {
                       const ymd = formatLocalYmd(new Date())
                       setPendingStart(ymd)
@@ -1326,6 +1341,7 @@ export function UnifiedCommitView({
                       setAppliedEnd(ymd)
                       setAppliedSearch(pendingSearch)
                     }}
+                    title="开始与结束均设为今天并立即筛选"
                   >
                     今日
                   </Button>
@@ -1333,7 +1349,7 @@ export function UnifiedCommitView({
                     type="button"
                     variant="secondary"
                     size="sm"
-                    className="h-6 shrink-0 px-2 text-xs"
+                    className="h-6 shrink-0 px-1.5 text-[10px] sm:px-2 sm:text-xs"
                     onClick={() => {
                       const end = new Date()
                       const start = new Date(end)
@@ -1343,12 +1359,12 @@ export function UnifiedCommitView({
                     }}
                     title="含今日共 7 个自然日"
                   >
-                    最近7天
+                    7天
                   </Button>
                   <Button
                     type="button"
                     size="sm"
-                    className="h-6 shrink-0 px-2.5 text-xs"
+                    className="h-6 shrink-0 px-1.5 text-[10px] sm:px-2 sm:text-xs"
                     disabled={!canApplyFilters}
                     onClick={applyFilters}
                     title="将当前日期与关键词应用到列表筛选"
@@ -1358,14 +1374,14 @@ export function UnifiedCommitView({
                   <Button
                     type="button"
                     variant="ghost"
-                    size="sm"
-                    className="h-6 shrink-0 gap-1 px-1.5 text-xs text-muted-foreground hover:text-foreground"
+                    size="icon"
+                    className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
                     disabled={filteredCommits.length === 0}
                     onClick={openCommitListDialog}
-                    title="打开弹窗，列出当前筛选下已加载的全部提交（时间升序），便于复制"
+                    title="列出当前筛选下已加载的全部提交（时间升序），便于复制"
+                    aria-label="提交列表"
                   >
-                    <ClipboardList className="h-3 w-3" />
-                    列表
+                    <ClipboardList className="h-3.5 w-3.5" />
                   </Button>
               </div>
             </div>
@@ -1379,10 +1395,10 @@ export function UnifiedCommitView({
               onRefresh={onRefreshRepo}
               refreshTitle="刷新仓库与提交列表"
               density="compact"
-              className="mt-0"
+              className="mt-0 border-0 bg-transparent"
             />
             <p
-              className="border-t border-border/40 px-0.5 pb-0 pt-0.5 text-[10px] leading-tight text-muted-foreground/95 dark:text-muted-foreground"
+              className="px-0.5 pb-0 pt-1 text-[10px] leading-snug text-muted-foreground/80 dark:text-muted-foreground/90"
               title={
                 commitLogScope === 'all'
                   ? '「已加载」为当前列表条数，可继续加载。总数为所有本地分支、远程跟踪与标签可达的去重提交数（与 git log --all 类似）。'
@@ -1448,14 +1464,23 @@ export function UnifiedCommitView({
               )}
             </p>
           </CardHeader>
-          <CardContent className="flex-1 min-h-0 overflow-hidden py-1 px-2 sm:px-3">
+          <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden p-0">
             <div
               ref={commitListScrollRef}
-              className="h-full min-h-0 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent"
+              className="h-full min-h-0 overflow-y-auto scrollbar-thin scrollbar-thumb-zinc-400/30 scrollbar-track-transparent dark:scrollbar-thumb-zinc-600/35"
             >
+              {filteredCommits.length === 0 ? (
+                <div className="flex min-h-[10rem] flex-col items-center justify-center gap-2 px-4 py-10 text-center">
+                  <GitBranch className="h-10 w-10 text-muted-foreground/35" aria-hidden />
+                  <p className="text-xs font-medium text-muted-foreground">暂无提交</p>
+                  <p className="max-w-[14rem] text-[11px] leading-relaxed text-muted-foreground/75">
+                    尚无记录，或当前日期与关键词筛选结果为空。可调整筛选或拉取远程历史后重试。
+                  </p>
+                </div>
+              ) : (
               <div className="flex min-w-0 flex-row items-stretch">
                 <CommitGraphStrip
-                  className="border-r border-border/50 pl-0.5 pr-0.5"
+                  className="border-r border-border/35 bg-muted/20 pl-0.5 pr-0.5 dark:bg-muted/10"
                   commits={filteredCommits}
                   branchColorKeyByCommitId={graphBranchColorByCommit}
                   rowHeights={
@@ -1464,7 +1489,7 @@ export function UnifiedCommitView({
                       : undefined
                   }
                 />
-                <div className="flex min-w-0 flex-1 flex-col divide-y divide-border/60">
+                <div className="flex min-w-0 flex-1 flex-col">
               {filteredCommits.map((commit, i) => {
                 const atHead = isCommitCheckedOut(commit)
                 const branchLabels = branchLabelsByCommit.get(commit.id)
@@ -1481,6 +1506,8 @@ export function UnifiedCommitView({
                         .map((b) => `${b.is_remote ? '远程' : '本地'} ${b.name}`)
                         .join('\n')
                     : undefined
+                const isRowSelected = selectedCommit?.id === commit.id
+
                 return (
                 <div
                   key={commit.id}
@@ -1488,11 +1515,14 @@ export function UnifiedCommitView({
                     commitRowElsRef.current[i] = el
                   }}
                   className={cn(
-                    'flex min-h-[3.5rem] shrink-0 cursor-pointer flex-col justify-center px-2 py-1.5 transition-colors',
-                    atHead && 'border-l-[3px] border-l-emerald-600 dark:border-l-emerald-500',
-                    selectedCommit?.id === commit.id
-                      ? 'bg-accent'
-                      : 'hover:bg-accent/80'
+                    'group relative flex min-h-[2.65rem] shrink-0 cursor-pointer flex-col justify-center border-b border-border/25 transition-colors duration-100 last:border-b-0',
+                    atHead &&
+                      'bg-emerald-500/[0.07] before:absolute before:left-0 before:top-2 before:bottom-2 before:w-[3px] before:rounded-full before:bg-emerald-500/85 before:content-[""] dark:bg-emerald-500/[0.09] dark:before:bg-emerald-400/80',
+                    !atHead && isRowSelected && 'bg-primary/[0.09] ring-1 ring-inset ring-primary/18 dark:bg-primary/[0.12]',
+                    atHead &&
+                      isRowSelected &&
+                      'bg-emerald-500/[0.11] ring-1 ring-inset ring-emerald-500/25 dark:bg-emerald-500/[0.13]',
+                    !isRowSelected && 'hover:bg-muted/35 dark:hover:bg-muted/15'
                   )}
                   onClick={() => handleCommitSelect(commit)}
                   onContextMenu={(e) => {
@@ -1502,103 +1532,139 @@ export function UnifiedCommitView({
                     setCommitContextMenu({ x: e.clientX, y: e.clientY, commit })
                   }}
                 >
-                  <div className="min-h-0 space-y-1">
-                    {/* 第一行：说明 + 哈希（分支标签单独一行，避免窄栏被挤没） */}
-                    <div className="flex items-start gap-2">
-                      <p
-                        className="line-clamp-2 min-w-0 flex-1 text-xs font-medium leading-snug text-foreground"
-                        title={commit.message}
+                  <div className="relative min-h-0 pr-1 pl-3 pt-1 pb-1 sm:pr-2">
+                    {/* 悬停操作：复制哈希 / 重置（与右键菜单一致） */}
+                    <div className="pointer-events-none absolute right-1 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                        title="复制短哈希"
+                        aria-label="复制短哈希"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void copyCommitShortId(commit)
+                        }}
                       >
-                        {commit.message}
-                      </p>
-                      <div className="w-[4.25rem] shrink-0 self-start pt-px text-right">
-                        <Badge
-                          variant="outline"
-                          className="inline-flex min-w-[3.5rem] justify-center px-1.5 py-0 font-mono text-[10px] tabular-nums"
+                        {copiedCommitShortId === commit.id ? (
+                          <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" aria-hidden />
+                        ) : (
+                          <Copy className="h-3.5 w-3.5" aria-hidden />
+                        )}
+                      </Button>
+                      {onResetToCommit && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground hover:text-foreground disabled:opacity-40"
+                          disabled={syncBusy || atHead}
+                          title={
+                            atHead
+                              ? '工作区已在此提交'
+                              : '重置到此提交…'
+                          }
+                          aria-label="重置到此提交"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            openResetDialogForCommit(commit)
+                          }}
                         >
+                          <RotateCcw className="h-3.5 w-3.5" aria-hidden />
+                        </Button>
+                      )}
+                    </div>
+
+                    <div className="min-w-0 space-y-0.5 pr-[4.25rem]">
+                      <div className="flex items-start gap-2">
+                        <p
+                          className="line-clamp-1 min-w-0 flex-1 text-[13px] font-medium leading-tight tracking-tight text-foreground/95"
+                          title={commit.message}
+                        >
+                          {commit.message}
+                        </p>
+                        <span className="mt-px shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/90">
                           {commit.short_id}
-                        </Badge>
+                        </span>
                       </div>
-                    </div>
 
-                    {/* 作者和日期 */}
-                    <div className="flex items-center justify-between gap-1">
-                      <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground/95">
-                        <span className="truncate font-medium text-foreground/85">{commit.author}</span>
-                        <span className="shrink-0 opacity-60">·</span>
-                        <span className="shrink-0 tabular-nums">{commit.date}</span>
+                      <div className="flex min-w-0 items-center gap-1.5 text-[11px] leading-tight text-muted-foreground">
+                        <span className="min-w-0 truncate">{commit.author}</span>
+                        <span className="shrink-0 opacity-40">·</span>
+                        <span className="shrink-0 tabular-nums opacity-90">{commit.date}</span>
                       </div>
-                    </div>
 
-                    {/* 分支 / HEAD / 同步状态：独占一行可换行，列表里能直接看到所属分支 */}
-                    {(atHead ||
-                      (shownBranches && shownBranches.length > 0) ||
-                      moreBranchCount > 0 ||
-                      pendingPullIds.has(commit.id) ||
-                      pendingPushIds.has(commit.id)) && (
-                      <div className="flex w-full min-w-0 flex-wrap items-center gap-0.5 pt-0.5">
-                        {atHead && (
-                          <Badge
-                            className="shrink-0 bg-emerald-600 px-1 py-0 text-[10px] text-white hover:bg-emerald-600/90"
-                            title="当前工作区检出（HEAD）"
-                          >
-                            HEAD
-                          </Badge>
-                        )}
-                        {shownBranches?.map((b) => (
-                          <Badge
-                            key={`${b.name}-${b.is_remote ? 'r' : 'l'}`}
-                            variant="outline"
-                            className={cn(
-                              'max-w-[10rem] shrink-0 truncate px-1 py-0 text-[10px] font-medium',
-                              branchBadgeClassName(b.name)
-                            )}
-                            title={
-                              b.is_remote ? `远程分支：${b.name}` : `本地分支：${b.name}`
-                            }
-                          >
-                            {formatBranchLabelShort(b.name)}
-                          </Badge>
-                        ))}
-                        {moreBranchCount > 0 && (
-                          <span
-                            className="shrink-0 text-[10px] text-muted-foreground"
-                            title={allBranchesTitle}
-                          >
-                            +{moreBranchCount}
-                          </span>
-                        )}
-                        {pendingPullIds.has(commit.id) && (
-                          <Badge
-                            className="shrink-0 bg-amber-600 px-1 py-0 text-[10px] text-white hover:bg-amber-600/90"
-                            title="远程已有、本地尚未拉取合并的提交"
-                          >
-                            待拉取
-                          </Badge>
-                        )}
-                        {pendingPushIds.has(commit.id) && (
-                          <Badge className="shrink-0 bg-blue-600 px-1 py-0 text-[10px] text-white hover:bg-blue-600/90">
-                            待推送
-                          </Badge>
-                        )}
-                      </div>
-                    )}
+                      {(atHead ||
+                        (shownBranches && shownBranches.length > 0) ||
+                        moreBranchCount > 0 ||
+                        pendingPullIds.has(commit.id) ||
+                        pendingPushIds.has(commit.id)) && (
+                        <div className="flex min-w-0 flex-wrap items-center gap-0.5 pt-0.5">
+                          {atHead && (
+                            <span
+                              className="inline-flex shrink-0 items-center rounded border border-emerald-500/35 bg-emerald-500/15 px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-emerald-800 dark:text-emerald-300/95"
+                              title="当前工作区检出（HEAD）"
+                            >
+                              HEAD
+                            </span>
+                          )}
+                          {shownBranches?.map((b) => (
+                            <Badge
+                              key={`${b.name}-${b.is_remote ? 'r' : 'l'}`}
+                              variant="outline"
+                              className={cn(
+                                'h-4 max-w-[9rem] shrink-0 border-border/50 bg-background/40 px-1 py-0 text-[9px] font-medium leading-none',
+                                branchBadgeClassName(b.name)
+                              )}
+                              title={
+                                b.is_remote ? `远程分支：${b.name}` : `本地分支：${b.name}`
+                              }
+                            >
+                              {formatBranchLabelShort(b.name)}
+                            </Badge>
+                          ))}
+                          {moreBranchCount > 0 && (
+                            <span
+                              className="shrink-0 text-[9px] text-muted-foreground"
+                              title={allBranchesTitle}
+                            >
+                              +{moreBranchCount}
+                            </span>
+                          )}
+                          {pendingPullIds.has(commit.id) && (
+                            <span
+                              className="inline-flex shrink-0 rounded border border-amber-500/30 bg-amber-500/12 px-1 py-px text-[9px] font-medium text-amber-900 dark:text-amber-200/95"
+                              title="远程已有、本地尚未拉取合并的提交"
+                            >
+                              待拉取
+                            </span>
+                          )}
+                          {pendingPushIds.has(commit.id) && (
+                            <span className="inline-flex shrink-0 rounded border border-blue-500/30 bg-blue-500/12 px-1 py-px text-[9px] font-medium text-blue-900 dark:text-blue-200/95">
+                              待推送
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
                 )
               })}
                 </div>
               </div>
+              )}
                 {hasMore && (
                   <div ref={loadMoreSentinelRef} className="h-2 shrink-0" aria-hidden="true" />
                 )}
                 {hasMore && (
-                  <div className="flex justify-center border-t border-border/60 pt-2">
+                  <div className="flex justify-center border-t border-border/30 bg-muted/5 py-1.5 dark:bg-transparent">
                     <Button
                       onClick={onLoadMore}
                       disabled={loading}
-                      variant="outline"
-                      className="flex h-7 items-center gap-1 text-xs"
+                      variant="ghost"
+                      className="flex h-7 items-center gap-1.5 px-3 text-xs text-muted-foreground hover:text-foreground"
                     >
                       {loading ? (
                         <>
@@ -1780,7 +1846,7 @@ export function UnifiedCommitView({
           <div
             ref={commitContextMenuRef}
             role="menu"
-            className="fixed z-[200] min-w-[11rem] rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md outline-none"
+            className="fixed z-[200] min-w-[11rem] rounded-lg border border-border/60 bg-popover p-1 text-popover-foreground shadow-lg shadow-black/20 outline-none backdrop-blur-sm dark:border-white/[0.08] dark:shadow-black/50"
             style={{
               left: Math.min(Math.max(6, commitContextMenu.x), window.innerWidth - 220),
               top: Math.min(Math.max(6, commitContextMenu.y), window.innerHeight - 56),
