@@ -1,4 +1,17 @@
 /**
+ * Git unified diff 是否为「新增文件」：旧版为 /dev/null，左侧无可比对内容。
+ * 用于避免 Diff Editor 左侧整栏空白。
+ */
+export function isUnifiedDiffNewFile(diffText: string): boolean {
+  const t = diffText.trim()
+  if (!t) return false
+  if (/Binary files .+ differ/.test(diffText)) return false
+  if (/^new file mode \d+/m.test(diffText)) return true
+  if (/^---\s+\/dev\/null\s*$/m.test(diffText)) return true
+  return false
+}
+
+/**
  * 将 Git unified diff 文本解析为左右两侧文本，供 Monaco DiffEditor 使用。
  * 多文件 diff 时仅保留最后一个文件的 hunk（与常见单文件接口一致）。
  */

@@ -1,8 +1,8 @@
 import { useMemo, useCallback, useSyncExternalStore, useRef, useEffect, useState } from 'react'
 import type { editor } from 'monaco-editor'
-import { DiffEditor, type DiffOnMount } from '@monaco-editor/react'
+import Editor, { DiffEditor, type DiffOnMount, type OnMount } from '@monaco-editor/react'
 import { getMonacoLanguageFromPath } from '@/utils/monacoLanguage'
-import { parseUnifiedDiffToPair } from '@/utils/parseUnifiedDiff'
+import { isUnifiedDiffNewFile, parseUnifiedDiffToPair } from '@/utils/parseUnifiedDiff'
 
 /** Shift + 滚轮：转为横向滚动；兼容 deltaMode 与触控板横向 deltaX */
 function shiftWheelHorizontalDelta(e: WheelEvent): number {
@@ -52,8 +52,17 @@ export function MonacoDiffEditor({
     [diff],
   )
 
+  const isNewFile = useMemo(() => isUnifiedDiffNewFile(diff), [diff])
+
+  const singleEditorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
   const diffEditorRef = useRef<editor.IStandaloneDiffEditor | null>(null)
   const [editorMountGen, setEditorMountGen] = useState(0)
+
+  const onMountSingle = useCallback<OnMount>((ed) => {
+    singleEditorRef.current = ed
+    ed.layout()
+    setEditorMountGen((g) => g + 1)
+  }, [])
 
   const onMount = useCallback<DiffOnMount>((ed) => {
     diffEditorRef.current = ed
@@ -62,6 +71,33 @@ export function MonacoDiffEditor({
   }, [])
 
   useEffect(() => {
+    if (isNewFile) {
+      const ed = singleEditorRef.current
+      if (!ed) return
+      const dom = ed.getDomNode()
+      if (!dom) return
+
+      const handleWheel = (e: WheelEvent) => {
+        if (!e.shiftKey) return
+        const delta = shiftWheelHorizontalDelta(e)
+        if (delta === 0) return
+
+        const target = e.target as Node
+        if (!dom.contains(target)) return
+
+        e.preventDefault()
+        e.stopPropagation()
+
+        const next = ed.getScrollLeft() + delta
+        ed.setScrollLeft(next)
+      }
+
+      dom.addEventListener('wheel', handleWheel, { passive: false, capture: true })
+      return () => {
+        dom.removeEventListener('wheel', handleWheel, { capture: true })
+      }
+    }
+
     const ed = diffEditorRef.current
     if (!ed) return
     const dom = ed.getContainerDomNode()
@@ -96,7 +132,44 @@ export function MonacoDiffEditor({
     return () => {
       dom.removeEventListener('wheel', handleWheel, { capture: true })
     }
-  }, [editorMountGen])
+  }, [editorMountGen, isNewFile])
+
+  if (isNewFile) {
+    return (
+      <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
+        <Editor
+          height="100%"
+          width="100%"
+          className="min-h-0 flex-1"
+          language={language}
+          theme={isDark ? 'vs-dark' : 'vs'}
+          value={modified}
+          onMount={onMountSingle}
+          options={{
+            readOnly: true,
+            automaticLayout: true,
+            minimap: { enabled: false },
+            fontSize: 13,
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+            scrollBeyondLastLine: false,
+            contextmenu: true,
+            wordWrap: 'off',
+            scrollbar: {
+              vertical: 'auto',
+              horizontal: 'auto',
+              verticalScrollbarSize: 12,
+              horizontalScrollbarSize: 12,
+            },
+          }}
+          loading={
+            <div className="text-muted-foreground flex h-32 items-center justify-center text-sm">
+              加载编辑器…
+            </div>
+          }
+        />
+      </div>
+    )
+  }
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">

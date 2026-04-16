@@ -133,8 +133,9 @@ export function DiffViewer({ commit, selectedFile, onGetDiff, onGetSingleFileDif
         )}
         
         {!loading && !error && diff && (
-          <VSCodeDiff 
+          <VSCodeDiff
             diff={diff}
+            filePath={selectedFile ?? undefined}
           />
         )}
         
