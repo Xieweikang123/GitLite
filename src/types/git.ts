@@ -67,6 +67,14 @@ export interface RepoInfo {
   remote_url?: string // 远程仓库URL
 }
 
+/** 工作区「提交 / 推送 / 拉取」经 useGit 统一封装时使用，避免组件内重复 invoke */
+export interface WorkspaceGitActions {
+  commitChanges: (message: string) => Promise<void>
+  pushChanges: () => Promise<void>
+  pullChanges: () => Promise<void>
+  refreshRepoInfo: () => Promise<RepoInfo>
+}
+
 /** 与 `git reset` 一致：soft / mixed / hard */
 export type GitResetMode = 'soft' | 'mixed' | 'hard'
 

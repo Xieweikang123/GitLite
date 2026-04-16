@@ -41,7 +41,11 @@ function App() {
     getSingleFileDiff,
     fetchChangesWithLogs,
     pushChangesWithRealtimeLogs,
-    pullChangesWithLogs
+    pullChangesWithLogs,
+    commitChanges,
+    pushChanges,
+    pullChanges,
+    refreshRepoInfo,
   } = useGit()
   
   const { isDark, toggleDarkMode } = useDarkMode()
@@ -579,6 +583,16 @@ function App() {
               onPushChanges={handlePushChangesRealtime}
               onPullChanges={handlePullChanges}
               onFetchChanges={handleFetchChanges}
+              gitActions={
+                repoInfo
+                  ? {
+                      commitChanges,
+                      pushChanges,
+                      pullChanges,
+                      refreshRepoInfo,
+                    }
+                  : undefined
+              }
             />
           </div>
         ) : activeTab === 'files' ? (

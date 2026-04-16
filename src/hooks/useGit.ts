@@ -63,6 +63,17 @@ export function useGit() {
     }
   }, [])
 
+  /** 重新拉取仓库元数据（ahead/behind 等），不触发全局 loading，供提交面板等轻量刷新 */
+  const refreshRepoInfo = useCallback(async (): Promise<RepoInfo> => {
+    if (!repoInfo) throw new Error('未打开仓库')
+    const info: RepoInfo = await invoke('open_repository', {
+      path: repoInfo.path,
+    })
+    setRepoInfo(info)
+    await loadRecentRepos()
+    return info
+  }, [repoInfo, loadRecentRepos])
+
   const removeRecentRepo = useCallback(
     async (path: string) => {
       try {
@@ -344,11 +355,11 @@ export function useGit() {
     }
   }, [repoInfo])
 
-  const pullChanges = useCallback(async () => {
+  const pullChanges = useCallback(async (): Promise<void> => {
     if (!repoInfo) throw new Error('No repository open')
     
     try {
-      const result = await invoke('pull_changes', {
+      await invoke('pull_changes', {
         repoPath: repoInfo.path,
       })
       
@@ -357,8 +368,6 @@ export function useGit() {
         path: repoInfo.path,
       })
       setRepoInfo(updatedRepoInfo)
-      
-      return result
     } catch (err) {
       throw new Error(formatTauriInvokeError(err, '拉取失败'))
     }
@@ -489,6 +498,7 @@ export function useGit() {
     commitChanges,
     pushChanges,
     pullChanges,
+    refreshRepoInfo,
     fetchChanges,
     fetchChangesWithLogs,
     pushChangesWithLogs,

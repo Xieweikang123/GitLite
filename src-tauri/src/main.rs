@@ -2770,21 +2770,40 @@ async fn unstage_file(repo_path: String, file_path: String) -> Result<String, St
     Ok(format!("Successfully unstaged {}", file_path))
 }
 
+/// 与命令行 `git commit` 一致：从仓库/全局配置读取 `user.name` 与 `user.email` 生成签名（不长期借用 `Repository`，便于后续 `stash_save` 等需 `&mut repo` 的场景）。
+fn repo_author_signature(repo: &Repository) -> Result<git2::Signature<'static>, String> {
+    let cfg = repo
+        .config()
+        .map_err(|e| format!("读取 Git 配置失败：{}", e))?;
+    let name = cfg
+        .get_string("user.name")
+        .map_err(|_| {
+            "未设置 user.name。请执行：git config user.name \"你的名字\"。".to_string()
+        })?;
+    let email = cfg
+        .get_string("user.email")
+        .map_err(|_| {
+            "未设置 user.email。请执行：git config user.email \"你的邮箱\"。".to_string()
+        })?;
+    git2::Signature::now(name.trim(), email.trim())
+        .map_err(|e| format!("无法创建提交身份：{}", e))
+}
+
 // 提交更改
 #[tauri::command]
 async fn commit_changes(repo_path: String, message: String) -> Result<String, String> {
     let repo = Repository::open(&repo_path)
-        .map_err(|e| format!("Failed to open repository: {}", e))?;
+        .map_err(|e| format!("打开仓库失败：{}", e))?;
     
-    let mut index = repo.index().map_err(|e| format!("Failed to get index: {}", e))?;
+    let mut index = repo.index().map_err(|e| format!("获取索引失败：{}", e))?;
     
     // 检查是否有暂存的文件
     if index.len() == 0 {
-        return Err("No files staged for commit".to_string());
+        return Err("没有已暂存的文件，无法提交".to_string());
     }
     
-    let tree_id = index.write_tree().map_err(|e| format!("Failed to write tree: {}", e))?;
-    let tree = repo.find_tree(tree_id).map_err(|e| format!("Failed to find tree: {}", e))?;
+    let tree_id = index.write_tree().map_err(|e| format!("写入树对象失败：{}", e))?;
+    let tree = repo.find_tree(tree_id).map_err(|e| format!("读取树对象失败：{}", e))?;
     
     let head = repo.head().ok();
     let parent_commit = if let Some(head) = head {
@@ -2793,8 +2812,7 @@ async fn commit_changes(repo_path: String, message: String) -> Result<String, St
         None
     };
     
-    let signature = git2::Signature::now("GitLite User", "gitlite@example.com")
-        .map_err(|e| format!("Failed to create signature: {}", e))?;
+    let signature = repo_author_signature(&repo)?;
     
     let commit_id = repo.commit(
         Some("HEAD"),
@@ -2803,9 +2821,9 @@ async fn commit_changes(repo_path: String, message: String) -> Result<String, St
         &message,
         &tree,
         &parent_commit.iter().collect::<Vec<_>>(),
-    ).map_err(|e| format!("Failed to commit: {}", e))?;
+    ).map_err(|e| format!("提交失败：{}", e))?;
     
-    Ok(format!("Successfully committed with ID: {}", commit_id))
+    Ok(format!("提交成功：{}", commit_id))
 }
 
 // 推送更改（支持认证与自动设置上游）
@@ -3049,8 +3067,7 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
             }
         }
 
-        let signature = git2::Signature::now("GitLite User", "gitlite@example.com")
-            .map_err(|e| format!("Failed to create signature: {}", e))?;
+        let signature = repo_author_signature(&repo)?;
 
         let merge_commit_id = repo
             .commit(
@@ -3061,7 +3078,7 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
                 &merge_tree,
                 &[&local_commit, &remote_commit],
             )
-            .map_err(|e| format!("Failed to create merge commit: {}", e))?;
+            .map_err(|e| format!("创建合并提交失败：{}", e))?;
 
         log_message("INFO", &format!("pull: merge success | branch={} merge_commit={}", branch_name, merge_commit_id));
         Ok(format!("Successfully pulled and merged (commit: {})", merge_commit_id))
@@ -4038,8 +4055,11 @@ async fn pull_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
         logs.push((timestamp, "INFO".to_string(), "正在创建合并提交...".to_string()));
 
-        let signature = git2::Signature::now("GitLite User", "gitlite@example.com")
-            .map_err(|e| format!("Failed to create signature: {}", e))?;
+        let signature = repo_author_signature(&repo).map_err(|e| {
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "ERROR".to_string(), e.clone()));
+            e
+        })?;
 
         let merge_commit_id = match repo.commit(
             Some("HEAD"),
@@ -4285,24 +4305,10 @@ async fn create_stash(repo_path: String, message: String) -> Result<String, Stri
             error_msg
         })?;
 
-    // 尝试从仓库获取签名，如果失败则使用默认签名
-    let signature = match repo.signature() {
-        Ok(sig) => {
-            log_message("DEBUG", &format!("create_stash: using repo signature | name={} email={}", 
-                sig.name().unwrap_or("unknown"), 
-                sig.email().unwrap_or("unknown")));
-            sig
-        },
-        Err(e) => {
-            log_message("WARN", &format!("create_stash: failed to get repo signature: {}, using default", e));
-            git2::Signature::now("GitLite User", "gitlite@example.com")
-                .map_err(|e| {
-                    let error_msg = format!("Failed to create default signature: {}", e);
-                    log_message("ERROR", &format!("create_stash: {}", error_msg));
-                    error_msg
-                })?
-        }
-    };
+    let signature = repo_author_signature(&repo).map_err(|e| {
+        log_message("ERROR", &format!("create_stash: {}", e));
+        e
+    })?;
 
     log_message("DEBUG", &format!("create_stash: signature obtained | name={} email={}", 
         signature.name().unwrap_or("unknown"), 

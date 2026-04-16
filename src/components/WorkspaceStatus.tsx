@@ -3,7 +3,7 @@ import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
-import { FileChange } from '../types/git'
+import { FileChange, type WorkspaceGitActions } from '../types/git'
 import { FileDiffModal } from './FileDiffModal'
 import { Eye, Archive, ArchiveRestore, Trash2, CheckCircle, AlertCircle, Loader2, Sparkles } from 'lucide-react'
 import { shortenPathMiddle } from '../lib/utils'
@@ -17,6 +17,7 @@ interface WorkspaceStatusProps {
   onPushChanges?: () => void
   onPullChanges?: () => void
   onFetchChanges?: () => void
+  gitActions?: WorkspaceGitActions
 }
 
 interface WorkspaceStatusData {
@@ -37,10 +38,13 @@ interface StashInfo {
   branch: string
 }
 
-export function WorkspaceStatus({  repoInfo,  onRefresh,
+export function WorkspaceStatus({
+  repoInfo,
+  onRefresh,
   onPushChanges,
   onPullChanges,
-  onFetchChanges
+  onFetchChanges,
+  gitActions,
 }: WorkspaceStatusProps) {
   const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatusData | null>(null)
   const [commitMessage, setCommitMessage] = useState('')
@@ -519,23 +523,44 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
     }
   }
 
-  // 提交更改
-  const commitChanges = async () => {
-    if (!repoInfo || !commitMessage.trim()) return
-    
+  /** 提交/推送/拉取后刷新父级 ahead/behind：若接入 useGit 则轻量刷新，避免整页 loading */
+  const syncParentRepo = async () => {
+    if (gitActions) {
+      await gitActions.refreshRepoInfo()
+    } else {
+      await Promise.resolve(onRefresh())
+    }
+  }
+
+  // 提交更改（优先经 useGit.commitChanges，错误文案统一）
+  const runCommit = async () => {
+    if (!repoInfo) return
+    if (!commitMessage.trim()) {
+      setError('请输入提交说明')
+      return
+    }
+    if (!workspaceStatus?.staged_files?.length) {
+      setError('没有已暂存的文件，无法提交')
+      return
+    }
+
     try {
       setLoading(true)
       setError(null)
-      
-      const { invoke } = await import('@tauri-apps/api/tauri')
-      await invoke('commit_changes', {
-        repoPath: repoInfo.path,
-        message: commitMessage.trim(),
-      })
-      
+
+      if (gitActions) {
+        await gitActions.commitChanges(commitMessage.trim())
+      } else {
+        const { invoke } = await import('@tauri-apps/api/tauri')
+        await invoke('commit_changes', {
+          repoPath: repoInfo.path,
+          message: commitMessage.trim(),
+        })
+      }
+
       setCommitMessage('')
       await fetchWorkspaceStatus()
-      onRefresh() // 刷新提交列表
+      await syncParentRepo()
     } catch (err) {
       setError(err instanceof Error ? err.message : '提交失败')
     } finally {
@@ -543,20 +568,24 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
     }
   }
 
-  // 推送更改
-  const pushChanges = async () => {
+  // 推送（卡片上的独立推送按钮；顶部工具条可注入 onPushChanges 走带日志的版本）
+  const handlePushFromCard = async () => {
     if (!repoInfo) return
-    
+
     try {
       setLoading(true)
       setError(null)
-      
-      const { invoke } = await import('@tauri-apps/api/tauri')
-      await invoke('push_changes', {
-        repoPath: repoInfo.path,
-      })
-      
-      onRefresh() // 刷新提交列表
+
+      if (gitActions) {
+        await gitActions.pushChanges()
+      } else {
+        const { invoke } = await import('@tauri-apps/api/tauri')
+        await invoke('push_changes', {
+          repoPath: repoInfo.path,
+        })
+      }
+
+      await syncParentRepo()
     } catch (err) {
       setError(err instanceof Error ? err.message : '推送失败')
     } finally {
@@ -564,61 +593,69 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
     }
   }
 
-  // 提交并同步（类似 VS Code 的提交并同步按钮）
-  // 工作流程：1. 提交暂存的文件 2. 拉取远程更新（如果有） 3. 推送本地提交
+  // 提交并同步：1. 暂存则提交 2. 落后则拉取 3. 超前则推送
   const commitAndSync = async () => {
     if (!repoInfo) return
-    
+
     try {
       setLoading(true)
       setError(null)
-      
-      const { invoke } = await import('@tauri-apps/api/tauri')
-      
-      // 1. 如果有暂存的文件，先提交
-      if (workspaceStatus?.staged_files && workspaceStatus.staged_files.length > 0) {
+
+      if (workspaceStatus?.staged_files?.length) {
         if (!commitMessage.trim()) {
-          setError('请先输入提交信息')
+          setError('请先输入提交说明')
           setLoading(false)
           return
         }
-        
-        await invoke('commit_changes', {
-          repoPath: repoInfo.path,
-          message: commitMessage.trim(),
-        })
-        
+
+        if (gitActions) {
+          await gitActions.commitChanges(commitMessage.trim())
+        } else {
+          const { invoke } = await import('@tauri-apps/api/tauri')
+          await invoke('commit_changes', {
+            repoPath: repoInfo.path,
+            message: commitMessage.trim(),
+          })
+        }
+
         setCommitMessage('')
         await fetchWorkspaceStatus()
-        // 刷新仓库信息以更新 ahead 状态
-        onRefresh()
+        await syncParentRepo()
       }
-      
-      // 2. 如果有远程更新，先拉取
+
       if (repoInfo.behind > 0) {
-        await invoke('pull_changes', {
-          repoPath: repoInfo.path,
-        })
-        // 拉取后刷新仓库信息以更新 ahead/behind 状态
-        onRefresh()
+        if (gitActions) {
+          await gitActions.pullChanges()
+        } else {
+          const { invoke } = await import('@tauri-apps/api/tauri')
+          await invoke('pull_changes', {
+            repoPath: repoInfo.path,
+          })
+        }
+        await syncParentRepo()
         await fetchWorkspaceStatus()
       }
-      
-      // 3. 最后推送（检查是否有待推送的提交）
-      // 重新获取仓库信息以确保 ahead 状态是最新的
-      const updatedRepoInfo: any = await invoke('open_repository', {
-        path: repoInfo.path,
-      })
-      
+
+      const updatedRepoInfo = gitActions
+        ? await gitActions.refreshRepoInfo()
+        : await (async () => {
+            const { invoke } = await import('@tauri-apps/api/tauri')
+            return invoke('open_repository', { path: repoInfo.path }) as Promise<any>
+          })()
+
       if (updatedRepoInfo.ahead > 0) {
-        await invoke('push_changes', {
-          repoPath: repoInfo.path,
-        })
+        if (gitActions) {
+          await gitActions.pushChanges()
+        } else {
+          const { invoke } = await import('@tauri-apps/api/tauri')
+          await invoke('push_changes', {
+            repoPath: repoInfo.path,
+          })
+        }
       }
-      
-      // 刷新所有状态
+
       await fetchWorkspaceStatus()
-      onRefresh()
+      await syncParentRepo()
     } catch (err) {
       setError(err instanceof Error ? err.message : '提交并同步失败')
     } finally {
@@ -818,7 +855,7 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault()
-                  commitChanges()
+                  void runCommit()
                 }
               }}
             />
@@ -845,7 +882,7 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
               AI 生成
             </Button>
             <Button 
-              onClick={commitChanges}
+              onClick={() => void runCommit()}
               disabled={
                 !commitMessage.trim() || loading || stagingLoading || unstagingLoading || !workspaceStatus?.staged_files?.length
               }
@@ -868,7 +905,7 @@ export function WorkspaceStatus({  repoInfo,  onRefresh,
             <div className="relative">
               <Button 
                 variant="outline"
-                onClick={onPushChanges || pushChanges}
+                onClick={onPushChanges || (() => void handlePushFromCard())}
                 disabled={loading || !repoInfo || repoInfo.ahead <= 0}
               >
                 推送
