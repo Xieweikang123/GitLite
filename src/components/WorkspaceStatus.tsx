@@ -38,6 +38,20 @@ interface StashInfo {
   branch: string
 }
 
+/** 后端时间为 Git commit 的 Unix 秒（字符串），需乘 1000 再交给 Date，否则会得到 Invalid Date */
+function formatStashTimestamp(isoOrSeconds: string): string {
+  const trimmed = isoOrSeconds.trim()
+  if (!trimmed) return '—'
+  if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) {
+    const d = new Date(trimmed)
+    return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString()
+  }
+  const sec = Number(trimmed)
+  if (!Number.isFinite(sec) || sec <= 0) return '—'
+  const d = new Date(sec * 1000)
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString()
+}
+
 export function WorkspaceStatus({
   repoInfo,
   onRefresh,
@@ -78,6 +92,12 @@ export function WorkspaceStatus({
   const [stashMessage, setStashMessage] = useState('')
   // 旧的内联贮藏输入已移除
   const [stashDialogOpen, setStashDialogOpen] = useState(false)
+  /** 贮藏操作进行中：区分创建 / 某条的应用或删除，避免「应用」时顶栏误显示「贮藏中」 */
+  const [stashOp, setStashOp] = useState<
+    null | { kind: 'create' } | { kind: 'apply'; id: string } | { kind: 'delete'; id: string }
+  >(null)
+  /** 打开弹窗拉取贮藏列表时 */
+  const [stashListLoading, setStashListLoading] = useState(false)
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
   /** 删除未跟踪：确认弹窗 */
@@ -125,16 +145,20 @@ export function WorkspaceStatus({
   // 获取贮藏列表
   const fetchStashList = async () => {
     if (!repoInfo) return
-    
+
+    const showListSpinner = stashDialogOpen
     try {
+      if (showListSpinner) setStashListLoading(true)
       const { invoke } = await import('@tauri-apps/api/tauri')
       const stashes: StashInfo[] = await invoke('get_stash_list', {
         repoPath: repoInfo.path,
       })
-      
+
       setStashList(stashes)
     } catch (err) {
       console.error('获取贮藏列表失败:', err)
+    } finally {
+      if (showListSpinner) setStashListLoading(false)
     }
   }
 
@@ -155,24 +179,24 @@ export function WorkspaceStatus({
   // 创建贮藏
   const createStash = async () => {
     if (!repoInfo || !stashMessage.trim()) return
-    
+
     try {
-      setLoading(true)
+      setStashOp({ kind: 'create' })
       setError(null)
-      
+
       console.log(`开始创建贮藏: ${stashMessage.trim()}`)
       console.log(`仓库路径: ${repoInfo.path}`)
-      
+
       const { invoke } = await import('@tauri-apps/api/tauri')
       const result = await invoke('create_stash', {
         repoPath: repoInfo.path,
         message: stashMessage.trim(),
       })
-      
+
       console.log('贮藏创建成功:', result)
-      
+
       setStashMessage('')
-      await fetchWorkspaceStatus()
+      await fetchWorkspaceStatus({ silent: true })
       await fetchStashList()
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : '创建贮藏失败'
@@ -184,36 +208,36 @@ export function WorkspaceStatus({
       })
       setError(`创建贮藏失败: ${errorMessage}`)
     } finally {
-      setLoading(false)
+      setStashOp(null)
     }
   }
 
   // 应用贮藏
   const applyStash = async (stashId: string) => {
     if (!repoInfo) return
-    
+
     try {
-      setLoading(true)
+      setStashOp({ kind: 'apply', id: stashId })
       setError(null)
-      
+
       // 记录操作开始
       console.log(`开始应用贮藏: ${stashId}`)
       console.log(`仓库路径: ${repoInfo.path}`)
-      
+
       const { invoke } = await import('@tauri-apps/api/tauri')
       const result = await invoke('apply_stash', {
         repoPath: repoInfo.path,
         stashId,
       })
-      
+
       // 显示成功消息
       console.log('贮藏应用成功:', result)
-      
-      await fetchWorkspaceStatus()
+
+      await fetchWorkspaceStatus({ silent: true })
       await fetchStashList()
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : '应用贮藏失败'
-      
+
       // 记录详细错误信息
       console.error('贮藏应用失败:', {
         stashId,
@@ -221,12 +245,12 @@ export function WorkspaceStatus({
         error: err,
         errorMessage
       })
-      
+
       // 检查是否是重复应用的错误
       if (errorMessage.includes('already been applied') || errorMessage.includes('no changes to apply')) {
         // 这实际上是一个成功的情况，只是贮藏已经被应用过了
         console.log('贮藏已经被应用过了')
-        await fetchWorkspaceStatus()
+        await fetchWorkspaceStatus({ silent: true })
         await fetchStashList()
         return // 不显示错误，直接返回
       } else if (errorMessage.includes('conflicts')) {
@@ -237,31 +261,31 @@ export function WorkspaceStatus({
         setError(`应用贮藏失败: ${errorMessage}`)
       }
     } finally {
-      setLoading(false)
+      setStashOp(null)
     }
   }
 
   // 删除贮藏
   const deleteStash = async (stashId: string) => {
     if (!repoInfo) return
-    
+
     try {
-      setLoading(true)
+      setStashOp({ kind: 'delete', id: stashId })
       setError(null)
-      
+
       const { invoke } = await import('@tauri-apps/api/tauri')
       await invoke('delete_stash', {
         repoPath: repoInfo.path,
         stashId,
       })
-      
+
       await fetchStashList()
       setConfirmDeleteOpen(false)
       setPendingDeleteId(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : '删除贮藏失败')
     } finally {
-      setLoading(false)
+      setStashOp(null)
     }
   }
 
@@ -935,14 +959,48 @@ export function WorkspaceStatus({
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault()
-                    createStash()
+                    void createStash()
                   }
                 }}
+                disabled={stashOp !== null}
               />
-              <Button onClick={createStash} disabled={!stashMessage.trim() || loading} size="sm">
-                贮藏
+              <Button
+                onClick={() => void createStash()}
+                disabled={!stashMessage.trim() || stashOp !== null || stashListLoading}
+                size="sm"
+                className="min-w-[5.5rem] shrink-0"
+              >
+                {stashOp?.kind === 'create' ? (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin mr-1" aria-hidden />
+                    贮藏中…
+                  </>
+                ) : (
+                  '贮藏'
+                )}
               </Button>
             </div>
+
+            {(stashListLoading || stashOp !== null) && (
+              <div
+                className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+                role="status"
+                aria-live="polite"
+              >
+                <Loader2 className="h-4 w-4 animate-spin shrink-0" aria-hidden />
+                <span>
+                  {stashListLoading
+                    ? '正在加载贮藏列表…'
+                    : stashOp?.kind === 'create'
+                      ? '正在创建贮藏…'
+                      : stashOp?.kind === 'apply'
+                        ? '正在应用贮藏…'
+                        : stashOp?.kind === 'delete'
+                          ? '正在删除贮藏…'
+                          : ''}
+                </span>
+              </div>
+            )}
 
             {stashList.length > 0 ? (
               <div className="space-y-2">
@@ -956,25 +1014,29 @@ export function WorkspaceStatus({
                         {stash.message}
                       </div>
                       <div className="text-xs text-muted-foreground break-words">
-                        {stash.branch} • {new Date(stash.timestamp).toLocaleString()}
+                        {stash.branch} • {formatStashTimestamp(stash.timestamp)}
                       </div>
                     </div>
                     <div className="flex items-center gap-2 justify-end">
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => applyStash(stash.id)}
-                        disabled={loading}
+                        onClick={() => void applyStash(stash.id)}
+                        disabled={stashOp !== null || stashListLoading}
                         className="flex items-center gap-1"
                       >
-                        <ArchiveRestore className="h-3 w-3" />
+                        {stashOp?.kind === 'apply' && stashOp.id === stash.id ? (
+                          <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+                        ) : (
+                          <ArchiveRestore className="h-3 w-3" />
+                        )}
                         应用
                       </Button>
                       <Button
                         size="sm"
                         variant="outline"
                         onClick={() => askDeleteStash(stash.id)}
-                        disabled={loading}
+                        disabled={stashOp !== null || stashListLoading}
                         className="flex items-center gap-1 text-destructive hover:text-destructive"
                       >
                         <Trash2 className="h-3 w-3" />
@@ -1001,8 +1063,24 @@ export function WorkspaceStatus({
             <div className="text-sm text-muted-foreground">确定要删除该贮藏吗？此操作不可撤销。</div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" size="sm" onClick={() => setConfirmDeleteOpen(false)}>取消</Button>
-              <Button size="sm" className="text-white" onClick={() => pendingDeleteId && deleteStash(pendingDeleteId)}>
-                确认删除
+              <Button
+                size="sm"
+                className="text-white"
+                disabled={
+                  !pendingDeleteId ||
+                  stashListLoading ||
+                  (stashOp?.kind === 'delete' && stashOp.id === pendingDeleteId)
+                }
+                onClick={() => pendingDeleteId && void deleteStash(pendingDeleteId)}
+              >
+                {stashOp?.kind === 'delete' && stashOp.id === pendingDeleteId ? (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin mr-1 inline" aria-hidden />
+                    删除中…
+                  </>
+                ) : (
+                  '确认删除'
+                )}
               </Button>
             </div>
           </div>
