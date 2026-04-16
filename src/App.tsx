@@ -15,6 +15,7 @@ import { LogModal } from './components/LogModal'
 import { ProxyConfigModal } from './components/ProxyConfigModal'
 import { AiConfigModal } from './components/AiConfigModal'
 import { RepoFileTree } from './components/RepoFileTree'
+import { AuthorStatsPanel } from './components/AuthorStatsPanel'
 import { CommitInfo, FileChange } from './types/git'
 
 function App() {
@@ -46,6 +47,9 @@ function App() {
     pushChanges,
     pullChanges,
     refreshRepoInfo,
+    getAuthorCommitStats,
+    getCommitActivityStats,
+    getDiffAggregateStats,
   } = useGit()
   
   const { isDark, toggleDarkMode } = useDarkMode()
@@ -499,7 +503,9 @@ function App() {
       ? localCommits
       : [...incomingCommits, ...localCommits])
 
-  const [activeTab, setActiveTab] = useState<'workspace' | 'commits' | 'files'>('workspace')
+  const [activeTab, setActiveTab] = useState<
+    'workspace' | 'commits' | 'files' | 'stats'
+  >('workspace')
 
   return (
     <div className="h-screen bg-background flex flex-col">
@@ -572,6 +578,17 @@ function App() {
           >
             文件树
           </button>
+          <button
+            type="button"
+            className={`px-4 py-2.5 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
+              activeTab === 'stats'
+                ? 'border-primary text-primary bg-background'
+                : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'
+            }`}
+            onClick={() => setActiveTab('stats')}
+          >
+            统计
+          </button>
         </div>
 
         {/* Tab 内容 */}
@@ -604,6 +621,16 @@ function App() {
                 请先选择一个 Git 仓库
               </div>
             )}
+          </div>
+        ) : activeTab === 'stats' ? (
+          <div className="flex min-h-0 flex-1 flex-col px-2 sm:px-4">
+            <AuthorStatsPanel
+              repoPath={repoInfo?.path}
+              branchNames={repoInfo?.branches.map((b) => b.name) ?? []}
+              getAuthorCommitStats={getAuthorCommitStats}
+              getCommitActivityStats={getCommitActivityStats}
+              getDiffAggregateStats={getDiffAggregateStats}
+            />
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col px-2 sm:px-4">

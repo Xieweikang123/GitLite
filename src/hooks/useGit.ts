@@ -1,7 +1,17 @@
 import { useState, useCallback, useEffect } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { open } from '@tauri-apps/api/dialog'
-import { RepoInfo, CommitInfo, FileChange, RecentRepo, WorkspaceStatus, GitResetMode } from '../types/git'
+import {
+  RepoInfo,
+  CommitInfo,
+  FileChange,
+  RecentRepo,
+  WorkspaceStatus,
+  GitResetMode,
+  AuthorCommitStat,
+  TimeBucketStat,
+  DiffAggregateStats,
+} from '../types/git'
 import { formatTauriInvokeError } from '../utils/tauriError'
 
 export function useGit() {
@@ -291,6 +301,51 @@ export function useGit() {
     [repoInfo]
   )
 
+  const getAuthorCommitStats = useCallback(
+    async (scope: 'head' | 'all', rev?: string | null) => {
+      if (!repoInfo) throw new Error('No repository selected')
+      const r = rev?.trim() || null
+      return await invoke<AuthorCommitStat[]>('get_author_commit_stats', {
+        repoPath: repoInfo.path,
+        scope: scope === 'all' ? 'all' : null,
+        rev: r,
+      })
+    },
+    [repoInfo]
+  )
+
+  const getCommitActivityStats = useCallback(
+    async (
+      granularity: 'day' | 'week' | 'month',
+      scope: 'head' | 'all',
+      rev?: string | null
+    ) => {
+      if (!repoInfo) throw new Error('No repository selected')
+      const r = rev?.trim() || null
+      return await invoke<TimeBucketStat[]>('get_commit_activity_stats', {
+        repoPath: repoInfo.path,
+        scope: scope === 'all' ? 'all' : null,
+        rev: r,
+        granularity,
+      })
+    },
+    [repoInfo]
+  )
+
+  const getDiffAggregateStats = useCallback(
+    async (scope: 'head' | 'all', rev?: string | null, pathLimit?: number) => {
+      if (!repoInfo) throw new Error('No repository selected')
+      const r = rev?.trim() || null
+      return await invoke<DiffAggregateStats>('get_diff_aggregate_stats', {
+        repoPath: repoInfo.path,
+        scope: scope === 'all' ? 'all' : null,
+        rev: r,
+        pathLimit: pathLimit ?? 40,
+      })
+    },
+    [repoInfo]
+  )
+
   const getWorkspaceStatus = useCallback(async (): Promise<WorkspaceStatus> => {
     if (!repoInfo) throw new Error('No repository open')
     
@@ -492,6 +547,9 @@ export function useGit() {
     getSingleFileDiff,
     getCommitsPaginated,
     searchCommits,
+    getAuthorCommitStats,
+    getCommitActivityStats,
+    getDiffAggregateStats,
     getWorkspaceStatus,
     stageFile,
     unstageFile,

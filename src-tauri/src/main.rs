@@ -1,9 +1,10 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use chrono::{Datelike, DateTime, FixedOffset, Utc};
 use git2::{Oid, Repository, StashFlags};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::fs;
 use anyhow::Result;
@@ -82,6 +83,237 @@ pub struct CommitInfo {
     pub short_id: String,
     /// 父提交完整哈希（顺序与 Git 一致：首父、次父…），用于分支图
     pub parent_ids: Vec<String>,
+}
+
+/// 按作者聚合的提交次数（与提交列表 scope / rev 语义一致）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AuthorCommitStat {
+    pub author: String,
+    pub email: String,
+    pub commit_count: u64,
+}
+
+/// 时间维度的提交分布（按日 / 周 / 月分桶）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TimeBucketStat {
+    pub key: String,
+    pub commit_count: u64,
+}
+
+/// 作者在范围内的增删行（与首父 diff 一致，合并提交仅计相对于第一父级）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AuthorLineStat {
+    pub author: String,
+    pub email: String,
+    pub insertions: u64,
+    pub deletions: u64,
+    pub commit_count: u64,
+}
+
+/// 路径被提交触及的次数（单次提交内同一路径计 1）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PathTouchStat {
+    pub path: String,
+    pub touch_count: u64,
+}
+
+/// 一次遍历同时返回作者增删行与路径热度，避免重复 diff。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DiffAggregateStats {
+    pub authors: Vec<AuthorLineStat>,
+    pub paths: Vec<PathTouchStat>,
+}
+
+/// Git 空树对象 id（用于根提交的 diff 一侧）
+const GIT_EMPTY_TREE_OID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+fn first_parent_tree_for_diff<'a>(
+    repo: &'a Repository,
+    commit: &'a git2::Commit,
+) -> Result<git2::Tree<'a>> {
+    if commit.parent_count() == 0 {
+        let oid = Oid::from_str(GIT_EMPTY_TREE_OID)
+            .map_err(|e| anyhow::anyhow!("empty tree oid: {}", e))?;
+        repo.find_tree(oid)
+            .map_err(|e| anyhow::anyhow!("find empty tree: {}", e))
+    } else {
+        commit
+            .parent(0)
+            .and_then(|p| p.tree())
+            .map_err(|e| anyhow::anyhow!("parent tree: {}", e))
+    }
+}
+
+fn diff_commit_to_first_parent<'a>(
+    repo: &'a Repository,
+    commit: &'a git2::Commit,
+) -> Result<git2::Diff<'a>> {
+    let old_tree = first_parent_tree_for_diff(repo, commit)?;
+    let new_tree = commit.tree().map_err(|e| anyhow::anyhow!("commit tree: {}", e))?;
+    repo.diff_tree_to_tree(Some(&old_tree), Some(&new_tree), None)
+        .map_err(|e| anyhow::anyhow!("diff_tree_to_tree: {}", e))
+}
+
+fn commit_author_wall_time(commit: &git2::Commit) -> DateTime<FixedOffset> {
+    let sig = commit.author();
+    let when = sig.when();
+    let off = FixedOffset::east_opt(when.offset_minutes() * 60)
+        .unwrap_or_else(|| FixedOffset::east_opt(0).unwrap());
+    DateTime::<Utc>::from_timestamp(when.seconds(), 0)
+        .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap())
+        .with_timezone(&off)
+}
+
+fn time_bucket_key(dt: &DateTime<FixedOffset>, granularity: &str) -> String {
+    let d = dt.date_naive();
+    match granularity {
+        "day" => d.format("%Y-%m-%d").to_string(),
+        "month" => d.format("%Y-%m").to_string(),
+        "week" => {
+            let iso = d.iso_week();
+            format!("{}-W{:02}", iso.year(), iso.week())
+        }
+        _ => d.format("%Y-%m").to_string(),
+    }
+}
+
+fn walk_scope_time_buckets(
+    repo: &Repository,
+    scope: CommitLogScope,
+    granularity: &str,
+) -> Result<HashMap<String, u64>> {
+    let mut revwalk = repo
+        .revwalk()
+        .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
+    revwalk
+        .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+        .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
+    revwalk_push_scope(repo, &mut revwalk, scope)?;
+
+    let g = if matches!(granularity, "day" | "week" | "month") {
+        granularity
+    } else {
+        "month"
+    };
+
+    let mut buckets: HashMap<String, u64> = HashMap::new();
+    for oid_result in revwalk {
+        let oid = oid_result.map_err(|e| anyhow::anyhow!("Failed to walk commits: {}", e))?;
+        let commit = repo
+            .find_commit(oid)
+            .map_err(|e| anyhow::anyhow!("Failed to find commit: {}", e))?;
+        let dt = commit_author_wall_time(&commit);
+        let key = time_bucket_key(&dt, g);
+        *buckets.entry(key).or_insert(0) += 1;
+    }
+    Ok(buckets)
+}
+
+fn sorted_time_bucket_vec(map: HashMap<String, u64>) -> Vec<TimeBucketStat> {
+    let mut v: Vec<TimeBucketStat> = map
+        .into_iter()
+        .map(|(key, commit_count)| TimeBucketStat { key, commit_count })
+        .collect();
+    v.sort_by(|a, b| a.key.cmp(&b.key));
+    v
+}
+
+fn author_line_and_path_stats_for_scope(
+    repo: &Repository,
+    scope: CommitLogScope,
+    path_limit: usize,
+) -> Result<(Vec<AuthorLineStat>, Vec<PathTouchStat>)> {
+    let mut revwalk = repo
+        .revwalk()
+        .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
+    revwalk
+        .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+        .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
+    revwalk_push_scope(repo, &mut revwalk, scope)?;
+
+    let mut author_lines: HashMap<String, (String, String, u64, u64, u64)> = HashMap::new();
+    let mut path_touches: HashMap<String, u64> = HashMap::new();
+
+    for oid_result in revwalk {
+        let oid = oid_result.map_err(|e| anyhow::anyhow!("Failed to walk commits: {}", e))?;
+        let commit = match repo.find_commit(oid) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let author = commit.author();
+        let name = author.name().unwrap_or("Unknown").to_string();
+        let email = author.email().unwrap_or("").to_string();
+        let akey = if email.trim().is_empty() {
+            format!("n:{}", name)
+        } else {
+            format!("e:{}", email.trim().to_lowercase())
+        };
+
+        let diff = match diff_commit_to_first_parent(repo, &commit) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+
+        let stats = match diff.stats() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let ins = stats.insertions() as u64;
+        let del = stats.deletions() as u64;
+
+        author_lines
+            .entry(akey.clone())
+            .and_modify(|(_n, _e, i, d, c)| {
+                *i += ins;
+                *d += del;
+                *c += 1;
+            })
+            .or_insert((name.clone(), email.clone(), ins, del, 1));
+
+        let _ = diff.foreach(
+            &mut |delta: git2::DiffDelta<'_>, _progress: f32| {
+                let path_opt = delta.new_file().path().map(std::path::Path::to_path_buf).or_else(|| {
+                    delta.old_file().path().map(std::path::Path::to_path_buf)
+                });
+                if let Some(p) = path_opt {
+                    *path_touches
+                        .entry(p.to_string_lossy().into_owned())
+                        .or_insert(0) += 1;
+                }
+                true
+            },
+            None,
+            None,
+            None,
+        );
+    }
+
+    let mut authors: Vec<AuthorLineStat> = author_lines
+        .into_values()
+        .map(|(author, email, insertions, deletions, commit_count)| AuthorLineStat {
+            author,
+            email,
+            insertions,
+            deletions,
+            commit_count,
+        })
+        .collect();
+    authors.sort_by(|a, b| {
+        (b.insertions + b.deletions)
+            .cmp(&(a.insertions + a.deletions))
+            .then_with(|| a.author.cmp(&b.author))
+    });
+
+    let mut paths: Vec<(String, u64)> = path_touches.into_iter().collect();
+    paths.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    paths.truncate(path_limit.max(1).min(200));
+    let path_stats: Vec<PathTouchStat> = paths
+        .into_iter()
+        .map(|(path, touch_count)| PathTouchStat { path, touch_count })
+        .collect();
+
+    Ok((authors, path_stats))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -851,10 +1083,10 @@ async fn save_recent_repo(path: String) -> Result<(), String> {
         last_opened: chrono::Utc::now().to_rfc3339(),
     };
     repos.insert(0, recent_repo);
-    
-    // 限制最多保存10个
-    if repos.len() > 10 {
-        repos.truncate(10);
+
+    const MAX_RECENT_REPOS: usize = 30;
+    if repos.len() > MAX_RECENT_REPOS {
+        repos.truncate(MAX_RECENT_REPOS);
     }
     
     // 保存到文件
@@ -1777,6 +2009,93 @@ fn count_commits_scoped(repo: &Repository, scope: CommitLogScope) -> Result<usiz
         n += 1;
     }
     Ok(n)
+}
+
+/// 在指定历史范围内按作者（邮箱优先去重）统计提交次数，结果按次数降序。
+fn author_commit_stats_for_scope(repo: &Repository, scope: CommitLogScope) -> Result<Vec<AuthorCommitStat>> {
+    let mut revwalk = repo
+        .revwalk()
+        .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
+    revwalk
+        .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+        .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
+    revwalk_push_scope(repo, &mut revwalk, scope)?;
+
+    let mut map: HashMap<String, (String, String, u64)> = HashMap::new();
+
+    for oid_result in revwalk {
+        let oid = oid_result.map_err(|e| anyhow::anyhow!("Failed to walk commits: {}", e))?;
+        let commit = repo
+            .find_commit(oid)
+            .map_err(|e| anyhow::anyhow!("Failed to find commit: {}", e))?;
+        let author = commit.author();
+        let name = author.name().unwrap_or("Unknown").to_string();
+        let email = author.email().unwrap_or("").to_string();
+        let key = if email.trim().is_empty() {
+            format!("n:{}", name)
+        } else {
+            format!("e:{}", email.trim().to_lowercase())
+        };
+        map.entry(key)
+            .and_modify(|(_, _, c)| *c += 1)
+            .or_insert((name, email, 1));
+    }
+
+    let mut stats: Vec<AuthorCommitStat> = map
+        .into_values()
+        .map(|(author, email, commit_count)| AuthorCommitStat {
+            author,
+            email,
+            commit_count,
+        })
+        .collect();
+    stats.sort_by(|a, b| {
+        b.commit_count
+            .cmp(&a.commit_count)
+            .then_with(|| a.author.cmp(&b.author))
+    });
+    Ok(stats)
+}
+
+#[tauri::command]
+async fn get_author_commit_stats(
+    repo_path: String,
+    scope: Option<String>,
+    rev: Option<String>,
+) -> Result<Vec<AuthorCommitStat>, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+    let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
+    author_commit_stats_for_scope(&repo, s).map_err(|e| format!("统计作者提交失败: {}", e))
+}
+
+#[tauri::command]
+async fn get_commit_activity_stats(
+    repo_path: String,
+    scope: Option<String>,
+    rev: Option<String>,
+    granularity: String,
+) -> Result<Vec<TimeBucketStat>, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+    let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
+    let g = granularity.to_lowercase();
+    let map = walk_scope_time_buckets(&repo, s, g.as_str())
+        .map_err(|e| format!("统计时间分布失败: {}", e))?;
+    Ok(sorted_time_bucket_vec(map))
+}
+
+#[tauri::command]
+async fn get_diff_aggregate_stats(
+    repo_path: String,
+    scope: Option<String>,
+    rev: Option<String>,
+    path_limit: Option<u32>,
+) -> Result<DiffAggregateStats, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+    let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
+    let lim = path_limit.unwrap_or(40).max(1).min(200) as usize;
+    let (authors, paths) = author_line_and_path_stats_for_scope(&repo, s, lim)
+        .map_err(|e| format!("统计增删行与路径失败: {}", e))?;
+    Ok(DiffAggregateStats { authors, paths })
 }
 
 #[tauri::command]
@@ -4594,6 +4913,9 @@ fn main() {
             open_repository,
             get_commits_paginated,
             get_commit_count_head,
+            get_author_commit_stats,
+            get_commit_activity_stats,
+            get_diff_aggregate_stats,
             search_commits,
             get_head_file_paths,
             get_branch_ref_tips,

@@ -1,3 +1,35 @@
+/** 与后端 `get_author_commit_stats` 一致：按邮箱合并（无邮箱则按姓名） */
+export interface AuthorCommitStat {
+  author: string
+  email: string
+  commit_count: number
+}
+
+/** 时间分桶（日 / ISO 周 / 月） */
+export interface TimeBucketStat {
+  key: string
+  commit_count: number
+}
+
+/** 作者增删行（首父 diff） */
+export interface AuthorLineStat {
+  author: string
+  email: string
+  insertions: number
+  deletions: number
+  commit_count: number
+}
+
+export interface PathTouchStat {
+  path: string
+  touch_count: number
+}
+
+export interface DiffAggregateStats {
+  authors: AuthorLineStat[]
+  paths: PathTouchStat[]
+}
+
 export interface CommitInfo {
   id: string
   message: string
