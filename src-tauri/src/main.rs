@@ -1006,6 +1006,23 @@ fn git_output_detail(output: &std::process::Output) -> String {
     s
 }
 
+/// 在 **拉取前相对 `HEAD` 无未提交改动**（`paths_dirty_vs_head` 为空）时，用系统 Git 将索引与工作区对齐到当前 `HEAD`。
+/// 与 SourceTree / 命令行 `git pull` 一致；libgit2 单独 `checkout_tree` 在部分环境下不能像官方 Git 一样可靠写回 `.git/index`，易出现「已与远程对齐但 status 仍大量 M/D」。
+///
+/// **不得**在存在未提交改动时调用，否则会丢弃本地修改。
+fn sync_index_worktree_to_head_with_cli(repo_path: &str) -> Result<(), String> {
+    let out = run_git_in_repo(repo_path, &["reset", "--hard", "HEAD"]).map_err(|e| {
+        format!("无法执行 git reset --hard（请确认已安装 Git 并加入 PATH）: {}", e)
+    })?;
+    if !out.status.success() {
+        return Err(format!(
+            "git reset --hard HEAD 失败: {}",
+            git_output_detail(&out)
+        ));
+    }
+    Ok(())
+}
+
 // 获取代理配置
 #[tauri::command]
 async fn get_proxy_config() -> Result<(ProxyConfig, bool), String> {
@@ -3008,16 +3025,23 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
             return Err(format!("Failed to fast-forward: {}", e));
         }
 
-        // 仅 set_target 会只移动分支指针，索引/工作区仍停留在拉取前；此时 HEAD 已是新提交，
-        // 与索引不一致，git status 会把「索引 vs 新 HEAD」误显示为大量「已暂存」，像改动被挪进暂存区。
-        // 与命令行 git pull 快进一致：更新指针后再检出树，同步索引与工作区。
-        let treeish = remote_commit.as_object();
-        if let Err(e) = repo.checkout_tree(&treeish, None) {
-            log_message("ERROR", &format!("pull: checkout after fast-forward failed: {}", e));
-            return Err(format!(
-                "Branch fast-forwarded but work tree failed to sync: {}. You may need to run: git reset --hard HEAD",
+        // 仅 set_target 会只移动分支指针；需把索引与工作区同步到新 HEAD。
+        // 工作区干净时用系统 `git reset --hard HEAD`，与 SourceTree / 官方 git pull 一致；
+        // libgit2 单独 checkout_tree 在部分环境下 index 与 CLI 不一致。
+        if dirty_paths.is_empty() {
+            sync_index_worktree_to_head_with_cli(&repo_path).map_err(|e| {
+                log_message("ERROR", &format!("pull: sync worktree/index after ff failed: {}", e));
                 e
-            ));
+            })?;
+        } else {
+            let treeish = remote_commit.as_object();
+            if let Err(e) = repo.checkout_tree(&treeish, None) {
+                log_message("ERROR", &format!("pull: checkout after fast-forward failed: {}", e));
+                return Err(format!(
+                    "Branch fast-forwarded but work tree failed to sync: {}. You may need to run: git reset --hard HEAD",
+                    e
+                ));
+            }
         }
 
         log_message("INFO", &format!("pull: fast-forward success | branch={}", branch_name));
@@ -3079,6 +3103,13 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
                 &[&local_commit, &remote_commit],
             )
             .map_err(|e| format!("创建合并提交失败：{}", e))?;
+
+        if dirty_paths.is_empty() {
+            sync_index_worktree_to_head_with_cli(&repo_path).map_err(|e| {
+                log_message("ERROR", &format!("pull: sync after merge commit failed: {}", e));
+                e
+            })?;
+        }
 
         log_message("INFO", &format!("pull: merge success | branch={} merge_commit={}", branch_name, merge_commit_id));
         Ok(format!("Successfully pulled and merged (commit: {})", merge_commit_id))
@@ -3956,17 +3987,25 @@ async fn pull_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
             return Err(format!("Failed to fast-forward: {}", e));
         }
 
-        let treeish = remote_commit.as_object();
-        if let Err(e) = repo.checkout_tree(&treeish, None) {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), format!("快进后同步工作区失败: {}", e)));
-            return Err(format!(
-                "Branch fast-forwarded but work tree failed to sync: {}. You may need to run: git reset --hard HEAD",
-                e
-            ));
+        if dirty_paths.is_empty() {
+            if let Err(e) = sync_index_worktree_to_head_with_cli(&repo_path) {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "ERROR".to_string(), format!("快进后同步索引与工作区失败: {}", e)));
+                return Err(e);
+            }
+        } else {
+            let treeish = remote_commit.as_object();
+            if let Err(e) = repo.checkout_tree(&treeish, None) {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "ERROR".to_string(), format!("快进后同步工作区失败: {}", e)));
+                return Err(format!(
+                    "Branch fast-forwarded but work tree failed to sync: {}. You may need to run: git reset --hard HEAD",
+                    e
+                ));
+            }
         }
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push((timestamp, "INFO".to_string(), "已同步索引与工作区（与 git pull 快进一致）".to_string()));
+        logs.push((timestamp, "INFO".to_string(), "已同步索引与工作区（与 git pull / SourceTree 一致：干净工作区使用系统 git reset --hard）".to_string()));
 
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
         logs.push((timestamp, "INFO".to_string(), "快进合并成功".to_string()));
@@ -4080,11 +4119,26 @@ async fn pull_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
         logs.push((timestamp, "INFO".to_string(), "合并提交创建成功".to_string()));
 
+        if dirty_paths.is_empty() {
+            if let Err(e) = sync_index_worktree_to_head_with_cli(&repo_path) {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+                logs.push((timestamp, "ERROR".to_string(), format!("合并后同步索引与工作区失败: {}", e)));
+                return Err(e);
+            }
+            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+            logs.push((timestamp, "INFO".to_string(), "已用系统 git 同步索引与工作区（与 SourceTree 一致）".to_string()));
+        }
+
         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
         logs.push((timestamp, "SUCCESS".to_string(), format!("操作完成 - 合并提交成功 (commit: {})", merge_commit_id)));
 
         Ok(logs)
     }
+}
+
+/// 与 git 侧路径比较（统一为正斜杠，避免 Windows 下 `a\b` 与 `a/b` 不相等导致差异为空）
+fn git_paths_equal(a: &str, b: &str) -> bool {
+    a.replace('\\', "/") == b.replace('\\', "/")
 }
 
 // 获取已暂存文件的差异
@@ -4118,7 +4172,7 @@ async fn get_staged_file_diff(repo_path: String, file_path: String) -> Result<St
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
         
-        if current_file == file_path {
+        if git_paths_equal(&current_file, &file_path) {
             // 添加diff行前缀
             let prefix = match line.origin() {
                 '+' => "+",
@@ -4156,7 +4210,7 @@ async fn get_unstaged_file_diff(repo_path: String, file_path: String) -> Result<
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
         
-        if current_file == file_path {
+        if git_paths_equal(&current_file, &file_path) {
             // 添加diff行前缀
             let prefix = match line.origin() {
                 '+' => "+",

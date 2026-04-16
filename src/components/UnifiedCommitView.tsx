@@ -13,7 +13,24 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
-import { Search, Loader2, FileText, Plus, Edit, Trash2, GitBranch, Calendar, GitCompare, Sparkles, ClipboardList, RotateCcw } from 'lucide-react'
+import {
+  Search,
+  Loader2,
+  FileText,
+  Plus,
+  Edit,
+  Trash2,
+  GitBranch,
+  Calendar,
+  GitCompare,
+  Sparkles,
+  ClipboardList,
+  RotateCcw,
+  Copy,
+  Check,
+  ChevronDown,
+  ChevronUp,
+} from 'lucide-react'
 import {
   CommitInfo,
   FileChange,
@@ -34,27 +51,33 @@ import { Label } from './ui/label'
 import { formatTauriInvokeError } from '../utils/tauriError'
 import { CommitGraphStrip, COMMIT_GRAPH_ROW_HEIGHT } from './CommitGraphStrip'
 
-/** 提交页分栏：上方提交区高度 commit；下方为「文件列表 | diff」，其中文件列宽度 file（与分隔条尺寸一致） */
+/** 提交页分栏：左侧提交列表宽度 list；右侧内「文件列表 | diff」中文件列宽度 file */
 const PANES_STORAGE_KEY = 'gitlite:unifiedCommitView:panes'
 const SPLITTER_PX = 6
-const MIN_COMMIT_W = 220
+const MIN_LIST_W = 240
 const MIN_FILE_W = 160
 const MIN_DIFF_W = 240
-/** 未选中提交时下方占位区的最小高度 */
-const MIN_BOTTOM_EMPTY_H = 112
-/** 下方详情区（文件+diff）最小高度 */
-const MIN_BOTTOM_DETAIL_H = 160
-const DEFAULT_PANES = { commit: 360, file: 240 } as const
+const DEFAULT_PANES = { list: 340, file: 240 } as const
 
-function loadPanes(): { commit: number; file: number } {
+function loadPanes(): { list: number; file: number } {
   if (typeof window === 'undefined') return { ...DEFAULT_PANES }
   try {
     const raw = localStorage.getItem(PANES_STORAGE_KEY)
     if (!raw) return { ...DEFAULT_PANES }
-    const j = JSON.parse(raw) as { commit?: number; file?: number }
-    // 与旧版默认宽度完全一致时升级到更宽的提交列（用户曾手动拖到相同数值的极少见）
-    if (j.commit === 304 && j.file === 268) {
-      const upgraded = { ...DEFAULT_PANES }
+    const j = JSON.parse(raw) as { list?: number; file?: number; commit?: number }
+    if (typeof j.list === 'number' && Number.isFinite(j.list) && typeof j.file === 'number' && Number.isFinite(j.file)) {
+      return {
+        list: Math.max(MIN_LIST_W, j.list),
+        file: Math.max(MIN_FILE_W, j.file),
+      }
+    }
+    // 旧版：{ commit: 上区高度, file } 纵向布局 → 仅继承 file，列表宽用默认
+    if (typeof j.commit === 'number' && typeof j.file === 'number' && Number.isFinite(j.file)) {
+      const upgraded = {
+        list: DEFAULT_PANES.list,
+        file:
+          j.commit === 304 && j.file === 268 ? DEFAULT_PANES.file : Math.max(MIN_FILE_W, j.file),
+      }
       try {
         localStorage.setItem(PANES_STORAGE_KEY, JSON.stringify(upgraded))
       } catch {
@@ -62,26 +85,130 @@ function loadPanes(): { commit: number; file: number } {
       }
       return upgraded
     }
-    const commit =
-      typeof j.commit === 'number' && Number.isFinite(j.commit)
-        ? Math.max(MIN_COMMIT_W, j.commit)
-        : DEFAULT_PANES.commit
-    const file =
-      typeof j.file === 'number' && Number.isFinite(j.file)
-        ? Math.max(MIN_FILE_W, j.file)
-        : DEFAULT_PANES.file
-    return { commit, file }
+    return { ...DEFAULT_PANES }
   } catch {
     return { ...DEFAULT_PANES }
   }
 }
 
-function savePanes(p: { commit: number; file: number }) {
+function savePanes(p: { list: number; file: number }) {
   try {
     localStorage.setItem(PANES_STORAGE_KEY, JSON.stringify(p))
   } catch {
     /* 忽略隐私模式等写入失败 */
   }
+}
+
+/** 选中提交后：默认一行摘要不挤占下方；展开可看全文与完整元数据（区域限高可滚动） */
+function CommitDetailStrip({ commit }: { commit: CommitInfo }) {
+  const [detailOpen, setDetailOpen] = useState(false)
+  const [copiedFull, setCopiedFull] = useState(false)
+
+  const copyFullHash = async () => {
+    try {
+      await navigator.clipboard.writeText(commit.id)
+      setCopiedFull(true)
+      window.setTimeout(() => setCopiedFull(false), 2000)
+    } catch {
+      /* 忽略剪贴板不可用 */
+    }
+  }
+
+  const parents = commit.parent_ids ?? []
+  const messageBody = (commit.message ?? '').trimEnd()
+  const metaOneLine = [commit.short_id, commit.author, commit.date].filter(Boolean).join(' · ')
+
+  return (
+    <div className="shrink-0 border-b border-border/80 bg-muted/15">
+      <div className="flex items-start gap-1.5 px-2 py-1 sm:gap-2 sm:px-2.5 sm:py-1.5">
+        <div className="min-w-0 flex-1">
+          <p
+            className="text-sm font-semibold leading-snug text-foreground line-clamp-2"
+            title={messageBody || undefined}
+          >
+            {messageBody || '（无提交说明）'}
+          </p>
+          <p
+            className="mt-0.5 truncate text-[11px] text-muted-foreground"
+            title={`${metaOneLine}${commit.email ? ` · ${commit.email}` : ''}`}
+          >
+            {metaOneLine}
+            {commit.email ? (
+              <span className="text-muted-foreground/80"> · {commit.email}</span>
+            ) : null}
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 shrink-0 gap-0.5 px-1.5 text-xs text-muted-foreground hover:text-foreground sm:px-2"
+          onClick={() => setDetailOpen((o) => !o)}
+          aria-expanded={detailOpen}
+          title={detailOpen ? '收起提交详情' : '展开完整说明与哈希、父提交等'}
+        >
+          {detailOpen ? '收起' : '详情'}
+          {detailOpen ? (
+            <ChevronUp className="h-3.5 w-3.5 opacity-80" aria-hidden />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5 opacity-80" aria-hidden />
+          )}
+        </Button>
+      </div>
+      {detailOpen && (
+        <div className="max-h-[min(14rem,36vh)] overflow-y-auto overscroll-contain border-t border-border/50 bg-muted/25 px-2.5 py-2">
+          <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground">
+            {messageBody || '（无提交说明）'}
+          </p>
+          <dl className="mt-3 grid grid-cols-1 gap-x-3 gap-y-1.5 text-xs sm:grid-cols-[5rem_minmax(0,1fr)] sm:gap-y-1">
+            <dt className="text-muted-foreground sm:pt-0.5">完整哈希</dt>
+            <dd className="flex min-w-0 items-start gap-1">
+              <span className="break-all font-mono text-[11px] leading-relaxed text-foreground" title={commit.id}>
+                {commit.id}
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 shrink-0"
+                onClick={() => void copyFullHash()}
+                title="复制完整哈希"
+                aria-label="复制完整哈希"
+              >
+                {copiedFull ? (
+                  <Check className="h-3.5 w-3.5 text-green-600 dark:text-green-400" aria-hidden />
+                ) : (
+                  <Copy className="h-3.5 w-3.5" aria-hidden />
+                )}
+              </Button>
+            </dd>
+            <dt className="text-muted-foreground">短哈希</dt>
+            <dd className="font-mono text-[11px] text-foreground">{commit.short_id}</dd>
+            <dt className="text-muted-foreground">作者</dt>
+            <dd className="min-w-0 break-words text-foreground">
+              <span>{commit.author}</span>
+              {commit.email ? (
+                <span className="text-muted-foreground"> &lt;{commit.email}&gt;</span>
+              ) : null}
+            </dd>
+            <dt className="text-muted-foreground">日期</dt>
+            <dd className="text-foreground">{commit.date}</dd>
+            {parents.length > 0 && (
+              <>
+                <dt className="text-muted-foreground">父提交</dt>
+                <dd
+                  className="break-all font-mono text-[11px] leading-relaxed text-foreground"
+                  title={parents.join(', ')}
+                >
+                  {parents.join(', ')}
+                </dd>
+              </>
+            )}
+          </dl>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function VerticalResizeHandle({
@@ -132,70 +259,6 @@ function VerticalResizeHandle({
       tabIndex={0}
       className={cn(
         'w-1.5 shrink-0 cursor-col-resize touch-none select-none rounded-full bg-border/70 hover:bg-primary/45',
-        'active:bg-primary/60',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-        className
-      )}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={end}
-      onPointerCancel={end}
-      onDoubleClick={(e) => {
-        e.preventDefault()
-        onDoubleClick?.()
-      }}
-    />
-  )
-}
-
-function HorizontalResizeHandle({
-  onDrag,
-  onDragEnd,
-  onDoubleClick,
-  title: handleTitle,
-  className,
-}: {
-  onDrag: (deltaY: number) => void
-  onDragEnd?: () => void
-  onDoubleClick?: () => void
-  title?: string
-  className?: string
-}) {
-  const dragRef = useRef({ active: false, y: 0 })
-
-  const handlePointerDown = (e: PointerEvent<HTMLDivElement>) => {
-    e.preventDefault()
-    dragRef.current = { active: true, y: e.clientY }
-    e.currentTarget.setPointerCapture(e.pointerId)
-  }
-
-  const handlePointerMove = (e: PointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current.active) return
-    const dy = e.clientY - dragRef.current.y
-    dragRef.current.y = e.clientY
-    if (dy !== 0) onDrag(dy)
-  }
-
-  const end = (e: PointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current.active) return
-    dragRef.current.active = false
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId)
-    } catch {
-      /* 已释放 */
-    }
-    onDragEnd?.()
-  }
-
-  return (
-    <div
-      role="separator"
-      aria-orientation="horizontal"
-      aria-label={handleTitle ?? '拖动调整高度'}
-      title={handleTitle}
-      tabIndex={0}
-      className={cn(
-        'h-1.5 w-full shrink-0 cursor-row-resize touch-none select-none rounded-full bg-border/70 hover:bg-primary/45',
         'active:bg-primary/60',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
         className
@@ -368,48 +431,48 @@ export function UnifiedCommitView({
     savePanes(panesRef.current)
   }, [])
 
-  const onDragOuter = useCallback(
-    (dy: number) => {
-      setPanes(({ commit, file }) => {
-        const root = rootRef.current
-        if (!root) return { commit: commit + dy, file }
-        const ch = root.clientHeight
-        const s = SPLITTER_PX
-        const minBot = selectedCommit ? MIN_BOTTOM_DETAIL_H : MIN_BOTTOM_EMPTY_H
-        const maxCommit = ch - s - minBot
-        const cappedMax = Math.max(MIN_COMMIT_W, maxCommit)
-        const next = Math.max(MIN_COMMIT_W, Math.min(commit + dy, cappedMax))
-        return { commit: next, file }
-      })
-    },
-    [selectedCommit]
-  )
+  /** 左右分栏：拖动以调整左侧提交列表宽度 */
+  const onDragList = useCallback((dx: number) => {
+    setPanes(({ list, file }) => {
+      const root = rootRef.current
+      if (!root) return { list: list + dx, file }
+      const cw = root.clientWidth
+      const s = SPLITTER_PX
+      const minRight = MIN_FILE_W + s + MIN_DIFF_W
+      const maxList = Math.max(MIN_LIST_W, cw - s - minRight)
+      const next = Math.max(MIN_LIST_W, Math.min(list + dx, maxList))
+      return { list: next, file }
+    })
+  }, [])
 
-  /** 双击提交区与下方详情之间的分隔条：把提交区拉到当前可用最大高度 */
-  const snapCommitColumnMax = useCallback(() => {
+  /** 双击列表与右侧之间的竖条：恢复默认列表宽度（并限制在当前窗口内） */
+  const snapListColumnDefault = useCallback(() => {
     setPanes((prev) => {
       const root = rootRef.current
       if (!root) return prev
-      const ch = root.clientHeight
+      const cw = root.clientWidth
       const s = SPLITTER_PX
-      const minBot = selectedCommit ? MIN_BOTTOM_DETAIL_H : MIN_BOTTOM_EMPTY_H
-      const maxCommit = Math.max(MIN_COMMIT_W, ch - s - minBot)
-      const next = { commit: maxCommit, file: prev.file }
+      const minRight = MIN_FILE_W + s + MIN_DIFF_W
+      const maxList = Math.max(MIN_LIST_W, cw - s - minRight)
+      const target = Math.max(MIN_LIST_W, Math.min(DEFAULT_PANES.list, maxList))
+      const next = { list: target, file: prev.file }
       queueMicrotask(() => savePanes(next))
       return next
     })
-  }, [selectedCommit])
+  }, [])
 
+  /** 右侧内：文件列与 diff 列之间的拖动（宽度相对于整个窗口计算） */
   const onDragInner = useCallback((dx: number) => {
-    setPanes(({ commit, file }) => {
+    setPanes(({ list, file }) => {
       const root = rootRef.current
-      if (!root) return { commit, file: file + dx }
+      if (!root) return { list, file: file + dx }
       const cw = root.clientWidth
       const s = SPLITTER_PX
-      const maxFile = cw - MIN_DIFF_W - s * 2
-      const cappedMax = Math.max(MIN_FILE_W, maxFile)
-      const next = Math.max(MIN_FILE_W, Math.min(file + dx, cappedMax))
-      return { commit, file: next }
+      const rightW = cw - list - s
+      if (rightW <= 0) return { list, file }
+      const maxFile = Math.max(MIN_FILE_W, rightW - s - MIN_DIFF_W)
+      const next = Math.max(MIN_FILE_W, Math.min(file + dx, maxFile))
+      return { list, file: next }
     })
   }, [])
 
@@ -417,21 +480,20 @@ export function UnifiedCommitView({
     const root = rootRef.current
     if (!root) return
     const ro = new ResizeObserver(() => {
-      setPanes(({ commit: c, file: f }) => {
+      setPanes(({ list: l, file: f }) => {
         const cw = root.clientWidth
-        const ch = root.clientHeight
-        if (cw <= 0 || ch <= 0) return { commit: c, file: f }
+        if (cw <= 0) return { list: l, file: f }
         const s = SPLITTER_PX
-        const minBot = selectedCommit ? MIN_BOTTOM_DETAIL_H : MIN_BOTTOM_EMPTY_H
-        let c2 = c
-        let f2 = f
-        const maxC = Math.max(MIN_COMMIT_W, ch - s - minBot)
-        c2 = Math.max(MIN_COMMIT_W, Math.min(c2, Math.max(MIN_COMMIT_W, maxC)))
+        const minRight = MIN_FILE_W + s + MIN_DIFF_W
+        const maxList = Math.max(MIN_LIST_W, cw - s - minRight)
+        let l2 = Math.max(MIN_LIST_W, Math.min(l, maxList))
         if (selectedCommit) {
-          const maxF = cw - MIN_DIFF_W - s * 2
-          f2 = Math.max(MIN_FILE_W, Math.min(f2, Math.max(MIN_FILE_W, maxF)))
+          const rightW = cw - l2 - s
+          const maxF = Math.max(MIN_FILE_W, rightW - s - MIN_DIFF_W)
+          const f2 = Math.max(MIN_FILE_W, Math.min(f, maxF))
+          return { list: l2, file: f2 }
         }
-        return { commit: c2, file: f2 }
+        return { list: l2, file: Math.max(MIN_FILE_W, f) }
       })
     })
     ro.observe(root)
@@ -1080,11 +1142,11 @@ export function UnifiedCommitView({
   return (
     <div
       ref={rootRef}
-      className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+      className="flex h-full min-h-0 min-w-0 flex-1 flex-row overflow-hidden"
     >
       <div
-        style={{ height: panes.commit }}
-        className="flex min-h-0 shrink-0 flex-col overflow-hidden"
+        style={{ width: panes.list }}
+        className="flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden"
       >
         <Card className="flex h-full min-h-0 flex-col border-border/80">
           <CardHeader className="space-y-0.5 px-2.5 py-1 sm:px-3">
@@ -1553,13 +1615,13 @@ export function UnifiedCommitView({
           </CardContent>
         </Card>
       </div>
-      <HorizontalResizeHandle
-        onDrag={onDragOuter}
+      <VerticalResizeHandle
+        onDrag={onDragList}
         onDragEnd={persistPanes}
-        onDoubleClick={snapCommitColumnMax}
-        title="拖动调整上方提交区与下方详情区高度；双击将提交区拉至当前可用最大高度"
+        onDoubleClick={snapListColumnDefault}
+        title="拖动调整左侧提交列表宽度；双击恢复为默认宽度"
       />
-      {/* 下方：未选提交时为一块说明；选中后为 文件变更 | 代码差异 */}
+      {/* 右侧：与提交列表等高；未选为占位，选中为详情 + 文件 | diff */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {!selectedCommit ? (
           <Card className="flex h-full min-h-0 flex-1 flex-col border-border/80">
@@ -1567,12 +1629,14 @@ export function UnifiedCommitView({
               <GitCompare className="h-14 w-14 shrink-0 opacity-40" />
               <p className="text-sm font-medium text-foreground">选择提交查看变更</p>
               <p className="max-w-sm text-xs leading-relaxed opacity-80">
-                在上方提交记录中点击任意一条，即可查看该提交的文件列表与代码差异。在提交项上右键可选择「重置到此提交」。
+                在左侧提交记录中点击任意一条，右侧将显示该提交的说明与文件列表。可拖动中间竖条调整列表宽度。在提交项上右键可选择「重置到此提交」。
               </p>
             </CardContent>
           </Card>
         ) : (
-          <div className="flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden">
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <CommitDetailStrip commit={selectedCommit} />
+            <div className="flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden">
             {/* 文件变更 */}
             <div
               style={{ width: panes.file }}
@@ -1704,6 +1768,7 @@ export function UnifiedCommitView({
                   )}
                 </CardContent>
               </Card>
+            </div>
             </div>
           </div>
         )}

@@ -130,7 +130,10 @@ export function FileDiffModal({ isOpen, onClose, filePath, repoPath, fileType }:
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent ref={modalContentRef} className="max-w-3xl max-h-[80vh] flex flex-col">
+      <DialogContent
+        ref={modalContentRef}
+        className="max-w-3xl max-h-[85vh] flex min-h-0 flex-col overflow-hidden"
+      >
         <DialogHeader>
           <DialogTitle>
             {getModalTitle()}
@@ -139,7 +142,7 @@ export function FileDiffModal({ isOpen, onClose, filePath, repoPath, fileType }:
           
         </DialogHeader>
         
-        <div className="flex-1 overflow-visible">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {loading && (
             <div className="flex items-center justify-center h-32">
               <p className="text-muted-foreground">加载中...</p>
@@ -158,7 +161,9 @@ export function FileDiffModal({ isOpen, onClose, filePath, repoPath, fileType }:
           )}
           
           {!loading && !error && diff && (
-            <VSCodeDiff diff={diff} filePath={filePath} repoPath={repoPath} />
+            <div className="h-[min(60vh,560px)] min-h-[280px] w-full shrink-0 overflow-hidden">
+              <VSCodeDiff diff={diff} filePath={filePath} repoPath={repoPath} />
+            </div>
           )}
           
           {!loading && !error && !diff && (
