@@ -4,12 +4,36 @@ import { cn } from "../../lib/utils"
 
 /** 支持多个 Dialog 同时打开（如确认框叠在主弹窗上）时成对加解锁 */
 let bodyScrollLockCount = 0
+/** 解锁后用 scrollTo 恢复的纵向滚动位置 */
+let bodyScrollLockSavedY = 0
+/** 加锁前 body 上已有的 style.paddingRight，用于解锁后还原 */
+let bodyScrollLockSavedPaddingRight = ""
 
+/**
+ * 锁定背景滚动：用 fixed + 负 top 冻结当前视图画面的位置，
+ * 避免仅用 overflow:hidden 时主文档滚动条消失导致视口“跳顶”。
+ * 同时按滚动条宽度增加 padding-right，避免横向因滚动条消失而抖动。
+ */
 function lockBodyScroll() {
   bodyScrollLockCount++
   if (bodyScrollLockCount === 1) {
-    document.documentElement.style.overflow = "hidden"
+    bodyScrollLockSavedY = window.scrollY ?? document.documentElement.scrollTop
+    bodyScrollLockSavedPaddingRight = document.body.style.paddingRight
+
+    const scrollbarGap = window.innerWidth - document.documentElement.clientWidth
+    if (scrollbarGap > 0) {
+      const pr =
+        parseFloat(window.getComputedStyle(document.body).paddingRight) || 0
+      document.body.style.paddingRight = `${pr + scrollbarGap}px`
+    }
+
+    document.body.style.position = "fixed"
+    document.body.style.top = `-${bodyScrollLockSavedY}px`
+    document.body.style.left = "0"
+    document.body.style.right = "0"
+    document.body.style.width = "100%"
     document.body.style.overflow = "hidden"
+    document.documentElement.style.overflow = "hidden"
     document.body.style.overscrollBehavior = "none"
   }
 }
@@ -17,9 +41,17 @@ function lockBodyScroll() {
 function unlockBodyScroll() {
   bodyScrollLockCount = Math.max(0, bodyScrollLockCount - 1)
   if (bodyScrollLockCount === 0) {
-    document.documentElement.style.overflow = ""
+    document.body.style.position = ""
+    document.body.style.top = ""
+    document.body.style.left = ""
+    document.body.style.right = ""
+    document.body.style.width = ""
     document.body.style.overflow = ""
+    document.body.style.paddingRight = bodyScrollLockSavedPaddingRight
+    bodyScrollLockSavedPaddingRight = ""
+    document.documentElement.style.overflow = ""
     document.body.style.overscrollBehavior = ""
+    window.scrollTo(0, bodyScrollLockSavedY)
   }
 }
 
