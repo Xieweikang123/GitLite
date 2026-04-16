@@ -30,6 +30,8 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react'
 import {
   CommitInfo,
@@ -49,6 +51,7 @@ import { branchBadgeClassName, formatBranchLabelShort } from '../utils/branchDis
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { Label } from './ui/label'
 import { formatTauriInvokeError } from '../utils/tauriError'
+import { splitRepoPath } from '../utils/splitRepoPath'
 import { CommitGraphStrip, COMMIT_GRAPH_ROW_HEIGHT } from './CommitGraphStrip'
 
 /** 提交页分栏：左侧提交列表宽度 list；右侧内「文件列表 | diff」中文件列宽度 file */
@@ -96,6 +99,44 @@ function savePanes(p: { list: number; file: number }) {
     localStorage.setItem(PANES_STORAGE_KEY, JSON.stringify(p))
   } catch {
     /* 忽略隐私模式等写入失败 */
+  }
+}
+
+const DIFF_PANEL_COLLAPSED_KEY = 'gitlite:unifiedCommitView:diffPanelCollapsed'
+
+function loadDiffPanelCollapsed(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    return localStorage.getItem(DIFF_PANEL_COLLAPSED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function saveDiffPanelCollapsed(collapsed: boolean) {
+  try {
+    localStorage.setItem(DIFF_PANEL_COLLAPSED_KEY, collapsed ? '1' : '0')
+  } catch {
+    /* 忽略 */
+  }
+}
+
+const RIGHT_PANEL_COLLAPSED_KEY = 'gitlite:unifiedCommitView:rightPanelCollapsed'
+
+function loadRightPanelCollapsed(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    return localStorage.getItem(RIGHT_PANEL_COLLAPSED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function saveRightPanelCollapsed(collapsed: boolean) {
+  try {
+    localStorage.setItem(RIGHT_PANEL_COLLAPSED_KEY, collapsed ? '1' : '0')
+  } catch {
+    /* 忽略 */
   }
 }
 
@@ -429,8 +470,35 @@ export function UnifiedCommitView({
   panesRef.current = panes
   const rootRef = useRef<HTMLDivElement>(null)
 
+  const [diffPanelCollapsed, setDiffPanelCollapsedState] = useState(loadDiffPanelCollapsed)
+  const diffPanelCollapsedRef = useRef(diffPanelCollapsed)
+  diffPanelCollapsedRef.current = diffPanelCollapsed
+
+  const setDiffPanelCollapsed = useCallback((collapsed: boolean) => {
+    setDiffPanelCollapsedState(collapsed)
+    saveDiffPanelCollapsed(collapsed)
+  }, [])
+
+  const [rightPanelCollapsed, setRightPanelCollapsedState] = useState(loadRightPanelCollapsed)
+  const rightPanelCollapsedRef = useRef(rightPanelCollapsed)
+  rightPanelCollapsedRef.current = rightPanelCollapsed
+
+  const setRightPanelCollapsed = useCallback((collapsed: boolean) => {
+    setRightPanelCollapsedState(collapsed)
+    saveRightPanelCollapsed(collapsed)
+  }, [])
+
   const persistPanes = useCallback(() => {
     savePanes(panesRef.current)
+  }, [])
+
+  /**
+   * 整块右栏折叠时不占宽度；否则差异区折叠时右侧仅需文件列最小宽度。
+   */
+  const rightPaneMinWidth = useCallback(() => {
+    if (rightPanelCollapsedRef.current) return 0
+    const s = SPLITTER_PX
+    return diffPanelCollapsedRef.current ? MIN_FILE_W : MIN_FILE_W + s + MIN_DIFF_W
   }, [])
 
   /** 左右分栏：拖动以调整左侧提交列表宽度 */
@@ -440,12 +508,12 @@ export function UnifiedCommitView({
       if (!root) return { list: list + dx, file }
       const cw = root.clientWidth
       const s = SPLITTER_PX
-      const minRight = MIN_FILE_W + s + MIN_DIFF_W
+      const minRight = rightPaneMinWidth()
       const maxList = Math.max(MIN_LIST_W, cw - s - minRight)
       const next = Math.max(MIN_LIST_W, Math.min(list + dx, maxList))
       return { list: next, file }
     })
-  }, [])
+  }, [rightPaneMinWidth])
 
   /** 双击列表与右侧之间的竖条：恢复默认列表宽度（并限制在当前窗口内） */
   const snapListColumnDefault = useCallback(() => {
@@ -454,14 +522,14 @@ export function UnifiedCommitView({
       if (!root) return prev
       const cw = root.clientWidth
       const s = SPLITTER_PX
-      const minRight = MIN_FILE_W + s + MIN_DIFF_W
+      const minRight = rightPaneMinWidth()
       const maxList = Math.max(MIN_LIST_W, cw - s - minRight)
       const target = Math.max(MIN_LIST_W, Math.min(DEFAULT_PANES.list, maxList))
       const next = { list: target, file: prev.file }
       queueMicrotask(() => savePanes(next))
       return next
     })
-  }, [])
+  }, [rightPaneMinWidth])
 
   /** 右侧内：文件列与 diff 列之间的拖动（宽度相对于整个窗口计算） */
   const onDragInner = useCallback((dx: number) => {
@@ -486,11 +554,25 @@ export function UnifiedCommitView({
         const cw = root.clientWidth
         if (cw <= 0) return { list: l, file: f }
         const s = SPLITTER_PX
-        const minRight = MIN_FILE_W + s + MIN_DIFF_W
+
+        if (rightPanelCollapsedRef.current) {
+          const minRightFull = MIN_FILE_W + s + MIN_DIFF_W
+          const maxList = Math.max(MIN_LIST_W, cw - s - minRightFull)
+          const l2 = Math.max(MIN_LIST_W, Math.min(l, maxList))
+          return { list: l2, file: Math.max(MIN_FILE_W, f) }
+        }
+
+        const diffCollapsed = diffPanelCollapsedRef.current
+        const minRight = diffCollapsed ? MIN_FILE_W : MIN_FILE_W + s + MIN_DIFF_W
         const maxList = Math.max(MIN_LIST_W, cw - s - minRight)
         let l2 = Math.max(MIN_LIST_W, Math.min(l, maxList))
         if (selectedCommit) {
           const rightW = cw - l2 - s
+          if (rightW <= 0) return { list: l2, file: f }
+          if (diffCollapsed) {
+            const f2 = Math.max(MIN_FILE_W, Math.min(f, rightW))
+            return { list: l2, file: f2 }
+          }
           const maxF = Math.max(MIN_FILE_W, rightW - s - MIN_DIFF_W)
           const f2 = Math.max(MIN_FILE_W, Math.min(f, maxF))
           return { list: l2, file: f2 }
@@ -500,7 +582,7 @@ export function UnifiedCommitView({
     })
     ro.observe(root)
     return () => ro.disconnect()
-  }, [selectedCommit])
+  }, [selectedCommit, diffPanelCollapsed, rightPanelCollapsed])
 
   // 当前分支 HEAD 历史提交总数（切换仓库/分支时重新查询）
   useEffect(() => {
@@ -1089,7 +1171,7 @@ export function UnifiedCommitView({
     }
   }, [])
 
-  // 优化的文件项组件 - 使用更严格的 memo 比较
+  // 文件项：首行文件名 + 状态/增删，次行目录路径，减少单行截断与卡片高度
   const FileItem = memo(({ file, isSelected, onSelect, getStatusIcon, getStatusColor, getStatusText }: {
     file: FileChange
     isSelected: boolean
@@ -1102,43 +1184,56 @@ export function UnifiedCommitView({
       onSelect(file.path)
     }, [onSelect, file.path])
 
+    const { dir, base } = splitRepoPath(file.path)
+
     return (
       <div
-        className={`border rounded p-2 cursor-pointer transition-colors ${
+        className={cn(
+          'cursor-pointer rounded-md border px-2 py-1.5 transition-colors',
           isSelected
-            ? 'bg-accent border-primary'
-            : 'hover:bg-accent'
-        }`}
+            ? 'border-primary bg-accent shadow-sm ring-1 ring-primary/20'
+            : 'border-border/35 hover:border-border/50 hover:bg-accent/50'
+        )}
         onClick={handleClick}
+        title={file.path}
       >
-            <div className="flex items-start justify-between">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1">
-              {getStatusIcon(file.status)}
-              <span className="text-sm font-medium truncate" title={file.path}>
-                {file.path}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Badge 
-                variant="outline" 
-                className={`text-xs ${getStatusColor(file.status)}`}
+        <div className="flex gap-2">
+          <div className="shrink-0 pt-0.5">{getStatusIcon(file.status)}</div>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-start justify-between gap-2">
+              <p
+                className="min-w-0 truncate text-sm font-medium leading-tight text-foreground"
+                title={file.path}
               >
-                {getStatusText(file.status)}
-              </Badge>
-              {(file.additions > 0 || file.deletions > 0) && (
-                <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                  <span className="text-green-600 dark:text-green-400">+{file.additions}</span>
-                  <span className="text-red-600 dark:text-red-400">-{file.deletions}</span>
-                </div>
-              )}
+                {base}
+              </p>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <span
+                  className={cn(
+                    'inline-flex whitespace-nowrap rounded border px-1 py-0.5 text-[10px] font-semibold leading-none',
+                    getStatusColor(file.status)
+                  )}
+                >
+                  {getStatusText(file.status)}
+                </span>
+                {(file.additions > 0 || file.deletions > 0) && (
+                  <span className="tabular-nums text-[11px]">
+                    <span className="text-green-700 dark:text-green-400">+{file.additions}</span>
+                    <span className="text-muted-foreground"> </span>
+                    <span className="text-red-700 dark:text-red-400">-{file.deletions}</span>
+                  </span>
+                )}
+              </div>
             </div>
+            {dir ? (
+              <p
+                className="mt-0.5 truncate text-[11px] leading-tight text-muted-foreground"
+                title={file.path}
+              >
+                {dir}
+              </p>
+            ) : null}
           </div>
-          {isSelected && (
-            <div className="ml-2">
-              <div className="w-2 h-2 bg-primary rounded-full"></div>
-            </div>
-          )}
         </div>
       </div>
     )
@@ -1159,8 +1254,11 @@ export function UnifiedCommitView({
       className="flex h-full min-h-0 min-w-0 flex-1 flex-row overflow-hidden"
     >
       <div
-        style={{ width: panes.list }}
-        className="flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden"
+        style={rightPanelCollapsed ? undefined : { width: panes.list }}
+        className={cn(
+          'flex min-h-0 min-w-0 flex-col overflow-hidden',
+          rightPanelCollapsed ? 'min-w-0 flex-1' : 'shrink-0'
+        )}
       >
         <Card className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border-border/45 bg-card shadow-none dark:border-white/[0.07] dark:bg-zinc-950/40">
           <CardHeader className="space-y-1.5 border-b border-border/35 bg-muted/15 px-2.5 py-2 sm:px-3 dark:bg-muted/5">
@@ -1226,17 +1324,44 @@ export function UnifiedCommitView({
                     </select>
                   )}
               </div>
-              {hasActiveFilters && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground"
-                  onClick={clearAllFilters}
-                >
-                  清空筛选
-                </Button>
-              )}
+              <div className="flex shrink-0 items-center gap-1">
+                {!rightPanelCollapsed ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 shrink-0 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => setRightPanelCollapsed(true)}
+                    title="隐藏右侧（提交摘要、文件列表、差异），仅保留本列表"
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
+                    <span className="hidden sm:inline">仅列表</span>
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-6 shrink-0 gap-1 px-2 text-xs"
+                    onClick={() => setRightPanelCollapsed(false)}
+                    title="恢复右侧提交详情与变更"
+                  >
+                    <ChevronRight className="h-3.5 w-3.5" aria-hidden />
+                    <span className="hidden sm:inline">显示详情</span>
+                  </Button>
+                )}
+                {hasActiveFilters && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground"
+                    onClick={clearAllFilters}
+                  >
+                    清空筛选
+                  </Button>
+                )}
+              </div>
             </div>
             {commitLogScope === 'all' && (
               <details className="text-[10px] leading-tight text-muted-foreground">
@@ -1681,6 +1806,8 @@ export function UnifiedCommitView({
           </CardContent>
         </Card>
       </div>
+      {!rightPanelCollapsed && (
+        <>
       <VerticalResizeHandle
         onDrag={onDragList}
         onDragEnd={persistPanes}
@@ -1705,18 +1832,40 @@ export function UnifiedCommitView({
             <div className="flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden">
             {/* 文件变更 */}
             <div
-              style={{ width: panes.file }}
-              className="flex min-h-0 shrink-0 flex-col overflow-hidden"
+              style={diffPanelCollapsed ? undefined : { width: panes.file }}
+              className={cn(
+                'flex min-h-0 flex-col overflow-hidden',
+                diffPanelCollapsed ? 'min-w-0 flex-1' : 'shrink-0'
+              )}
             >
-              <Card className="flex h-full min-h-0 flex-col border-border/80">
-                <CardHeader className="flex-shrink-0 py-1">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <FileText className="h-4 w-4" />
-                    文件变更
-                    {commitFiles.length > 0 && ` (${commitFiles.length})`}
-                  </CardTitle>
+              <Card className="flex h-full min-h-0 flex-col border-border/45 dark:border-white/[0.07]">
+                <CardHeader className="flex-shrink-0 border-b border-border/35 py-2 pl-2.5 pr-2 sm:pl-3">
+                  <div className="flex min-w-0 items-center justify-between gap-2">
+                    <CardTitle className="flex min-w-0 items-center gap-2 text-sm font-semibold">
+                      <FileText className="h-3.5 w-3.5 shrink-0 opacity-80" aria-hidden />
+                      <span className="truncate">文件变更</span>
+                      {commitFiles.length > 0 && (
+                        <span className="shrink-0 font-normal text-muted-foreground">
+                          ({commitFiles.length})
+                        </span>
+                      )}
+                    </CardTitle>
+                    {diffPanelCollapsed && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 shrink-0 gap-1 px-2 text-xs"
+                        onClick={() => setDiffPanelCollapsed(false)}
+                        title="展开右侧代码差异面板"
+                      >
+                        <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
+                        显示差异
+                      </Button>
+                    )}
+                  </div>
                 </CardHeader>
-                <CardContent className="min-h-0 flex-1 overflow-hidden py-1">
+                <CardContent className="min-h-0 flex-1 overflow-hidden px-2 py-1.5 sm:px-2.5">
                   {loadingFiles ? (
                     <div className="flex items-center justify-center py-8">
                       <Loader2 className="h-6 w-6 animate-spin" />
@@ -1745,6 +1894,8 @@ export function UnifiedCommitView({
               </Card>
             </div>
 
+            {!diffPanelCollapsed && (
+              <>
             <VerticalResizeHandle
               onDrag={onDragInner}
               onDragEnd={persistPanes}
@@ -1754,11 +1905,25 @@ export function UnifiedCommitView({
             {/* 代码差异 */}
             <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
               <Card className="flex h-full min-h-0 flex-col border-border/80">
-                <CardHeader className="flex-shrink-0 py-1">
-                  <div className="flex min-w-0 items-center justify-between">
-                    <CardTitle className="truncate text-base" title={selectedFile || undefined}>
+                <CardHeader className="flex-shrink-0 py-1 sm:pr-2">
+                  <div className="flex min-w-0 items-center justify-between gap-2">
+                    <CardTitle
+                      className="min-w-0 flex-1 truncate text-base"
+                      title={selectedFile || undefined}
+                    >
                       {selectedFile ? selectedFile : '代码差异'}
                     </CardTitle>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 shrink-0 gap-0.5 px-2 text-xs text-muted-foreground hover:text-foreground"
+                      onClick={() => setDiffPanelCollapsed(true)}
+                      title="收起代码差异区，便于查看提交记录与文件列表"
+                    >
+                      收起差异
+                      <ChevronRight className="h-3.5 w-3.5" aria-hidden />
+                    </Button>
                 {/* {selectedFile && commitFiles.length > 1 && (
                 <div className="flex items-center gap-2">
                   <Button
@@ -1792,7 +1957,7 @@ export function UnifiedCommitView({
                   </span>
                 </div>
               )} */}
-            </div>
+                  </div>
                 </CardHeader>
                 <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden py-1">
                   {!loadingFiles && commitFiles.length === 0 ? (
@@ -1835,10 +2000,14 @@ export function UnifiedCommitView({
                 </CardContent>
               </Card>
             </div>
+              </>
+            )}
             </div>
           </div>
         )}
       </div>
+        </>
+      )}
 
       {commitContextMenu &&
         typeof document !== 'undefined' &&
