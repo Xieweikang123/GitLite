@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { addDays, format, startOfWeek, subDays } from 'date-fns'
 import {
   AlertCircle,
@@ -36,6 +37,33 @@ const REPORT_TABS: { id: ReportTab; label: string; Icon: React.ComponentType<{ c
 
 const HEAT_WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
 
+/** 按仓库 / 范围 / 维度区分；切换仓库再切回时可命中缓存，避免重复计算 */
+const DIFF_AGGREGATE_PATH_LIMIT = 50
+const statsResultCache = {
+  authors: new Map<string, AuthorCommitStat[]>(),
+  activity: new Map<string, TimeBucketStat[]>(),
+  /** 热力图固定按日 */
+  heatmap: new Map<string, TimeBucketStat[]>(),
+  diff: new Map<string, DiffAggregateStats>(),
+}
+
+function cacheKeyScope(repo: string, scope: 'head' | 'all', rev: string | null | undefined) {
+  return `${repo}|${scope}|${rev ?? ''}`
+}
+
+function cacheKeyActivity(
+  repo: string,
+  scope: 'head' | 'all',
+  rev: string | null | undefined,
+  gran: 'day' | 'week' | 'month'
+) {
+  return `${repo}|${scope}|${rev ?? ''}|${gran}`
+}
+
+function cacheKeyDiff(repo: string, scope: 'head' | 'all', rev: string | null | undefined, pathLimit: number) {
+  return `${repo}|${scope}|${rev ?? ''}|p${pathLimit}`
+}
+
 interface AuthorStatsPanelProps {
   repoPath: string | undefined
   branchNames: string[]
@@ -65,7 +93,7 @@ export function AuthorStatsPanel({
   const [statsScope, setStatsScope] = useState<'head' | 'all'>('head')
   const [statsRev, setStatsRev] = useState<string | null>(null)
   const [reportTab, setReportTab] = useState<ReportTab>('authors')
-  const [timeGran, setTimeGran] = useState<TimeGranularity>('week')
+  const [timeGran, setTimeGran] = useState<TimeGranularity>('day')
 
   const [authorRows, setAuthorRows] = useState<AuthorCommitStat[]>([])
   const [activityRows, setActivityRows] = useState<TimeBucketStat[]>([])
@@ -74,6 +102,8 @@ export function AuthorStatsPanel({
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** diff 聚合统计进度（与 Tauri 事件 diff-aggregate-progress 同步） */
+  const [diffProgress, setDiffProgress] = useState<{ current: number; total: number } | null>(null)
   const diffCacheKeyRef = useRef<string>('')
   const diffDataRef = useRef<DiffAggregateStats | null>(null)
 
@@ -81,6 +111,43 @@ export function AuthorStatsPanel({
     diffCacheKeyRef.current = ''
     diffDataRef.current = null
     setDiffAgg(null)
+    setDiffProgress(null)
+  }, [repoPath])
+
+  useEffect(() => {
+    if (reportTab !== 'lines' && reportTab !== 'paths') {
+      setDiffProgress(null)
+    }
+  }, [reportTab])
+
+  useEffect(() => {
+    if (!repoPath) return
+    let cancelled = false
+    let unlisten: UnlistenFn | undefined
+    void (async () => {
+      const u = await listen<{
+        repo_path?: string
+        current?: number
+        total?: number
+        phase?: string
+      }>('diff-aggregate-progress', (event) => {
+        const p = event.payload
+        if (!p || p.repo_path !== repoPath) return
+        setDiffProgress({
+          current: p.current ?? 0,
+          total: p.total ?? 0,
+        })
+      })
+      if (cancelled) {
+        u()
+        return
+      }
+      unlisten = u
+    })()
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
   }, [repoPath])
 
   const branchNamesSorted = useMemo(
@@ -100,6 +167,9 @@ export function AuthorStatsPanel({
     async (force = false) => {
       if (!repoPath) return
       const diffKey = `${repoPath}|${scopeArgs.scope}|${scopeArgs.rev ?? ''}`
+      const scope = scopeArgs.scope
+      const rev = scopeArgs.rev
+
       if (
         !force &&
         (reportTab === 'lines' || reportTab === 'paths') &&
@@ -109,29 +179,72 @@ export function AuthorStatsPanel({
         return
       }
 
+      if (!force) {
+        if (reportTab === 'authors') {
+          const k = cacheKeyScope(repoPath, scope, rev)
+          const hit = statsResultCache.authors.get(k)
+          if (hit) {
+            setAuthorRows(hit)
+            setError(null)
+            return
+          }
+        } else if (reportTab === 'timeline') {
+          const k = cacheKeyActivity(repoPath, scope, rev, timeGran)
+          const hit = statsResultCache.activity.get(k)
+          if (hit) {
+            setActivityRows(hit)
+            setError(null)
+            return
+          }
+        } else if (reportTab === 'heatmap') {
+          const k = cacheKeyActivity(repoPath, scope, rev, 'day')
+          const hit = statsResultCache.heatmap.get(k)
+          if (hit) {
+            setHeatmapDays(hit)
+            setError(null)
+            return
+          }
+        } else {
+          const kDiff = cacheKeyDiff(repoPath, scope, rev, DIFF_AGGREGATE_PATH_LIMIT)
+          const hit = statsResultCache.diff.get(kDiff)
+          if (hit) {
+            setDiffAgg(hit)
+            diffDataRef.current = hit
+            diffCacheKeyRef.current = diffKey
+            setError(null)
+            return
+          }
+        }
+      }
+
       setLoading(true)
       setError(null)
       try {
         if (reportTab === 'authors') {
           setAuthorRows([])
-          const data = await getAuthorCommitStats(scopeArgs.scope, scopeArgs.rev)
+          const data = await getAuthorCommitStats(scope, rev)
+          const k = cacheKeyScope(repoPath, scope, rev)
+          statsResultCache.authors.set(k, data)
           setAuthorRows(data)
         } else if (reportTab === 'timeline') {
           setActivityRows([])
-          const data = await getCommitActivityStats(
-            timeGran,
-            scopeArgs.scope,
-            scopeArgs.rev
-          )
+          const data = await getCommitActivityStats(timeGran, scope, rev)
+          const k = cacheKeyActivity(repoPath, scope, rev, timeGran)
+          statsResultCache.activity.set(k, data)
           setActivityRows(data)
         } else if (reportTab === 'heatmap') {
           setHeatmapDays([])
-          const data = await getCommitActivityStats('day', scopeArgs.scope, scopeArgs.rev)
+          const data = await getCommitActivityStats('day', scope, rev)
+          const k = cacheKeyActivity(repoPath, scope, rev, 'day')
+          statsResultCache.heatmap.set(k, data)
           setHeatmapDays(data)
         } else {
           setDiffAgg(null)
           diffDataRef.current = null
-          const data = await getDiffAggregateStats(scopeArgs.scope, scopeArgs.rev, 50)
+          setDiffProgress({ current: 0, total: 0 })
+          const data = await getDiffAggregateStats(scope, rev, DIFF_AGGREGATE_PATH_LIMIT)
+          const kDiff = cacheKeyDiff(repoPath, scope, rev, DIFF_AGGREGATE_PATH_LIMIT)
+          statsResultCache.diff.set(kDiff, data)
           diffCacheKeyRef.current = diffKey
           diffDataRef.current = data
           setDiffAgg(data)
@@ -143,9 +256,13 @@ export function AuthorStatsPanel({
         setDiffAgg(null)
         diffDataRef.current = null
         diffCacheKeyRef.current = ''
+        setDiffProgress(null)
         setError(e instanceof Error ? e.message : String(e))
       } finally {
         setLoading(false)
+        if (reportTab === 'lines' || reportTab === 'paths') {
+          setDiffProgress(null)
+        }
       }
     },
     [
@@ -279,6 +396,7 @@ export function AuthorStatsPanel({
             </summary>
             <p className="mt-2 border-t border-border/40 pt-2 leading-relaxed text-muted-foreground">
               时间线与热力图按提交作者时区换算日期。合并提交的 diff 仅相对第一父提交；全量 diff 在大型仓库可能较慢，可稍后重试。
+              各 Tab 的统计结果会在内存中按「仓库 + 范围」做缓存，切换仓库再打开同一仓库时可立即复用；若刚有新的提交或需最新数据，请点「刷新」。
             </p>
           </details>
 
@@ -437,6 +555,7 @@ export function AuthorStatsPanel({
               reportTab={reportTab}
               loading={loading}
               diffAgg={diffAgg}
+              diffProgress={diffProgress}
             />
           )}
         </CardContent>
@@ -614,6 +733,20 @@ function TimelineSection({
     dragRef.current.active = false
     setPointerDragging(false)
   }, [])
+
+  /** 默认将滚动条停在「最近时间」一侧（通常为图表右端） */
+  useEffect(() => {
+    if (loading || rows.length === 0) return
+    const el = scrollerRef.current
+    if (!el) return
+    const focusLatest = () => {
+      el.scrollLeft = Math.max(0, el.scrollWidth - el.clientWidth)
+    }
+    const id = requestAnimationFrame(() => {
+      requestAnimationFrame(focusLatest)
+    })
+    return () => cancelAnimationFrame(id)
+  }, [rows, loading, timeGran])
 
   if (loading && rows.length === 0) {
     return (
@@ -817,18 +950,44 @@ function DiffSection({
   reportTab,
   loading,
   diffAgg,
+  diffProgress,
 }: {
   reportTab: 'lines' | 'paths'
   loading: boolean
   diffAgg: DiffAggregateStats | null
+  diffProgress: { current: number; total: number } | null
 }) {
+  const pct =
+    diffProgress != null && diffProgress.total > 0
+      ? Math.min(100, Math.round((diffProgress.current / diffProgress.total) * 100))
+      : null
+
   if (loading && !diffAgg) {
     return (
-      <div className="flex min-h-[14rem] flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border bg-muted/15 py-12 text-center">
+      <div className="flex min-h-[14rem] flex-col items-center justify-center gap-4 rounded-xl border border-dashed border-border bg-muted/15 px-6 py-12 text-center">
         <Loader2 className="h-8 w-8 animate-spin text-primary/70" aria-hidden />
-        <p className="max-w-xs text-sm text-muted-foreground">
+        <p className="max-w-sm text-sm text-muted-foreground">
           正在对历史提交逐条 diff，大型仓库可能需要数十秒…
         </p>
+        {diffProgress != null && diffProgress.total > 0 ? (
+          <div className="w-full max-w-md space-y-2">
+            <div className="flex items-baseline justify-between gap-2 text-xs text-muted-foreground">
+              <span>处理进度</span>
+              <span className="tabular-nums font-medium text-foreground">
+                {diffProgress.current} / {diffProgress.total} 个提交
+                {pct != null ? ` · ${pct}%` : ''}
+              </span>
+            </div>
+            <div className="h-2.5 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-primary/75 to-primary transition-[width] duration-150 ease-out"
+                style={{ width: pct != null ? `${pct}%` : '0%' }}
+              />
+            </div>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">正在统计提交总数并建立 diff…</p>
+        )}
       </div>
     )
   }

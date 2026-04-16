@@ -218,11 +218,21 @@ fn sorted_time_bucket_vec(map: HashMap<String, u64>) -> Vec<TimeBucketStat> {
     v
 }
 
-fn author_line_and_path_stats_for_scope(
+fn author_line_and_path_stats_for_scope<F>(
     repo: &Repository,
     scope: CommitLogScope,
     path_limit: usize,
-) -> Result<(Vec<AuthorLineStat>, Vec<PathTouchStat>)> {
+    mut on_progress: F,
+) -> Result<(Vec<AuthorLineStat>, Vec<PathTouchStat>)>
+where
+    F: FnMut(u32, u32),
+{
+    let total = count_commits_scoped(repo, scope.clone())? as u32;
+    on_progress(0, total);
+    if total == 0 {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
     let mut revwalk = repo
         .revwalk()
         .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
@@ -234,7 +244,15 @@ fn author_line_and_path_stats_for_scope(
     let mut author_lines: HashMap<String, (String, String, u64, u64, u64)> = HashMap::new();
     let mut path_touches: HashMap<String, u64> = HashMap::new();
 
+    let step = (total / 120).max(1);
+    let mut idx: u32 = 0;
+
     for oid_result in revwalk {
+        idx += 1;
+        if total > 0 && (idx == 1 || idx == total || idx % step == 0) {
+            on_progress(idx, total);
+        }
+
         let oid = oid_result.map_err(|e| anyhow::anyhow!("Failed to walk commits: {}", e))?;
         let commit = match repo.find_commit(oid) {
             Ok(c) => c,
@@ -288,6 +306,8 @@ fn author_line_and_path_stats_for_scope(
             None,
         );
     }
+
+    on_progress(total, total);
 
     let mut authors: Vec<AuthorLineStat> = author_lines
         .into_values()
@@ -2085,17 +2105,47 @@ async fn get_commit_activity_stats(
 
 #[tauri::command]
 async fn get_diff_aggregate_stats(
+    app: tauri::AppHandle,
     repo_path: String,
     scope: Option<String>,
     rev: Option<String>,
     path_limit: Option<u32>,
 ) -> Result<DiffAggregateStats, String> {
-    let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
     let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
     let lim = path_limit.unwrap_or(40).max(1).min(200) as usize;
-    let (authors, paths) = author_line_and_path_stats_for_scope(&repo, s, lim)
+    let repo_path_buf = repo_path.clone();
+    let app_clone = app.clone();
+
+    let _ = app.emit_all(
+        "diff-aggregate-progress",
+        serde_json::json!({
+            "repo_path": repo_path_buf,
+            "phase": "start",
+            "current": 0u32,
+            "total": 0u32,
+        }),
+    );
+
+    tokio::task::spawn_blocking(move || {
+        let repo =
+            Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+
+        let (authors, paths) = author_line_and_path_stats_for_scope(&repo, s, lim, |cur, tot| {
+            let _ = app_clone.emit_all(
+                "diff-aggregate-progress",
+                serde_json::json!({
+                    "repo_path": repo_path.clone(),
+                    "phase": "diff",
+                    "current": cur,
+                    "total": tot,
+                }),
+            );
+        })
         .map_err(|e| format!("统计增删行与路径失败: {}", e))?;
-    Ok(DiffAggregateStats { authors, paths })
+        Ok(DiffAggregateStats { authors, paths })
+    })
+    .await
+    .map_err(|e| format!("任务已中断: {}", e))?
 }
 
 #[tauri::command]
