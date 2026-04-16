@@ -227,19 +227,12 @@ fn author_line_and_path_stats_for_scope<F>(
 where
     F: FnMut(u32, u32),
 {
-    let total = count_commits_scoped(repo, scope.clone())? as u32;
+    let oids = collect_revwalk_oids_for_scope(repo, scope)?;
+    let total = oids.len() as u32;
     on_progress(0, total);
     if total == 0 {
         return Ok((Vec::new(), Vec::new()));
     }
-
-    let mut revwalk = repo
-        .revwalk()
-        .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
-    revwalk
-        .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
-        .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
-    revwalk_push_scope(repo, &mut revwalk, scope)?;
 
     let mut author_lines: HashMap<String, (String, String, u64, u64, u64)> = HashMap::new();
     let mut path_touches: HashMap<String, u64> = HashMap::new();
@@ -247,13 +240,12 @@ where
     let step = (total / 120).max(1);
     let mut idx: u32 = 0;
 
-    for oid_result in revwalk {
+    for oid in oids {
         idx += 1;
         if total > 0 && (idx == 1 || idx == total || idx % step == 0) {
             on_progress(idx, total);
         }
 
-        let oid = oid_result.map_err(|e| anyhow::anyhow!("Failed to walk commits: {}", e))?;
         let commit = match repo.find_commit(oid) {
             Ok(c) => c,
             Err(_) => continue,
@@ -1708,24 +1700,28 @@ async fn open_external_url(url: String) -> Result<(), String> {
 // 打开 Git 仓库
 #[tauri::command]
 async fn open_repository(path: String) -> Result<RepoInfo, String> {
-    let repo = Repository::open(&path)
-        .map_err(|e| format!("无法打开仓库：{}", e))?;
-    
-    // 清理错误的代理配置（https://...）
-    if let Ok(cleaned_keys) = cleanup_invalid_proxy_config(&repo) {
-        if !cleaned_keys.is_empty() {
-            log_message("INFO", &format!("已清理错误的代理配置: {:?}", cleaned_keys));
+    let path_for_repo = path.clone();
+    let repo_info = tokio::task::spawn_blocking(move || {
+        let repo = Repository::open(&path_for_repo)
+            .map_err(|e| format!("无法打开仓库：{}", e))?;
+
+        // 清理错误的代理配置（https://...）
+        if let Ok(cleaned_keys) = cleanup_invalid_proxy_config(&repo) {
+            if !cleaned_keys.is_empty() {
+                log_message("INFO", &format!("已清理错误的代理配置: {:?}", cleaned_keys));
+            }
         }
-    }
-    
-    let repo_info = get_repository_info(&repo, &path)
-        .map_err(|e| format!("无法读取仓库信息：{}", e))?;
-    
-    // 保存到最近打开的仓库列表
+
+        get_repository_info(&repo, &path_for_repo).map_err(|e| format!("无法读取仓库信息：{}", e))
+    })
+    .await
+    .map_err(|e| format!("任务已中断: {}", e))??;
+
+    // 保存到最近打开的仓库列表（异步 I/O，保留在阻塞段之外）
     if let Err(e) = save_recent_repo(path).await {
         eprintln!("Failed to save recent repo: {}", e);
     }
-    
+
     Ok(repo_info)
 }
 
@@ -2031,6 +2027,28 @@ fn count_commits_scoped(repo: &Repository, scope: CommitLogScope) -> Result<usiz
     Ok(n)
 }
 
+/// 单次 revwalk 收集 scope 内全部提交 OID（排序与 `count_commits_scoped` / 分页一致）。
+/// 用于增删行统计等需知总数再逐条处理的任务，避免「先全量 count 再全量 diff」对历史遍历两遍。
+fn collect_revwalk_oids_for_scope(
+    repo: &Repository,
+    scope: CommitLogScope,
+) -> Result<Vec<Oid>> {
+    let mut revwalk = repo
+        .revwalk()
+        .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
+    revwalk
+        .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+        .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
+    revwalk_push_scope(repo, &mut revwalk, scope)?;
+    let mut oids = Vec::new();
+    for oid_result in revwalk {
+        oids.push(
+            oid_result.map_err(|e| anyhow::anyhow!("Failed to get OID: {}", e))?,
+        );
+    }
+    Ok(oids)
+}
+
 /// 在指定历史范围内按作者（邮箱优先去重）统计提交次数，结果按次数降序。
 fn author_commit_stats_for_scope(repo: &Repository, scope: CommitLogScope) -> Result<Vec<AuthorCommitStat>> {
     let mut revwalk = repo
@@ -2083,9 +2101,14 @@ async fn get_author_commit_stats(
     scope: Option<String>,
     rev: Option<String>,
 ) -> Result<Vec<AuthorCommitStat>, String> {
-    let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
     let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
-    author_commit_stats_for_scope(&repo, s).map_err(|e| format!("统计作者提交失败: {}", e))
+    tokio::task::spawn_blocking(move || {
+        let repo =
+            Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+        author_commit_stats_for_scope(&repo, s).map_err(|e| format!("统计作者提交失败: {}", e))
+    })
+    .await
+    .map_err(|e| format!("任务已中断: {}", e))?
 }
 
 #[tauri::command]
@@ -2095,12 +2118,17 @@ async fn get_commit_activity_stats(
     rev: Option<String>,
     granularity: String,
 ) -> Result<Vec<TimeBucketStat>, String> {
-    let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
     let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
     let g = granularity.to_lowercase();
-    let map = walk_scope_time_buckets(&repo, s, g.as_str())
-        .map_err(|e| format!("统计时间分布失败: {}", e))?;
-    Ok(sorted_time_bucket_vec(map))
+    tokio::task::spawn_blocking(move || {
+        let repo =
+            Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+        let map = walk_scope_time_buckets(&repo, s, g.as_str())
+            .map_err(|e| format!("统计时间分布失败: {}", e))?;
+        Ok(sorted_time_bucket_vec(map))
+    })
+    .await
+    .map_err(|e| format!("任务已中断: {}", e))?
 }
 
 #[tauri::command]
@@ -2154,10 +2182,16 @@ async fn get_commit_count_head(
     scope: Option<String>,
     rev: Option<String>,
 ) -> Result<u64, String> {
-    let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
     let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
-    let n = count_commits_scoped(&repo, s).map_err(|e| format!("Failed to count commits: {}", e))?;
-    Ok(n as u64)
+    tokio::task::spawn_blocking(move || {
+        let repo =
+            Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+        let n =
+            count_commits_scoped(&repo, s).map_err(|e| format!("Failed to count commits: {}", e))?;
+        Ok(n as u64)
+    })
+    .await
+    .map_err(|e| format!("任务已中断: {}", e))?
 }
 
 // 获取分页提交历史
@@ -2169,13 +2203,16 @@ async fn get_commits_paginated(
     scope: Option<String>,
     rev: Option<String>,
 ) -> Result<Vec<CommitInfo>, String> {
-    let repo = Repository::open(&repo_path)
-        .map_err(|e| format!("Failed to open repository: {}", e))?;
     let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
-    let commits = get_commit_history_paginated(&repo, limit, offset, s)
-        .map_err(|e| format!("Failed to get commit history: {}", e))?;
-
-    Ok(commits)
+    tokio::task::spawn_blocking(move || {
+        let repo = Repository::open(&repo_path)
+            .map_err(|e| format!("Failed to open repository: {}", e))?;
+        let commits = get_commit_history_paginated(&repo, limit, offset, s)
+            .map_err(|e| format!("Failed to get commit history: {}", e))?;
+        Ok(commits)
+    })
+    .await
+    .map_err(|e| format!("任务已中断: {}", e))?
 }
 
 // 全仓库历史搜索：按关键词匹配 message / author / short_id，返回最多 limit 条
@@ -2241,12 +2278,17 @@ async fn search_commits(
     rev: Option<String>,
 ) -> Result<Vec<CommitInfo>, String> {
     let limit = limit.unwrap_or(500);
-    let repo = Repository::open(&repo_path)
-        .map_err(|e| format!("Failed to open repository: {}", e))?;
     let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
-    let commits = get_commit_history_search(&repo, query.trim(), limit, s)
-        .map_err(|e| format!("Search failed: {}", e))?;
-    Ok(commits)
+    let query = query.trim().to_string();
+    tokio::task::spawn_blocking(move || {
+        let repo = Repository::open(&repo_path)
+            .map_err(|e| format!("Failed to open repository: {}", e))?;
+        let commits = get_commit_history_search(&repo, query.as_str(), limit, s)
+            .map_err(|e| format!("Search failed: {}", e))?;
+        Ok(commits)
+    })
+    .await
+    .map_err(|e| format!("任务已中断: {}", e))?
 }
 
 fn walk_tree_collect_paths(
@@ -2355,42 +2397,48 @@ async fn get_commits_branch_labels(
     repo_path: String,
     commit_ids: Vec<String>,
 ) -> Result<Vec<CommitBranchLabels>, String> {
-    let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
-    let tips: Vec<_> = collect_branch_tip_pairs(&repo)?
-        .into_iter()
-        .filter(|(_, _, is_remote)| *is_remote)
-        .collect();
-    let mut out = Vec::with_capacity(commit_ids.len());
-    for id_str in commit_ids {
-        let Ok(oid) = Oid::from_str(&id_str) else {
+    tokio::task::spawn_blocking(move || {
+        let repo =
+            Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+        let tips: Vec<_> = collect_branch_tip_pairs(&repo)?
+            .into_iter()
+            .filter(|(_, _, is_remote)| *is_remote)
+            .collect();
+        let mut out = Vec::with_capacity(commit_ids.len());
+        for id_str in commit_ids {
+            let Ok(oid) = Oid::from_str(&id_str) else {
+                out.push(CommitBranchLabels {
+                    commit_id: id_str,
+                    branches: vec![],
+                });
+                continue;
+            };
+            let mut branches: Vec<BranchOnCommit> = Vec::new();
+            for (name, tip_oid, is_remote) in &tips {
+                let on_branch = *tip_oid == oid
+                    || repo.graph_descendant_of(*tip_oid, oid).unwrap_or(false);
+                if on_branch {
+                    branches.push(BranchOnCommit {
+                        name: name.clone(),
+                        is_remote: *is_remote,
+                    });
+                }
+            }
+            branches.sort_by(|a, b| {
+                a.is_remote
+                    .cmp(&b.is_remote)
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+            branches.dedup_by(|a, b| a.name == b.name && a.is_remote == b.is_remote);
             out.push(CommitBranchLabels {
                 commit_id: id_str,
-                branches: vec![],
+                branches,
             });
-            continue;
-        };
-        let mut branches: Vec<BranchOnCommit> = Vec::new();
-        for (name, tip_oid, is_remote) in &tips {
-            let on_branch = *tip_oid == oid || repo.graph_descendant_of(*tip_oid, oid).unwrap_or(false);
-            if on_branch {
-                branches.push(BranchOnCommit {
-                    name: name.clone(),
-                    is_remote: *is_remote,
-                });
-            }
         }
-        branches.sort_by(|a, b| {
-            a.is_remote
-                .cmp(&b.is_remote)
-                .then_with(|| a.name.cmp(&b.name))
-        });
-        branches.dedup_by(|a, b| a.name == b.name && a.is_remote == b.is_remote);
-        out.push(CommitBranchLabels {
-            commit_id: id_str,
-            branches,
-        });
-    }
-    Ok(out)
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("任务已中断: {}", e))?
 }
 
 // 切换分支
