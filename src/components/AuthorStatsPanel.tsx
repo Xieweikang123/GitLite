@@ -1,6 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { addDays, format, startOfWeek, subDays } from 'date-fns'
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
+import {
+  AlertCircle,
+  BarChart3,
+  CalendarDays,
+  FileStack,
+  Flame,
+  GitCompareArrows,
+  Info,
+  Loader2,
+  RefreshCw,
+  Users,
+} from 'lucide-react'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
 import { Button } from './ui/button'
 import { cn } from '../lib/utils'
 import type {
@@ -12,7 +24,17 @@ import type {
 } from '../types/git'
 
 type ReportTab = 'authors' | 'timeline' | 'heatmap' | 'lines' | 'paths'
-type TimeGranularity = 'week' | 'month'
+type TimeGranularity = 'day' | 'week' | 'month'
+
+const REPORT_TABS: { id: ReportTab; label: string; Icon: React.ComponentType<{ className?: string }> }[] = [
+  { id: 'authors', label: '作者', Icon: Users },
+  { id: 'timeline', label: '时间趋势', Icon: BarChart3 },
+  { id: 'heatmap', label: '贡献热力', Icon: Flame },
+  { id: 'lines', label: '增删行', Icon: GitCompareArrows },
+  { id: 'paths', label: '文件热度', Icon: FileStack },
+]
+
+const HEAT_WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
 
 interface AuthorStatsPanelProps {
   repoPath: string | undefined
@@ -52,7 +74,6 @@ export function AuthorStatsPanel({
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  /** 避免在「增删行」与「文件热度」之间切换时重复整库 diff */
   const diffCacheKeyRef = useRef<string>('')
   const diffDataRef = useRef<DiffAggregateStats | null>(null)
 
@@ -75,70 +96,69 @@ export function AuthorStatsPanel({
     [statsScope, statsRev]
   )
 
-  const runLoad = useCallback(async (force = false) => {
-    if (!repoPath) return
-    const diffKey = `${repoPath}|${scopeArgs.scope}|${scopeArgs.rev ?? ''}`
-    if (
-      !force &&
-      (reportTab === 'lines' || reportTab === 'paths') &&
-      diffCacheKeyRef.current === diffKey &&
-      diffDataRef.current
-    ) {
-      return
-    }
+  const runLoad = useCallback(
+    async (force = false) => {
+      if (!repoPath) return
+      const diffKey = `${repoPath}|${scopeArgs.scope}|${scopeArgs.rev ?? ''}`
+      if (
+        !force &&
+        (reportTab === 'lines' || reportTab === 'paths') &&
+        diffCacheKeyRef.current === diffKey &&
+        diffDataRef.current
+      ) {
+        return
+      }
 
-    setLoading(true)
-    setError(null)
-    try {
-      if (reportTab === 'authors') {
+      setLoading(true)
+      setError(null)
+      try {
+        if (reportTab === 'authors') {
+          setAuthorRows([])
+          const data = await getAuthorCommitStats(scopeArgs.scope, scopeArgs.rev)
+          setAuthorRows(data)
+        } else if (reportTab === 'timeline') {
+          setActivityRows([])
+          const data = await getCommitActivityStats(
+            timeGran,
+            scopeArgs.scope,
+            scopeArgs.rev
+          )
+          setActivityRows(data)
+        } else if (reportTab === 'heatmap') {
+          setHeatmapDays([])
+          const data = await getCommitActivityStats('day', scopeArgs.scope, scopeArgs.rev)
+          setHeatmapDays(data)
+        } else {
+          setDiffAgg(null)
+          diffDataRef.current = null
+          const data = await getDiffAggregateStats(scopeArgs.scope, scopeArgs.rev, 50)
+          diffCacheKeyRef.current = diffKey
+          diffDataRef.current = data
+          setDiffAgg(data)
+        }
+      } catch (e) {
         setAuthorRows([])
-        const data = await getAuthorCommitStats(scopeArgs.scope, scopeArgs.rev)
-        setAuthorRows(data)
-      } else if (reportTab === 'timeline') {
         setActivityRows([])
-        const data = await getCommitActivityStats(
-          timeGran === 'week' ? 'week' : 'month',
-          scopeArgs.scope,
-          scopeArgs.rev
-        )
-        setActivityRows(data)
-      } else if (reportTab === 'heatmap') {
         setHeatmapDays([])
-        const data = await getCommitActivityStats(
-          'day',
-          scopeArgs.scope,
-          scopeArgs.rev
-        )
-        setHeatmapDays(data)
-      } else {
         setDiffAgg(null)
         diffDataRef.current = null
-        const data = await getDiffAggregateStats(scopeArgs.scope, scopeArgs.rev, 50)
-        diffCacheKeyRef.current = diffKey
-        diffDataRef.current = data
-        setDiffAgg(data)
+        diffCacheKeyRef.current = ''
+        setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setLoading(false)
       }
-    } catch (e) {
-      setAuthorRows([])
-      setActivityRows([])
-      setHeatmapDays([])
-      setDiffAgg(null)
-      diffDataRef.current = null
-      diffCacheKeyRef.current = ''
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setLoading(false)
-    }
-  }, [
-    repoPath,
-    reportTab,
-    timeGran,
-    scopeArgs.scope,
-    scopeArgs.rev,
-    getAuthorCommitStats,
-    getCommitActivityStats,
-    getDiffAggregateStats,
-  ])
+    },
+    [
+      repoPath,
+      reportTab,
+      timeGran,
+      scopeArgs.scope,
+      scopeArgs.rev,
+      getAuthorCommitStats,
+      getCommitActivityStats,
+      getDiffAggregateStats,
+    ]
+  )
 
   useEffect(() => {
     void runLoad(false)
@@ -178,12 +198,7 @@ export function AuthorStatsPanel({
   const heatmapCells = useMemo(() => {
     const end = new Date()
     const gridStart = startOfWeek(subDays(end, 364), { weekStartsOn: 1 })
-    const cells: {
-      key: string
-      count: number
-      w: number
-      r: number
-    }[] = []
+    const cells: { key: string; count: number; w: number; r: number }[] = []
     for (let i = 0; ; i++) {
       const day = addDays(gridStart, i)
       if (day > end) break
@@ -200,57 +215,85 @@ export function AuthorStatsPanel({
     return cells
   }, [heatmapMap])
 
+  const weekColumns = Math.max(1, Math.ceil(heatmapCells.length / 7))
+
   const heatScale = (count: number) => {
-    if (count === 0) return 'bg-muted/60 dark:bg-muted/40'
-    if (heatmapMax <= 0) return 'bg-primary/30'
+    if (count === 0) return 'bg-muted/70 dark:bg-muted/50'
+    if (heatmapMax <= 0) return 'bg-emerald-500/35 dark:bg-emerald-400/30'
     const t = count / heatmapMax
-    if (t < 0.25) return 'bg-primary/35 dark:bg-primary/30'
-    if (t < 0.5) return 'bg-primary/55 dark:bg-primary/45'
-    if (t < 0.75) return 'bg-primary/75 dark:bg-primary/60'
-    return 'bg-primary dark:bg-primary/85'
+    if (t < 0.25) return 'bg-emerald-500/40 dark:bg-emerald-400/35'
+    if (t < 0.5) return 'bg-emerald-500/60 dark:bg-emerald-400/50'
+    if (t < 0.75) return 'bg-emerald-500/80 dark:bg-emerald-400/65'
+    return 'bg-emerald-600 dark:bg-emerald-500'
   }
 
   if (!repoPath) {
     return (
-      <div className="flex flex-1 items-center justify-center py-12 text-center text-muted-foreground">
-        请先打开一个 Git 仓库
+      <div className="flex min-h-[18rem] flex-1 items-center justify-center px-4 py-8">
+        <div className="max-w-sm rounded-xl border border-dashed border-border bg-muted/30 px-8 py-10 text-center">
+          <BarChart3 className="mx-auto mb-3 h-10 w-10 text-muted-foreground/60" aria-hidden />
+          <p className="text-sm font-medium text-foreground">尚未打开仓库</p>
+          <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+            请从菜单打开或选择最近的 Git 仓库后查看统计报表。
+          </p>
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 py-2">
-      <Card className="flex min-h-0 flex-1 flex-col border-border/80">
-        <CardHeader className="space-y-3 px-4 pb-2 pt-3 sm:px-5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <CardTitle className="text-base font-semibold">统计与报表</CardTitle>
+    <div className="flex min-h-0 flex-1 flex-col gap-2 pb-3 pt-1 sm:px-0">
+      <Card className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border-border/70 shadow-sm">
+        <CardHeader className="space-y-4 border-b border-border/60 bg-muted/20 px-4 pb-4 pt-4 sm:px-6">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0 space-y-1">
+              <CardTitle className="text-lg font-semibold tracking-tight">统计与报表</CardTitle>
+              <CardDescription className="max-w-2xl text-xs leading-relaxed sm:text-sm">
+                基于当前历史范围聚合；增删行与路径为相对「首父」的 diff。
+              </CardDescription>
+            </div>
             <Button
               type="button"
               variant="outline"
               size="sm"
-              className="h-8 text-xs"
+              className="h-9 shrink-0 gap-1.5 px-3"
               disabled={loading}
               onClick={() => void handleRefresh()}
             >
-              {loading ? '计算中…' : '刷新'}
+              {loading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+              )}
+              <span>{loading ? '计算中…' : '刷新'}</span>
             </Button>
           </div>
-          <p className="text-xs text-muted-foreground">
-            时间线按作者时区显示日期；增删行与路径为「相对首父」的 diff，合并提交只计第一父级。
-            仓库很大时遍历较慢，请耐心等待。
-          </p>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <details className="group rounded-lg border border-border/50 bg-background/50 px-3 py-2 text-xs text-muted-foreground [&_summary]:cursor-pointer [&_summary]:list-none [&_summary]:outline-none [&_summary::-webkit-details-marker]:hidden">
+            <summary className="flex items-center gap-2 font-medium text-foreground/80">
+              <Info className="h-3.5 w-3.5 shrink-0 text-primary/80" aria-hidden />
+              <span>数据说明</span>
+              <span className="text-[10px] text-muted-foreground group-open:opacity-0 sm:text-xs">
+                （点击展开）
+              </span>
+            </summary>
+            <p className="mt-2 border-t border-border/40 pt-2 leading-relaxed text-muted-foreground">
+              时间线与热力图按提交作者时区换算日期。合并提交的 diff 仅相对第一父提交；全量 diff 在大型仓库可能较慢，可稍后重试。
+            </p>
+          </details>
+
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
             <div
-              className="flex h-7 shrink-0 rounded-md border border-input bg-muted/45 p-0.5 dark:bg-muted/25"
+              className="inline-flex h-9 shrink-0 rounded-lg border border-input bg-background p-0.5 shadow-sm"
               role="group"
+              aria-label="统计范围"
             >
               <button
                 type="button"
                 className={cn(
-                  'whitespace-nowrap rounded px-2.5 py-0.5 text-xs font-medium transition-colors',
+                  'rounded-md px-3 py-1 text-xs font-medium transition-all',
                   statsScope === 'head'
-                    ? 'bg-background text-foreground shadow-sm'
+                    ? 'bg-primary/10 text-primary shadow-sm'
                     : 'text-muted-foreground hover:text-foreground'
                 )}
                 onClick={() => setStatsScope('head')}
@@ -260,9 +303,9 @@ export function AuthorStatsPanel({
               <button
                 type="button"
                 className={cn(
-                  'whitespace-nowrap rounded px-2.5 py-0.5 text-xs font-medium transition-colors',
+                  'rounded-md px-3 py-1 text-xs font-medium transition-all',
                   statsScope === 'all'
-                    ? 'bg-background text-foreground shadow-sm ring-1 ring-primary/40'
+                    ? 'bg-primary/10 text-primary shadow-sm'
                     : 'text-muted-foreground hover:text-foreground'
                 )}
                 onClick={() => {
@@ -273,284 +316,531 @@ export function AuthorStatsPanel({
                 全部分支
               </button>
             </div>
+
             {statsScope === 'head' && branchNamesSorted.length > 0 && (
-              <select
-                className="h-7 max-w-[14rem] rounded-md border border-input bg-background px-2 text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                value={statsRev ?? ''}
-                onChange={(e) => {
-                  const v = e.target.value
-                  setStatsRev(v === '' ? null : v)
-                }}
-                aria-label="选择分支历史"
-              >
-                <option value="">当前检出（HEAD）</option>
-                {branchNamesSorted.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-              </select>
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="hidden text-xs text-muted-foreground sm:inline">分支</span>
+                <select
+                  className="h-9 max-w-[min(100%,16rem)] flex-1 rounded-lg border border-input bg-background px-3 text-xs shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  value={statsRev ?? ''}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    setStatsRev(v === '' ? null : v)
+                  }}
+                  aria-label="选择分支历史"
+                >
+                  <option value="">当前检出（HEAD）</option>
+                  {branchNamesSorted.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {reportTab === 'timeline' && (
+              <div className="ml-auto flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">粒度</span>
+                <div className="inline-flex rounded-lg border border-input bg-background p-0.5 shadow-sm">
+                  {(['day', 'week', 'month'] as const).map((g) => (
+                    <button
+                      key={g}
+                      type="button"
+                      className={cn(
+                        'rounded-md px-2.5 py-1 text-xs font-medium transition-all',
+                        timeGran === g
+                          ? 'bg-muted text-foreground shadow-sm'
+                          : 'text-muted-foreground hover:text-foreground'
+                      )}
+                      onClick={() => setTimeGran(g)}
+                    >
+                      {g === 'day' ? '按日' : g === 'week' ? '按周' : '按月'}
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
 
           <div
-            className="flex flex-wrap gap-1 rounded-lg border border-border/60 bg-muted/20 p-1 dark:bg-muted/10"
+            className="-mx-1 flex gap-0.5 overflow-x-auto pb-0.5 pt-0.5 [scrollbar-width:thin]"
             role="tablist"
+            aria-label="报表类型"
           >
-            {(
-              [
-                ['authors', '作者'],
-                ['timeline', '时间趋势'],
-                ['heatmap', '贡献热力'],
-                ['lines', '增删行'],
-                ['paths', '文件热度'],
-              ] as const
-            ).map(([id, label]) => (
+            {REPORT_TABS.map(({ id, label, Icon }) => (
               <button
                 key={id}
                 type="button"
                 role="tab"
                 aria-selected={reportTab === id}
                 className={cn(
-                  'rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
+                  'flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition-colors sm:text-sm',
                   reportTab === id
-                    ? 'bg-background text-foreground shadow-sm'
-                    : 'text-muted-foreground hover:text-foreground'
+                    ? 'bg-primary/12 text-primary shadow-sm ring-1 ring-primary/25'
+                    : 'text-muted-foreground hover:bg-muted/80 hover:text-foreground'
                 )}
                 onClick={() => setReportTab(id)}
               >
+                <Icon className="h-3.5 w-3.5 opacity-90 sm:h-4 sm:w-4" aria-hidden />
                 {label}
               </button>
             ))}
           </div>
 
-          {reportTab === 'timeline' && (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <span>粒度</span>
-              <select
-                className="h-7 rounded-md border border-input bg-background px-2 text-xs"
-                value={timeGran}
-                onChange={(e) => setTimeGran(e.target.value as TimeGranularity)}
-              >
-                <option value="week">按周</option>
-                <option value="month">按月</option>
-              </select>
-            </div>
-          )}
-
           {error && (
-            <p className="text-sm text-destructive" role="alert">
-              {error}
-            </p>
+            <div
+              className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-sm text-destructive"
+              role="alert"
+            >
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <span className="min-w-0 break-words">{error}</span>
+            </div>
           )}
         </CardHeader>
 
-        <CardContent className="min-h-0 flex-1 overflow-auto px-2 pb-4 pt-0 sm:px-4">
+        <CardContent className="min-h-0 flex-1 overflow-auto px-4 py-5 sm:px-6">
           {reportTab === 'authors' && (
-            <>
-              {!loading && totalAuthorCommits === 0 && !error && (
-                <p className="py-8 text-center text-sm text-muted-foreground">
-                  选定范围内暂无提交。
-                </p>
-              )}
-              {(loading || totalAuthorCommits > 0) && (
-                <div className="overflow-x-auto rounded-md border border-border">
-                  <table className="w-full min-w-[440px] border-collapse text-left text-sm">
-                    <thead>
-                      <tr className="border-b border-border bg-muted/40 text-xs text-muted-foreground">
-                        <th className="px-3 py-2 font-medium">#</th>
-                        <th className="px-3 py-2 font-medium">作者</th>
-                        <th className="hidden px-3 py-2 font-medium sm:table-cell">邮箱</th>
-                        <th className="px-3 py-2 font-medium">提交次数</th>
-                        <th className="hidden min-w-[120px] px-3 py-2 font-medium md:table-cell">
-                          占比
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {loading && authorRows.length === 0 ? (
-                        <tr>
-                          <td
-                            colSpan={5}
-                            className="px-3 py-10 text-center text-muted-foreground"
-                          >
-                            正在遍历提交…
-                          </td>
-                        </tr>
-                      ) : (
-                        authorRows.map((row, i) => {
-                          const pct =
-                            totalAuthorCommits > 0
-                              ? (row.commit_count / totalAuthorCommits) * 100
-                              : 0
-                          const barPct =
-                            maxAuthorCount > 0
-                              ? (row.commit_count / maxAuthorCount) * 100
-                              : 0
-                          return (
-                            <tr
-                              key={`${row.email || row.author}-${i}`}
-                              className="border-b border-border/70 last:border-0 hover:bg-muted/30"
-                            >
-                              <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
-                                {i + 1}
-                              </td>
-                              <td className="max-w-[10rem] truncate px-3 py-2 font-medium">
-                                {row.author}
-                              </td>
-                              <td className="hidden max-w-[14rem] truncate px-3 py-2 font-mono text-xs text-muted-foreground sm:table-cell">
-                                {row.email || '—'}
-                              </td>
-                              <td className="px-3 py-2 tabular-nums">{row.commit_count}</td>
-                              <td className="hidden px-3 py-2 md:table-cell">
-                                <div className="flex items-center gap-2">
-                                  <div className="h-1.5 min-w-[72px] flex-1 overflow-hidden rounded-full bg-muted">
-                                    <div
-                                      className="h-full rounded-full bg-primary/80"
-                                      style={{ width: `${barPct}%` }}
-                                    />
-                                  </div>
-                                  <span className="w-12 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-                                    {pct < 10 ? pct.toFixed(1) : Math.round(pct)}%
-                                  </span>
-                                </div>
-                              </td>
-                            </tr>
-                          )
-                        })
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              {!loading && totalAuthorCommits > 0 && (
-                <p className="mt-3 text-xs text-muted-foreground">
-                  共 {totalAuthorCommits} 次提交，{authorRows.length} 位作者。
-                </p>
-              )}
-            </>
+            <AuthorsSection
+              loading={loading}
+              error={!!error}
+              rows={authorRows}
+              totalAuthorCommits={totalAuthorCommits}
+              maxAuthorCount={maxAuthorCount}
+            />
           )}
 
           {reportTab === 'timeline' && (
-            <>
-              {loading && activityRows.length === 0 && (
-                <p className="py-10 text-center text-sm text-muted-foreground">正在统计…</p>
-              )}
-              {!loading && activityRows.length === 0 && !error && (
-                <p className="py-10 text-center text-sm text-muted-foreground">暂无数据。</p>
-              )}
-              {activityRows.length > 0 && (
-                <div className="space-y-2">
-                  <div className="flex max-w-full flex-nowrap gap-2 overflow-x-auto pb-2">
-                    {activityRows.map((row) => (
-                      <div
-                        key={row.key}
-                        className="flex min-w-[8rem] flex-1 flex-col gap-1 rounded-md border border-border/70 bg-muted/25 px-2 py-2"
-                      >
-                        <span className="truncate text-[10px] text-muted-foreground" title={row.key}>
-                          {row.key}
-                        </span>
-                        <div className="flex items-end gap-2">
-                          <div
-                            className="w-full rounded-sm bg-primary/75"
-                            style={{
-                              height: `${8 + (activityMax > 0 ? (row.commit_count / activityMax) * 56 : 0)}px`,
-                              minHeight: '8px',
-                            }}
-                          />
-                          <span className="shrink-0 text-sm font-semibold tabular-nums">
-                            {row.commit_count}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    共 {activityRows.length} 个{timeGran === 'week' ? '周' : '月'}内有提交。
-                  </p>
-                </div>
-              )}
-            </>
+            <TimelineSection
+              loading={loading}
+              error={!!error}
+              rows={activityRows}
+              activityMax={activityMax}
+              timeGran={timeGran}
+            />
           )}
 
           {reportTab === 'heatmap' && (
-            <>
-              {loading && heatmapDays.length === 0 && (
-                <p className="py-10 text-center text-sm text-muted-foreground">正在统计日提交…</p>
-              )}
-              {!loading && heatmapDays.length === 0 && !error && (
-                <p className="py-2 text-center text-sm text-muted-foreground">
-                  统计范围内无提交记录；下方为最近一年日历格。
-                </p>
-              )}
-              {!loading && (
-                <div className="space-y-3">
-                  <p className="text-xs text-muted-foreground">
-                    最近约一年 · 周始于周一 · 颜色越深提交越多
-                  </p>
-                  <div
-                    className="inline-grid gap-[3px] overflow-x-auto pb-2 pt-1"
-                    style={{
-                      gridTemplateColumns: `repeat(${Math.max(1, Math.ceil(heatmapCells.length / 7))}, minmax(10px, 12px))`,
-                      gridTemplateRows: 'repeat(7, 12px)',
-                    }}
-                  >
-                    {heatmapCells.map((c) => (
-                      <div
-                        key={c.key}
-                        title={`${c.key} · ${c.count} 次提交`}
-                        className={cn(
-                          'rounded-[2px] ring-1 ring-border/40',
-                          heatScale(c.count)
-                        )}
-                        style={{
-                          gridColumnStart: c.w + 1,
-                          gridRowStart: c.r + 1,
-                        }}
-                      />
-                    ))}
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
-                    <span>少</span>
-                    <div className="flex gap-0.5">
-                      {[0, 1, 2, 3, 4].map((i) => (
-                        <div
-                          key={i}
-                          className={cn(
-                            'h-3 w-3 rounded-sm',
-                            heatmapMax > 0
-                              ? heatScale(Math.round((heatmapMax * i) / 4))
-                              : 'bg-muted/60'
-                          )}
-                        />
-                      ))}
-                    </div>
-                    <span>多</span>
-                  </div>
-                </div>
-              )}
-            </>
+            <HeatmapSection
+              loading={loading}
+              error={!!error}
+              heatmapDays={heatmapDays}
+              heatmapCells={heatmapCells}
+              heatmapMax={heatmapMax}
+              weekColumns={weekColumns}
+              heatScale={heatScale}
+            />
           )}
 
           {(reportTab === 'lines' || reportTab === 'paths') && (
-            <>
-              {loading && !diffAgg && (
-                <p className="py-10 text-center text-sm text-muted-foreground">
-                  正在 diff 全量历史（可能较慢）…
-                </p>
-              )}
-              {diffAgg && reportTab === 'lines' && (
-                <AuthorLinesTable rows={diffAgg.authors} loading={loading} />
-              )}
-              {diffAgg && reportTab === 'paths' && (
-                <PathTouchesTable rows={diffAgg.paths} loading={loading} />
-              )}
-            </>
+            <DiffSection
+              reportTab={reportTab}
+              loading={loading}
+              diffAgg={diffAgg}
+            />
           )}
         </CardContent>
       </Card>
     </div>
   )
+}
+
+function StatTableShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-border/70 shadow-sm">
+      <div className="overflow-x-auto">{children}</div>
+    </div>
+  )
+}
+
+function AuthorsSection({
+  loading,
+  error,
+  rows,
+  totalAuthorCommits,
+  maxAuthorCount,
+}: {
+  loading: boolean
+  error: boolean
+  rows: AuthorCommitStat[]
+  totalAuthorCommits: number
+  maxAuthorCount: number
+}) {
+  if (!loading && totalAuthorCommits === 0 && !error) {
+    return (
+      <div className="flex min-h-[12rem] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-muted/20 py-12 text-center">
+        <Users className="h-8 w-8 text-muted-foreground/50" aria-hidden />
+        <p className="text-sm text-muted-foreground">选定范围内暂无提交</p>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      {!loading && totalAuthorCommits > 0 && (
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary">
+            共 {totalAuthorCommits} 次提交
+          </span>
+          <span className="inline-flex items-center rounded-full border border-border/80 bg-muted/40 px-2.5 py-0.5 text-xs text-muted-foreground">
+            {rows.length} 位作者
+          </span>
+        </div>
+      )}
+
+      {(loading || totalAuthorCommits > 0) && (
+        <StatTableShell>
+          <table className="w-full min-w-[440px] border-collapse text-left text-sm">
+            <thead>
+              <tr className="border-b border-border bg-muted/45 text-xs text-muted-foreground">
+                <th className="px-4 py-3 font-medium">#</th>
+                <th className="px-4 py-3 font-medium">作者</th>
+                <th className="hidden px-4 py-3 font-medium sm:table-cell">邮箱</th>
+                <th className="px-4 py-3 font-medium">提交次数</th>
+                <th className="hidden min-w-[8rem] px-4 py-3 font-medium md:table-cell">占比</th>
+              </tr>
+            </thead>
+            <tbody className="text-sm">
+              {loading && rows.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-14 text-center text-muted-foreground">
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                      正在遍历提交…
+                    </span>
+                  </td>
+                </tr>
+              ) : (
+                rows.map((row, i) => {
+                  const pct =
+                    totalAuthorCommits > 0 ? (row.commit_count / totalAuthorCommits) * 100 : 0
+                  const barPct =
+                    maxAuthorCount > 0 ? (row.commit_count / maxAuthorCount) * 100 : 0
+                  return (
+                    <tr
+                      key={`${row.email || row.author}-${i}`}
+                      className={cn(
+                        'border-b border-border/60 transition-colors last:border-0',
+                        i % 2 === 0 ? 'bg-background' : 'bg-muted/15',
+                        'hover:bg-muted/35'
+                      )}
+                    >
+                      <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{i + 1}</td>
+                      <td className="max-w-[12rem] truncate px-4 py-2.5 font-medium">{row.author}</td>
+                      <td className="hidden max-w-[16rem] truncate px-4 py-2.5 font-mono text-xs text-muted-foreground sm:table-cell">
+                        {row.email || '—'}
+                      </td>
+                      <td className="px-4 py-2.5 tabular-nums">{row.commit_count}</td>
+                      <td className="hidden px-4 py-2.5 md:table-cell">
+                        <div className="flex items-center gap-3">
+                          <div className="h-2 min-w-[5rem] flex-1 overflow-hidden rounded-full bg-muted">
+                            <div
+                              className="h-full rounded-full bg-gradient-to-r from-primary/70 to-primary"
+                              style={{ width: `${barPct}%` }}
+                            />
+                          </div>
+                          <span className="w-11 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+                            {pct < 10 ? pct.toFixed(1) : Math.round(pct)}%
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })
+              )}
+            </tbody>
+          </table>
+        </StatTableShell>
+      )}
+    </>
+  )
+}
+
+function TimelineSection({
+  loading,
+  error,
+  rows,
+  activityMax,
+  timeGran,
+}: {
+  loading: boolean
+  error: boolean
+  rows: TimeBucketStat[]
+  activityMax: number
+  timeGran: TimeGranularity
+}) {
+  const scrollerRef = useRef<HTMLDivElement>(null)
+  const dragRef = useRef({ active: false, startX: 0, startScroll: 0 })
+  const [pointerDragging, setPointerDragging] = useState(false)
+
+  const onBarScrollPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    /* 触摸设备保留系统横向滑动，仅用指针（鼠标/触控板）拖动滚动 */
+    if (e.pointerType === 'touch') return
+    if (e.button !== 0) return
+    const el = scrollerRef.current
+    if (!el) return
+    dragRef.current = {
+      active: true,
+      startX: e.clientX,
+      startScroll: el.scrollLeft,
+    }
+    el.setPointerCapture(e.pointerId)
+    setPointerDragging(true)
+  }, [])
+
+  const onBarScrollPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current.active) return
+    const el = scrollerRef.current
+    if (!el) return
+    const dx = e.clientX - dragRef.current.startX
+    el.scrollLeft = dragRef.current.startScroll - dx
+  }, [])
+
+  const onBarScrollPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current.active) return
+    dragRef.current.active = false
+    setPointerDragging(false)
+    const el = scrollerRef.current
+    if (el) {
+      try {
+        el.releasePointerCapture(e.pointerId)
+      } catch {
+        /* 已释放或 pointerId 无效 */
+      }
+    }
+  }, [])
+
+  const onBarScrollLostCapture = useCallback(() => {
+    dragRef.current.active = false
+    setPointerDragging(false)
+  }, [])
+
+  if (loading && rows.length === 0) {
+    return (
+      <div className="flex min-h-[14rem] items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
+        正在统计…
+      </div>
+    )
+  }
+
+  if (!loading && rows.length === 0 && !error) {
+    return (
+      <div className="flex min-h-[12rem] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-muted/20 py-12">
+        <CalendarDays className="h-8 w-8 text-muted-foreground/50" aria-hidden />
+        <p className="text-sm text-muted-foreground">该范围内暂无分桶数据</p>
+      </div>
+    )
+  }
+
+  const maxH = 140
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-border/60 bg-gradient-to-b from-muted/40 to-muted/15 p-4 sm:p-5">
+        <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+          <CalendarDays className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span>
+            共 {rows.length}{' '}
+            {timeGran === 'day' ? '个日期' : timeGran === 'week' ? '个自然周' : '个月'}
+            有提交
+          </span>
+          <span className="max-w-full text-[10px] leading-relaxed text-muted-foreground/90 sm:text-xs">
+            · 图表区可拖动横移；触屏请横向滑动
+          </span>
+        </div>
+        <div
+          ref={scrollerRef}
+          role="region"
+          aria-label="时间趋势柱状图，可拖动横向滚动"
+          className={cn(
+            'flex max-w-full select-none items-end gap-1 overflow-x-auto pb-1 pt-3 [scrollbar-width:thin] sm:gap-1.5',
+            pointerDragging ? 'cursor-grabbing' : 'cursor-grab active:cursor-grabbing'
+          )}
+          onPointerDown={onBarScrollPointerDown}
+          onPointerMove={onBarScrollPointerMove}
+          onPointerUp={onBarScrollPointerUp}
+          onPointerCancel={onBarScrollPointerUp}
+          onLostPointerCapture={onBarScrollLostCapture}
+        >
+          {rows.map((row) => {
+            const h =
+              activityMax > 0
+                ? Math.max(6, (row.commit_count / activityMax) * maxH)
+                : 6
+            const labelShort =
+              timeGran === 'day' && /^\d{4}-\d{2}-\d{2}$/.test(row.key)
+                ? row.key.slice(5)
+                : row.key
+            return (
+              <div
+                key={row.key}
+                className={cn(
+                  'flex shrink-0 flex-col items-center gap-1.5 sm:gap-2',
+                  timeGran === 'day' ? 'min-w-[1.85rem] max-w-[2.75rem]' : 'min-w-[3rem] max-w-[5rem]'
+                )}
+              >
+                <span className="text-[10px] font-semibold tabular-nums text-foreground sm:text-xs">
+                  {row.commit_count}
+                </span>
+                <div className="flex h-[148px] w-full flex-col justify-end">
+                  <div
+                    className="w-full rounded-t-md bg-gradient-to-t from-primary/55 via-primary/75 to-primary shadow-sm ring-1 ring-primary/15 transition-[height]"
+                    style={{ height: `${h}px` }}
+                    title={`${row.key}: ${row.commit_count} 次提交`}
+                  />
+                </div>
+                <span
+                  className={cn(
+                    'line-clamp-3 w-full text-center leading-tight text-muted-foreground',
+                    timeGran === 'day' ? 'text-[8px] sm:text-[9px]' : 'text-[10px]'
+                  )}
+                  title={row.key}
+                >
+                  {labelShort}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function HeatmapSection({
+  loading,
+  error,
+  heatmapDays,
+  heatmapCells,
+  heatmapMax,
+  weekColumns,
+  heatScale,
+}: {
+  loading: boolean
+  error: boolean
+  heatmapDays: TimeBucketStat[]
+  heatmapCells: { key: string; count: number; w: number; r: number }[]
+  heatmapMax: number
+  weekColumns: number
+  heatScale: (count: number) => string
+}) {
+  if (loading && heatmapDays.length === 0) {
+    return (
+      <div className="flex min-h-[14rem] items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
+        正在统计每日提交…
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      {!loading && heatmapDays.length === 0 && !error && (
+        <p className="text-center text-xs text-muted-foreground">
+          当前范围内无提交记录；下方为最近约一年日历（仍可按日展示空档）。
+        </p>
+      )}
+
+      {!loading && (
+        <div className="rounded-xl border border-border/60 bg-muted/20 p-4 sm:p-5">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-medium text-foreground">
+              <Flame className="h-3.5 w-3.5 text-orange-500/90" aria-hidden />
+              贡献热力
+            </div>
+            <span className="text-[11px] text-muted-foreground">周一 ← 列表示周，行表示星期</span>
+          </div>
+
+          <div className="flex min-w-0 gap-2 sm:gap-3">
+            <div
+              className="grid shrink-0 gap-[3px] text-[10px] text-muted-foreground sm:gap-1 sm:text-[11px]"
+              style={{ gridTemplateRows: 'repeat(7, 11px)' }}
+              aria-hidden
+            >
+              {HEAT_WEEKDAYS.map((d) => (
+                <div key={d} className="flex items-center pr-0.5">
+                  {d}
+                </div>
+              ))}
+            </div>
+            <div className="min-w-0 flex-1 overflow-x-auto pb-1 pt-0.5 [scrollbar-width:thin]">
+              <div
+                className="inline-grid gap-[3px] sm:gap-1"
+                style={{
+                  gridTemplateColumns: `repeat(${weekColumns}, minmax(11px, 13px))`,
+                  gridTemplateRows: 'repeat(7, 11px)',
+                }}
+              >
+                {heatmapCells.map((c) => (
+                  <div
+                    key={c.key}
+                    title={`${c.key} · ${c.count} 次提交`}
+                    className={cn(
+                      'rounded-sm ring-1 ring-black/5 dark:ring-white/10',
+                      heatScale(c.count)
+                    )}
+                    style={{
+                      gridColumnStart: c.w + 1,
+                      gridRowStart: c.r + 1,
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center justify-end gap-3 border-t border-border/50 pt-3 text-[10px] text-muted-foreground sm:text-xs">
+            <span>较少</span>
+            <div className="flex gap-1">
+              {[0, 1, 2, 3, 4].map((i) => (
+                <div
+                  key={i}
+                  className={cn(
+                    'h-3.5 w-3.5 rounded-sm sm:h-4 sm:w-4',
+                    heatmapMax > 0
+                      ? heatScale(Math.round((heatmapMax * i) / 4))
+                      : 'bg-muted/70'
+                  )}
+                />
+              ))}
+            </div>
+            <span>较多</span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DiffSection({
+  reportTab,
+  loading,
+  diffAgg,
+}: {
+  reportTab: 'lines' | 'paths'
+  loading: boolean
+  diffAgg: DiffAggregateStats | null
+}) {
+  if (loading && !diffAgg) {
+    return (
+      <div className="flex min-h-[14rem] flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border bg-muted/15 py-12 text-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary/70" aria-hidden />
+        <p className="max-w-xs text-sm text-muted-foreground">
+          正在对历史提交逐条 diff，大型仓库可能需要数十秒…
+        </p>
+      </div>
+    )
+  }
+
+  if (diffAgg && reportTab === 'lines') {
+    return <AuthorLinesTable rows={diffAgg.authors} loading={loading} />
+  }
+  if (diffAgg && reportTab === 'paths') {
+    return <PathTouchesTable rows={diffAgg.paths} loading={loading} />
+  }
+
+  return null
 }
 
 function AuthorLinesTable({
@@ -569,21 +859,25 @@ function AuthorLinesTable({
   }, [rows])
 
   if (!loading && rows.length === 0) {
-    return <p className="py-8 text-center text-sm text-muted-foreground">暂无数据。</p>
+    return (
+      <div className="flex min-h-[10rem] items-center justify-center rounded-xl border border-dashed border-border bg-muted/20 text-sm text-muted-foreground">
+        暂无数据
+      </div>
+    )
   }
 
   return (
-    <div className="overflow-x-auto rounded-md border border-border">
+    <StatTableShell>
       <table className="w-full min-w-[480px] border-collapse text-left text-sm">
         <thead>
-          <tr className="border-b border-border bg-muted/40 text-xs text-muted-foreground">
-            <th className="px-3 py-2 font-medium">#</th>
-            <th className="px-3 py-2 font-medium">作者</th>
-            <th className="hidden px-3 py-2 font-medium sm:table-cell">邮箱</th>
-            <th className="px-3 py-2 font-medium">+行</th>
-            <th className="px-3 py-2 font-medium">−行</th>
-            <th className="px-3 py-2 font-medium">净增减</th>
-            <th className="px-3 py-2 font-medium">涉及提交</th>
+          <tr className="border-b border-border bg-muted/45 text-xs text-muted-foreground">
+            <th className="px-4 py-3 font-medium">#</th>
+            <th className="px-4 py-3 font-medium">作者</th>
+            <th className="hidden px-4 py-3 font-medium sm:table-cell">邮箱</th>
+            <th className="px-4 py-3 font-medium">+行</th>
+            <th className="px-4 py-3 font-medium">−行</th>
+            <th className="px-4 py-3 font-medium">净增减</th>
+            <th className="px-4 py-3 font-medium">涉及提交</th>
           </tr>
         </thead>
         <tbody>
@@ -592,27 +886,34 @@ function AuthorLinesTable({
             const total = row.insertions + row.deletions
             const bar = maxDelta > 0 ? (total / maxDelta) * 100 : 0
             return (
-              <tr key={`${row.email}-${row.author}-${i}`} className="border-b border-border/70 hover:bg-muted/30">
-                <td className="px-3 py-2 font-mono text-xs text-muted-foreground">{i + 1}</td>
-                <td className="max-w-[9rem] truncate px-3 py-2">{row.author}</td>
-                <td className="hidden max-w-[12rem] truncate px-3 py-2 font-mono text-xs text-muted-foreground sm:table-cell">
+              <tr
+                key={`${row.email}-${row.author}-${i}`}
+                className={cn(
+                  'border-b border-border/60 last:border-0',
+                  i % 2 === 0 ? 'bg-background' : 'bg-muted/15',
+                  'hover:bg-muted/35'
+                )}
+              >
+                <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{i + 1}</td>
+                <td className="max-w-[9rem] truncate px-4 py-2.5">{row.author}</td>
+                <td className="hidden max-w-[12rem] truncate px-4 py-2.5 font-mono text-xs text-muted-foreground sm:table-cell">
                   {row.email || '—'}
                 </td>
-                <td className="px-3 py-2 tabular-nums text-emerald-600 dark:text-emerald-400">
+                <td className="px-4 py-2.5 tabular-nums text-emerald-600 dark:text-emerald-400">
                   +{row.insertions}
                 </td>
-                <td className="px-3 py-2 tabular-nums text-rose-600 dark:text-rose-400">
+                <td className="px-4 py-2.5 tabular-nums text-rose-600 dark:text-rose-400">
                   −{row.deletions}
                 </td>
-                <td className="px-3 py-2 tabular-nums">
+                <td className="px-4 py-2.5 tabular-nums">
                   {net >= 0 ? '+' : ''}
                   {net}
                 </td>
-                <td className="px-3 py-2">
+                <td className="px-4 py-2.5">
                   <div className="flex items-center gap-2">
-                    <div className="h-1.5 min-w-[48px] max-w-[120px] flex-1 overflow-hidden rounded-full bg-muted">
+                    <div className="h-2 min-w-[3rem] max-w-[7rem] flex-1 overflow-hidden rounded-full bg-muted">
                       <div
-                        className="h-full rounded-full bg-primary/80"
+                        className="h-full rounded-full bg-gradient-to-r from-primary/70 to-primary"
                         style={{ width: `${bar}%` }}
                       />
                     </div>
@@ -624,7 +925,7 @@ function AuthorLinesTable({
           })}
         </tbody>
       </table>
-    </div>
+    </StatTableShell>
   )
 }
 
@@ -637,42 +938,53 @@ function PathTouchesTable({
 }) {
   const maxT = rows[0]?.touch_count ?? 0
   if (!loading && rows.length === 0) {
-    return <p className="py-8 text-center text-sm text-muted-foreground">暂无数据。</p>
+    return (
+      <div className="flex min-h-[10rem] items-center justify-center rounded-xl border border-dashed border-border bg-muted/20 text-sm text-muted-foreground">
+        暂无数据
+      </div>
+    )
   }
   return (
-    <div className="overflow-x-auto rounded-md border border-border">
+    <StatTableShell>
       <table className="w-full min-w-[360px] border-collapse text-left text-sm">
         <thead>
-          <tr className="border-b border-border bg-muted/40 text-xs text-muted-foreground">
-            <th className="px-3 py-2 font-medium">#</th>
-            <th className="px-3 py-2 font-medium">路径</th>
-            <th className="px-3 py-2 font-medium">触及次数</th>
+          <tr className="border-b border-border bg-muted/45 text-xs text-muted-foreground">
+            <th className="px-4 py-3 font-medium">#</th>
+            <th className="px-4 py-3 font-medium">路径</th>
+            <th className="px-4 py-3 font-medium">触及次数</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody className="font-mono text-xs">
           {rows.map((row, i) => (
-            <tr key={row.path} className="border-b border-border/70 font-mono text-xs hover:bg-muted/30">
-              <td className="px-3 py-2 text-muted-foreground">{i + 1}</td>
-              <td className="max-w-[min(48rem,80vw)] break-all px-3 py-2 text-[13px] text-foreground">
+            <tr
+              key={row.path}
+              className={cn(
+                'border-b border-border/60 last:border-0',
+                i % 2 === 0 ? 'bg-background' : 'bg-muted/15',
+                'hover:bg-muted/35'
+              )}
+            >
+              <td className="px-4 py-2.5 align-top text-[11px] text-muted-foreground">{i + 1}</td>
+              <td className="max-w-[min(48rem,85vw)] break-all px-4 py-2.5 align-top text-[13px] text-foreground">
                 {row.path}
               </td>
-              <td className="px-3 py-2">
+              <td className="px-4 py-2.5 align-middle">
                 <div className="flex items-center gap-2">
-                  <div className="h-1.5 min-w-[64px] flex-1 overflow-hidden rounded-full bg-muted">
+                  <div className="h-2 min-w-[4rem] flex-1 overflow-hidden rounded-full bg-muted">
                     <div
-                      className="h-full rounded-full bg-primary/75"
+                      className="h-full rounded-full bg-gradient-to-r from-amber-500/80 to-amber-600 dark:from-amber-400/70 dark:to-amber-500"
                       style={{
                         width: `${maxT > 0 ? (row.touch_count / maxT) * 100 : 0}%`,
                       }}
                     />
                   </div>
-                  <span className="shrink-0 tabular-nums text-[13px]">{row.touch_count}</span>
+                  <span className="shrink-0 tabular-nums text-[13px] text-foreground">{row.touch_count}</span>
                 </div>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
-    </div>
+    </StatTableShell>
   )
 }
