@@ -52,6 +52,7 @@ function App() {
     getCommitActivityStats,
     getCommitsForActivityBucket,
     getDiffAggregateStats,
+    getFileTerritoryStats,
   } = useGit()
   
   const { isDark, toggleDarkMode } = useDarkMode()
@@ -655,6 +656,7 @@ function App() {
               getCommitActivityStats={getCommitActivityStats}
               getCommitsForActivityBucket={getCommitsForActivityBucket}
               getDiffAggregateStats={getDiffAggregateStats}
+              getFileTerritoryStats={getFileTerritoryStats}
             />
           </div>
         ) : (

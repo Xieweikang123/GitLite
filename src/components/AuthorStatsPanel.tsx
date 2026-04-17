@@ -17,10 +17,14 @@ import {
   BarChart3,
   Calendar,
   CalendarDays,
+  ArrowUpDown,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   FileStack,
   Flame,
+  FolderTree,
   GitCompareArrows,
   Info,
   Loader2,
@@ -36,11 +40,12 @@ import type {
   AuthorLineStat,
   CommitInfo,
   DiffAggregateStats,
+  FileTerritoryStat,
   PathTouchStat,
   TimeBucketStat,
 } from '../types/git'
 
-type ReportTab = 'authors' | 'timeline' | 'heatmap' | 'calendar' | 'lines' | 'paths'
+type ReportTab = 'authors' | 'timeline' | 'heatmap' | 'calendar' | 'lines' | 'paths' | 'territory'
 type TimeGranularity = 'day' | 'week' | 'month'
 
 const REPORT_TABS: { id: ReportTab; label: string; Icon: React.ComponentType<{ className?: string }> }[] = [
@@ -50,6 +55,7 @@ const REPORT_TABS: { id: ReportTab; label: string; Icon: React.ComponentType<{ c
   { id: 'calendar', label: '日历视图', Icon: Calendar },
   { id: 'lines', label: '增删行', Icon: GitCompareArrows },
   { id: 'paths', label: '文件热度', Icon: FileStack },
+  { id: 'territory', label: '文件领地', Icon: FolderTree },
 ]
 
 const HEAT_WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
@@ -157,12 +163,15 @@ function calendarDayCellClass(
 
 /** 按仓库 / 范围 / 维度区分；切换仓库再切回时可命中缓存，避免重复计算 */
 const DIFF_AGGREGATE_PATH_LIMIT = 50
+/** 文件领地：返回的文件路径条数上限（与后端默认一致） */
+const TERRITORY_FILE_LIMIT = 120
 const statsResultCache = {
   authors: new Map<string, AuthorCommitStat[]>(),
   activity: new Map<string, TimeBucketStat[]>(),
   /** 热力图固定按日 */
   heatmap: new Map<string, TimeBucketStat[]>(),
   diff: new Map<string, DiffAggregateStats>(),
+  territory: new Map<string, FileTerritoryStat[]>(),
 }
 
 function cacheKeyScope(repo: string, scope: 'head' | 'all', rev: string | null | undefined) {
@@ -182,6 +191,15 @@ function cacheKeyDiff(repo: string, scope: 'head' | 'all', rev: string | null | 
   return `${repo}|${scope}|${rev ?? ''}|p${pathLimit}`
 }
 
+function cacheKeyFileTerritory(
+  repo: string,
+  scope: 'head' | 'all',
+  rev: string | null | undefined,
+  limit: number
+) {
+  return `${repo}|${scope}|${rev ?? ''}|fileTerritory|l${limit}`
+}
+
 interface AuthorStatsPanelProps {
   repoPath: string | undefined
   branchNames: string[]
@@ -199,6 +217,11 @@ interface AuthorStatsPanelProps {
     rev?: string | null,
     pathLimit?: number
   ) => Promise<DiffAggregateStats>
+  getFileTerritoryStats: (
+    scope: 'head' | 'all',
+    rev?: string | null,
+    fileLimit?: number
+  ) => Promise<FileTerritoryStat[]>
   getCommitsForActivityBucket: (
     granularity: 'day' | 'week' | 'month',
     bucketKey: string,
@@ -214,6 +237,7 @@ export function AuthorStatsPanel({
   getCommitActivityStats,
   getCommitsForActivityBucket,
   getDiffAggregateStats,
+  getFileTerritoryStats,
 }: AuthorStatsPanelProps) {
   const [statsScope, setStatsScope] = useState<'head' | 'all'>('head')
   const [statsRev, setStatsRev] = useState<string | null>(null)
@@ -226,6 +250,7 @@ export function AuthorStatsPanel({
   const [activityRows, setActivityRows] = useState<TimeBucketStat[]>([])
   const [heatmapDays, setHeatmapDays] = useState<TimeBucketStat[]>([])
   const [diffAgg, setDiffAgg] = useState<DiffAggregateStats | null>(null)
+  const [territoryRows, setTerritoryRows] = useState<FileTerritoryStat[]>([])
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -244,13 +269,14 @@ export function AuthorStatsPanel({
     diffCacheKeyRef.current = ''
     diffDataRef.current = null
     setDiffAgg(null)
+    setTerritoryRows([])
     setDiffProgress(null)
     setCalendarMonth(startOfMonth(new Date()))
     setDrillOpen(false)
   }, [repoPath])
 
   useEffect(() => {
-    if (reportTab !== 'lines' && reportTab !== 'paths') {
+    if (reportTab !== 'lines' && reportTab !== 'paths' && reportTab !== 'territory') {
       setDiffProgress(null)
     }
   }, [reportTab])
@@ -363,7 +389,15 @@ export function AuthorStatsPanel({
             setError(null)
             return
           }
-        } else {
+        } else if (reportTab === 'territory') {
+          const k = cacheKeyFileTerritory(repoPath, scope, rev, TERRITORY_FILE_LIMIT)
+          const hit = statsResultCache.territory.get(k)
+          if (hit) {
+            setTerritoryRows(hit)
+            setError(null)
+            return
+          }
+        } else if (reportTab === 'lines' || reportTab === 'paths') {
           const kDiff = cacheKeyDiff(repoPath, scope, rev, DIFF_AGGREGATE_PATH_LIMIT)
           const hit = statsResultCache.diff.get(kDiff)
           if (hit) {
@@ -397,7 +431,14 @@ export function AuthorStatsPanel({
           const k = cacheKeyActivity(repoPath, scope, rev, 'day')
           statsResultCache.heatmap.set(k, data)
           setHeatmapDays(data)
-        } else {
+        } else if (reportTab === 'territory') {
+          setTerritoryRows([])
+          setDiffProgress({ current: 0, total: 0 })
+          const data = await getFileTerritoryStats(scope, rev, TERRITORY_FILE_LIMIT)
+          const k = cacheKeyFileTerritory(repoPath, scope, rev, TERRITORY_FILE_LIMIT)
+          statsResultCache.territory.set(k, data)
+          setTerritoryRows(data)
+        } else if (reportTab === 'lines' || reportTab === 'paths') {
           setDiffAgg(null)
           diffDataRef.current = null
           setDiffProgress({ current: 0, total: 0 })
@@ -412,6 +453,7 @@ export function AuthorStatsPanel({
         setAuthorRows([])
         setActivityRows([])
         setHeatmapDays([])
+        setTerritoryRows([])
         setDiffAgg(null)
         diffDataRef.current = null
         diffCacheKeyRef.current = ''
@@ -419,7 +461,7 @@ export function AuthorStatsPanel({
         setError(e instanceof Error ? e.message : String(e))
       } finally {
         setLoading(false)
-        if (reportTab === 'lines' || reportTab === 'paths') {
+        if (reportTab === 'lines' || reportTab === 'paths' || reportTab === 'territory') {
           setDiffProgress(null)
         }
       }
@@ -433,6 +475,7 @@ export function AuthorStatsPanel({
       getAuthorCommitStats,
       getCommitActivityStats,
       getDiffAggregateStats,
+      getFileTerritoryStats,
     ]
   )
 
@@ -519,7 +562,7 @@ export function AuthorStatsPanel({
                 统计与报表
               </CardTitle>
               <CardDescription className="mt-0.5 line-clamp-2 max-w-2xl text-[11px] leading-snug text-muted-foreground sm:line-clamp-1 sm:text-xs">
-                基于当前历史范围聚合；增删行与路径为相对「首父」的 diff。
+                基于当前历史范围聚合；增删行、文件热度与文件领地为相对「首父」的 diff。
               </CardDescription>
             </div>
             <Button
@@ -632,6 +675,7 @@ export function AuthorStatsPanel({
                 </div>
               </div>
             )}
+
           </div>
 
           <div
@@ -736,6 +780,10 @@ export function AuthorStatsPanel({
                 }}
               />
             </div>
+          )}
+
+          {reportTab === 'territory' && (
+            <TerritorySection loading={loading} rows={territoryRows} diffProgress={diffProgress} />
           )}
 
           {(reportTab === 'lines' || reportTab === 'paths') && (
@@ -1482,6 +1530,194 @@ function CalendarSection({
           </div>
           <span className="text-[9px] text-zinc-400 dark:text-zinc-600">按次数分档，非相对排名</span>
         </div>
+      </div>
+    </div>
+  )
+}
+
+type TerritorySortKey = 'primary' | 'share' | 'total'
+
+function TerritorySection({
+  loading,
+  rows,
+  diffProgress,
+}: {
+  loading: boolean
+  rows: FileTerritoryStat[]
+  diffProgress: { current: number; total: number } | null
+}) {
+  const [sortKey, setSortKey] = useState<TerritorySortKey>('share')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+
+  const pct =
+    diffProgress != null && diffProgress.total > 0
+      ? Math.min(100, Math.round((diffProgress.current / diffProgress.total) * 100))
+      : null
+
+  const sortedRows = useMemo(() => {
+    const list = [...rows]
+    list.sort((a, b) => {
+      let va = 0
+      let vb = 0
+      if (sortKey === 'share') {
+        va = a.primary_share
+        vb = b.primary_share
+      } else if (sortKey === 'primary') {
+        va = a.primary_commits
+        vb = b.primary_commits
+      } else {
+        va = a.total_commits
+        vb = b.total_commits
+      }
+      const cmp = va - vb
+      if (cmp !== 0) {
+        return sortDir === 'desc' ? -cmp : cmp
+      }
+      return a.path.localeCompare(b.path)
+    })
+    return list
+  }, [rows, sortKey, sortDir])
+
+  const toggleSort = useCallback((key: TerritorySortKey) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'))
+    } else {
+      setSortKey(key)
+      setSortDir('desc')
+    }
+  }, [sortKey])
+
+  if (loading && rows.length === 0) {
+    return (
+      <div className="flex min-h-[14rem] flex-col items-center justify-center gap-4 rounded-xl border border-dashed border-border bg-muted/15 px-6 py-12 text-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary/70" aria-hidden />
+        <p className="max-w-sm text-sm text-muted-foreground">
+          正在按文件聚合作者提交次数，大型仓库可能需要数十秒…
+        </p>
+        {diffProgress != null && diffProgress.total > 0 ? (
+          <div className="w-full max-w-md space-y-2">
+            <div className="flex items-baseline justify-between gap-2 text-xs text-muted-foreground">
+              <span>处理进度</span>
+              <span className="tabular-nums font-medium text-foreground">
+                {diffProgress.current} / {diffProgress.total} 个提交
+                {pct != null ? ` · ${pct}%` : ''}
+              </span>
+            </div>
+            <div className="h-2.5 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-primary/75 to-primary transition-[width] duration-150 ease-out"
+                style={{ width: pct != null ? `${pct}%` : '0%' }}
+              />
+            </div>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">正在统计提交总数并建立 diff…</p>
+        )}
+      </div>
+    )
+  }
+
+  if (!loading && rows.length === 0) {
+    return (
+      <p className="py-10 text-center text-sm text-muted-foreground">该范围内暂无文件数据</p>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[12px] leading-relaxed text-muted-foreground">
+        每个具体文件路径一行：统计在首父 diff 中该路径出现的提交次数；主要维护者取次数最多的作者（并列时按姓名排序）。
+        「总提交」指历史上改过该文件的提交条数（各作者次数之和）。仅展示总提交数最高的前 {TERRITORY_FILE_LIMIT} 个文件。默认按占比降序排列；点击「TA 提交」「占比」「总提交」表头可切换排序。
+      </p>
+      <div className="overflow-x-auto rounded-lg border border-border/60">
+        <table className="w-full min-w-[28rem] border-collapse text-left text-[13px]">
+          <thead>
+            <tr className="border-b border-border/60 bg-muted/20 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              <th className="px-3 py-2.5">文件路径</th>
+              <th className="px-3 py-2.5">主要维护者</th>
+              <th className="px-3 py-2.5 text-right tabular-nums" aria-sort={sortKey === 'primary' ? (sortDir === 'desc' ? 'descending' : 'ascending') : 'none'}>
+                <button
+                  type="button"
+                  aria-label="按 TA 提交排序"
+                  className="inline-flex w-full items-center justify-end gap-0.5 rounded px-0.5 py-0.5 text-muted-foreground transition-colors hover:bg-muted/80 hover:text-foreground"
+                  onClick={() => toggleSort('primary')}
+                >
+                  TA 提交
+                  {sortKey === 'primary' ? (
+                    sortDir === 'desc' ? (
+                      <ChevronDown className="h-3 w-3 shrink-0 text-primary" aria-hidden />
+                    ) : (
+                      <ChevronUp className="h-3 w-3 shrink-0 text-primary" aria-hidden />
+                    )
+                  ) : (
+                    <ArrowUpDown className="h-3 w-3 shrink-0 opacity-45" aria-hidden />
+                  )}
+                </button>
+              </th>
+              <th className="px-3 py-2.5 text-right tabular-nums" aria-sort={sortKey === 'share' ? (sortDir === 'desc' ? 'descending' : 'ascending') : 'none'}>
+                <button
+                  type="button"
+                  aria-label="按占比排序"
+                  className="inline-flex w-full items-center justify-end gap-0.5 rounded px-0.5 py-0.5 text-muted-foreground transition-colors hover:bg-muted/80 hover:text-foreground"
+                  onClick={() => toggleSort('share')}
+                >
+                  占比
+                  {sortKey === 'share' ? (
+                    sortDir === 'desc' ? (
+                      <ChevronDown className="h-3 w-3 shrink-0 text-primary" aria-hidden />
+                    ) : (
+                      <ChevronUp className="h-3 w-3 shrink-0 text-primary" aria-hidden />
+                    )
+                  ) : (
+                    <ArrowUpDown className="h-3 w-3 shrink-0 opacity-45" aria-hidden />
+                  )}
+                </button>
+              </th>
+              <th className="px-3 py-2.5 text-right tabular-nums" aria-sort={sortKey === 'total' ? (sortDir === 'desc' ? 'descending' : 'ascending') : 'none'}>
+                <button
+                  type="button"
+                  aria-label="按总提交排序"
+                  className="inline-flex w-full items-center justify-end gap-0.5 rounded px-0.5 py-0.5 text-muted-foreground transition-colors hover:bg-muted/80 hover:text-foreground"
+                  onClick={() => toggleSort('total')}
+                >
+                  总提交
+                  {sortKey === 'total' ? (
+                    sortDir === 'desc' ? (
+                      <ChevronDown className="h-3 w-3 shrink-0 text-primary" aria-hidden />
+                    ) : (
+                      <ChevronUp className="h-3 w-3 shrink-0 text-primary" aria-hidden />
+                    )
+                  ) : (
+                    <ArrowUpDown className="h-3 w-3 shrink-0 opacity-45" aria-hidden />
+                  )}
+                </button>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {sortedRows.map((r) => (
+              <tr
+                key={r.path}
+                className="border-b border-border/40 last:border-0 hover:bg-muted/30"
+              >
+                <td className="max-w-[min(100%,28rem)] truncate px-3 py-2 font-mono text-[12px] text-foreground" title={r.path}>
+                  {r.path}
+                </td>
+                <td className="px-3 py-2">
+                  <span className="font-medium text-foreground">{r.primary_author}</span>
+                  {r.primary_email.trim() ? (
+                    <span className="mt-0.5 block text-[11px] text-muted-foreground">{r.primary_email}</span>
+                  ) : null}
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-foreground">{r.primary_commits}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                  {(r.primary_share * 100).toFixed(1)}%
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{r.total_commits}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   )

@@ -30,6 +30,19 @@ export interface DiffAggregateStats {
   paths: PathTouchStat[]
 }
 
+/** 单个文件路径上的主要维护者（首父 diff，按提交次数） */
+export interface FileTerritoryStat {
+  path: string
+  primary_author: string
+  primary_email: string
+  /** 该作者修改此文件的提交次数 */
+  primary_commits: number
+  /** 所有作者在该文件上的提交次数之和 */
+  total_commits: number
+  /** 0–1 */
+  primary_share: number
+}
+
 export interface CommitInfo {
   id: string
   message: string

@@ -11,6 +11,7 @@ import {
   AuthorCommitStat,
   TimeBucketStat,
   DiffAggregateStats,
+  FileTerritoryStat,
 } from '../types/git'
 import { formatTauriInvokeError } from '../utils/tauriError'
 
@@ -385,6 +386,20 @@ export function useGit() {
     [repoInfo]
   )
 
+  const getFileTerritoryStats = useCallback(
+    async (scope: 'head' | 'all', rev?: string | null, fileLimit?: number) => {
+      if (!repoInfo) throw new Error('No repository selected')
+      const r = rev?.trim() || null
+      return await invoke<FileTerritoryStat[]>('get_file_territory_stats', {
+        repoPath: repoInfo.path,
+        scope: scope === 'all' ? 'all' : null,
+        rev: r,
+        fileLimit: fileLimit ?? 120,
+      })
+    },
+    [repoInfo]
+  )
+
   const getWorkspaceStatus = useCallback(async (): Promise<WorkspaceStatus> => {
     if (!repoInfo) throw new Error('No repository open')
     
@@ -590,6 +605,7 @@ export function useGit() {
     getCommitActivityStats,
     getCommitsForActivityBucket,
     getDiffAggregateStats,
+    getFileTerritoryStats,
     getWorkspaceStatus,
     stageFile,
     unstageFile,

@@ -124,6 +124,20 @@ pub struct DiffAggregateStats {
     pub paths: Vec<PathTouchStat>,
 }
 
+/// 单个文件路径上的「主要维护者」：统计首父 diff 中该路径出现的**提交次数**（同一提交内多次出现计 1）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FileTerritoryStat {
+    pub path: String,
+    pub primary_author: String,
+    pub primary_email: String,
+    /// 主要维护者触及该文件的提交次数
+    pub primary_commits: u64,
+    /// 该文件在所有作者下的提交次数之和（即历史上有多少条提交改过此文件）
+    pub total_commits: u64,
+    /// primary_commits / total_commits（0–1）
+    pub primary_share: f64,
+}
+
 /// Git 空树对象 id（用于根提交的 diff 一侧）
 const GIT_EMPTY_TREE_OID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
@@ -326,6 +340,134 @@ where
         .collect();
 
     Ok((authors, path_stats))
+}
+
+fn file_territory_stats_for_scope<F>(
+    repo: &Repository,
+    scope: CommitLogScope,
+    file_limit: usize,
+    mut on_progress: F,
+) -> Result<Vec<FileTerritoryStat>>
+where
+    F: FnMut(u32, u32),
+{
+    let oids = collect_revwalk_oids_for_scope(repo, scope)?;
+    let total = oids.len() as u32;
+    on_progress(0, total);
+    if total == 0 {
+        return Ok(Vec::new());
+    }
+
+    // 文件路径 -> 作者 key -> (显示名, 邮箱, 该作者在该文件上的提交次数)
+    let mut file_authors: HashMap<String, HashMap<String, (String, String, u64)>> = HashMap::new();
+
+    let step = (total / 120).max(1);
+    let mut idx: u32 = 0;
+
+    for oid in oids {
+        idx += 1;
+        if total > 0 && (idx == 1 || idx == total || idx % step == 0) {
+            on_progress(idx, total);
+        }
+
+        let commit = match repo.find_commit(oid) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let author = commit.author();
+        let name = author.name().unwrap_or("Unknown").to_string();
+        let email = author.email().unwrap_or("").to_string();
+        let akey = if email.trim().is_empty() {
+            format!("n:{}", name)
+        } else {
+            format!("e:{}", email.trim().to_lowercase())
+        };
+
+        let diff = match diff_commit_to_first_parent(repo, &commit) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+
+        let _ = diff.foreach(
+            &mut |delta: git2::DiffDelta<'_>, _progress: f32| {
+                let path_opt = delta
+                    .new_file()
+                    .path()
+                    .map(std::path::Path::to_path_buf)
+                    .or_else(|| delta.old_file().path().map(std::path::Path::to_path_buf));
+                if let Some(p) = path_opt {
+                    let path_str = p.to_string_lossy();
+                    let normalized = path_str.replace('\\', "/");
+                    let fmap = file_authors.entry(normalized).or_insert_with(HashMap::new);
+                    match fmap.get_mut(&akey) {
+                        Some((n, e, c)) => {
+                            *c += 1;
+                            if n.is_empty() {
+                                *n = name.clone();
+                            }
+                            if e.is_empty() {
+                                *e = email.clone();
+                            }
+                        }
+                        None => {
+                            fmap.insert(akey.clone(), (name.clone(), email.clone(), 1));
+                        }
+                    }
+                }
+                true
+            },
+            None,
+            None,
+            None,
+        );
+    }
+
+    on_progress(total, total);
+
+    let mut rows: Vec<FileTerritoryStat> = Vec::new();
+    for (path, authors_map) in file_authors {
+        let total_commits: u64 = authors_map.values().map(|(_, _, c)| *c).sum();
+        if total_commits == 0 {
+            continue;
+        }
+
+        let mut best: Option<(u64, String, String)> = None;
+        for (_k, (aname, aemail, cnt)) in &authors_map {
+            match &best {
+                None => best = Some((*cnt, aname.clone(), aemail.clone())),
+                Some((bc, bn, _)) => {
+                    if *cnt > *bc || (*cnt == *bc && aname < bn) {
+                        best = Some((*cnt, aname.clone(), aemail.clone()));
+                    }
+                }
+            }
+        }
+
+        if let Some((primary_commits, primary_author, primary_email)) = best {
+            let primary_share = if total_commits > 0 {
+                (primary_commits as f64) / (total_commits as f64)
+            } else {
+                0.0
+            };
+            rows.push(FileTerritoryStat {
+                path,
+                primary_author,
+                primary_email,
+                primary_commits,
+                total_commits,
+                primary_share,
+            });
+        }
+    }
+
+    rows.sort_by(|a, b| {
+        b.total_commits
+            .cmp(&a.total_commits)
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    rows.truncate(file_limit.max(1).min(200));
+    Ok(rows)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2224,6 +2366,50 @@ async fn get_diff_aggregate_stats(
         })
         .map_err(|e| format!("统计增删行与路径失败: {}", e))?;
         Ok(DiffAggregateStats { authors, paths })
+    })
+    .await
+    .map_err(|e| format!("任务已中断: {}", e))?
+}
+
+#[tauri::command]
+async fn get_file_territory_stats(
+    app: tauri::AppHandle,
+    repo_path: String,
+    scope: Option<String>,
+    rev: Option<String>,
+    file_limit: Option<u32>,
+) -> Result<Vec<FileTerritoryStat>, String> {
+    let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
+    let lim = file_limit.unwrap_or(120).max(1).min(200) as usize;
+    let repo_path_buf = repo_path.clone();
+    let app_clone = app.clone();
+
+    let _ = app.emit_all(
+        "diff-aggregate-progress",
+        serde_json::json!({
+            "repo_path": repo_path_buf,
+            "phase": "start",
+            "current": 0u32,
+            "total": 0u32,
+        }),
+    );
+
+    tokio::task::spawn_blocking(move || {
+        let repo =
+            Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+
+        file_territory_stats_for_scope(&repo, s, lim, |cur, tot| {
+            let _ = app_clone.emit_all(
+                "diff-aggregate-progress",
+                serde_json::json!({
+                    "repo_path": repo_path.clone(),
+                    "phase": "diff",
+                    "current": cur,
+                    "total": tot,
+                }),
+            );
+        })
+        .map_err(|e| format!("统计文件维护者失败: {}", e))
     })
     .await
     .map_err(|e| format!("任务已中断: {}", e))?
@@ -5129,6 +5315,7 @@ fn main() {
             get_author_commit_stats,
             get_commit_activity_stats,
             get_diff_aggregate_stats,
+            get_file_territory_stats,
             search_commits,
             get_commits_for_activity_bucket,
             get_head_file_paths,
