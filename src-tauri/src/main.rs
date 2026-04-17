@@ -1453,6 +1453,32 @@ fn sync_index_worktree_to_head_with_cli(repo_path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 在 **存在未提交改动**（不能使用 `reset --hard`）时，用 **libgit2** 将**索引**对齐到当前 `HEAD`，**不覆盖工作区**（等价 `git reset --mixed HEAD`）。
+///
+/// `checkout_tree` 或 `merge_commits`+`commit` 后，磁盘 `.git/index` 可能与 `HEAD` 不一致，界面会误报「大量已暂存」。
+/// 若改用**系统** `git reset --mixed`，libgit2 仍可能持有旧索引视图；此处全程在同一 `Repository` 上 `reset` 并 `index.write()`，避免混用不同实现导致的状态分裂。
+fn sync_index_to_head_mixed_libgit2(repo: &Repository) -> Result<(), String> {
+    let head = repo
+        .head()
+        .map_err(|e| format!("获取 HEAD 失败: {}", e))?;
+    let head_commit = head
+        .peel_to_commit()
+        .map_err(|e| format!("解析 HEAD 提交失败: {}", e))?;
+    repo.reset(
+        head_commit.as_object(),
+        git2::ResetType::Mixed,
+        None,
+    )
+    .map_err(|e| format!("libgit2 reset Mixed 失败: {}", e))?;
+    let mut index = repo
+        .index()
+        .map_err(|e| format!("打开索引失败: {}", e))?;
+    index
+        .write()
+        .map_err(|e| format!("写入 .git/index 失败: {}", e))?;
+    Ok(())
+}
+
 // 获取代理配置
 #[tauri::command]
 async fn get_proxy_config() -> Result<(ProxyConfig, bool), String> {
@@ -3835,6 +3861,11 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
                     e
                 ));
             }
+            // 有本地未提交改动时不能用 reset --hard；checkout_tree 后需用 libgit2 Mixed 对齐索引与 HEAD，并写回 .git/index。
+            if let Err(e) = sync_index_to_head_mixed_libgit2(&repo) {
+                log_message("ERROR", &format!("pull: sync index after ff (dirty worktree) failed: {}", e));
+                return Err(e);
+            }
         }
 
         log_message("INFO", &format!("pull: fast-forward success | branch={}", branch_name));
@@ -3902,6 +3933,12 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
                 log_message("ERROR", &format!("pull: sync after merge commit failed: {}", e));
                 e
             })?;
+        } else {
+            // merge_commits + commit 不会把合并结果完整写回磁盘 index；有本地改动时不能 --hard，用 libgit2 Mixed 只刷新 index。
+            if let Err(e) = sync_index_to_head_mixed_libgit2(&repo) {
+                log_message("ERROR", &format!("pull: sync index after merge (dirty worktree) failed: {}", e));
+                return Err(e);
+            }
         }
 
         log_message("INFO", &format!("pull: merge success | branch={} merge_commit={}", branch_name, merge_commit_id));

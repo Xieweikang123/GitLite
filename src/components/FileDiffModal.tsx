@@ -46,9 +46,17 @@ export function FileDiffModal({ isOpen, onClose, filePath, repoPath, fileType }:
     if (!modalContent || !isOpen) return
 
     const handleWheel = (e: WheelEvent) => {
+      const targetNode = e.target as Node
+      const hostEl =
+        targetNode.nodeType === Node.ELEMENT_NODE
+          ? (targetNode as Element)
+          : targetNode.parentElement
+      // Monaco 在捕获阶段若被 stopPropagation，滚轮永远到不了编辑器内部，导致无法纵向/横向滚动
+      if (hostEl?.closest('.monaco-editor')) return
+
       // 检查滚动事件是否来自弹窗内部的滚动容器
       const scrollContainer = modalContent.querySelector('.overflow-y-auto')
-      
+
       if (scrollContainer && scrollContainer.contains(e.target as Node)) {
         // 如果事件来自滚动容器，完全阻止冒泡和默认行为
         e.stopPropagation()
