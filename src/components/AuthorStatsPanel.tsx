@@ -1141,7 +1141,7 @@ function HeatmapSection({
           <div className="flex min-w-0 gap-2 sm:gap-3">
             <div
               className="grid shrink-0 gap-[3px] text-[10px] text-muted-foreground sm:gap-1 sm:text-[11px]"
-              style={{ gridTemplateRows: 'repeat(7, 11px)' }}
+              style={{ gridTemplateRows: 'repeat(7, 12px)' }}
               aria-hidden
             >
               {HEAT_WEEKDAYS.map((d) => (
@@ -1154,8 +1154,9 @@ function HeatmapSection({
               <div
                 className="inline-grid gap-[3px] sm:gap-1"
                 style={{
-                  gridTemplateColumns: `repeat(${weekColumns}, minmax(11px, 13px))`,
-                  gridTemplateRows: 'repeat(7, 11px)',
+                  // 列宽与行高一致，避免 minmax(11px,13px) 与 11px 行高形成横向拉长的矩形
+                  gridTemplateColumns: `repeat(${weekColumns}, 12px)`,
+                  gridTemplateRows: 'repeat(7, 12px)',
                 }}
               >
                 {heatmapCells.map((c) => {
