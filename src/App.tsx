@@ -17,6 +17,7 @@ import { AiConfigModal } from './components/AiConfigModal'
 import { RepoFileTree } from './components/RepoFileTree'
 import { AuthorStatsPanel } from './components/AuthorStatsPanel'
 import { CommitInfo, FileChange } from './types/git'
+import { formatTauriInvokeError } from './utils/tauriError'
 
 function App() {
   useMonacoThemeSync()
@@ -78,14 +79,22 @@ function App() {
   const [proxyConfigOpen, setProxyConfigOpen] = useState(false)
   const [aiConfigOpen, setAiConfigOpen] = useState(false)
 
+  /** 提交文件列表请求序号：避免快速切换提交时后返回的请求覆盖当前选中 */
+  const commitFilesReqRef = React.useRef(0)
+  /** 提交页：搜索 / 加载更多失败时的可读提示 */
+  const [commitListError, setCommitListError] = useState<string | null>(null)
+
   const handleCommitSelect = async (commit: CommitInfo) => {
     setSelectedCommit(commit)
     setSelectedFile(null) // 清除选中的文件
+    const req = ++commitFilesReqRef.current
     
     try {
       const files = await getCommitFiles(commit.id)
+      if (req !== commitFilesReqRef.current) return
       setCommitFiles(files)
     } catch (err) {
+      if (req !== commitFilesReqRef.current) return
       console.error('获取文件列表失败:', err)
       setCommitFiles([])
     }
@@ -146,6 +155,7 @@ function App() {
     if (!term.trim() || searchLoading) return
     setSearchLoading(true)
     setSearchResults(null)
+    setCommitListError(null)
     try {
       const list = await searchCommits(
         term,
@@ -156,6 +166,7 @@ function App() {
       setSearchResults(list)
     } catch (e) {
       console.error('全仓库搜索失败:', e)
+      setCommitListError(formatTauriInvokeError(e, '搜索提交失败'))
     } finally {
       setSearchLoading(false)
     }
@@ -163,12 +174,14 @@ function App() {
 
   const handleClearSearchMode = () => {
     setSearchResults(null)
+    setCommitListError(null)
   }
 
   const handleLoadMore = async () => {
     if (loadingMore || !hasMoreCommits || !repoInfo) return
     
     setLoadingMore(true)
+    setCommitListError(null)
     try {
       const newCommits = await getCommitsPaginated(
         50,
@@ -186,6 +199,7 @@ function App() {
       }
     } catch (error) {
       console.error('Failed to load more commits:', error)
+      setCommitListError(formatTauriInvokeError(error, '加载更多提交失败'))
     } finally {
       setLoadingMore(false)
     }
@@ -424,8 +438,17 @@ function App() {
   }, [])
 
   const prevRepoPathRef = React.useRef<string | null>(null)
+  /** HEAD 最新提交 id：仅当它或路径/范围变化时重置「当前分支」下列表，避免仅刷新 ahead/behind 时清掉已加载更多 */
+  const headFirstCommitId = repoInfo?.commits?.[0]?.id ?? ''
 
-  // 当仓库路径、提交范围变化时同步列表；换仓库时先回到「当前分支」再加载，避免沿用上一家仓库的「全部分支」
+  // 获取/拉取后仅有 incoming 变化时仍会更新，且不依赖「加载更多」用的 localCommits  effect
+  React.useEffect(() => {
+    if (!repoInfo) return
+    if (commitLogScope !== 'head' || commitLogRev) return
+    setIncomingCommits(repoInfo.incoming_commits ?? [])
+  }, [repoInfo, commitLogScope, commitLogRev])
+
+  // 当仓库路径、提交范围或 HEAD 首条变化时同步列表；换仓库时先回到「当前分支」
   React.useEffect(() => {
     const path = repoInfo?.path ?? null
     const pathChanged = path != null && path !== prevRepoPathRef.current
@@ -449,10 +472,7 @@ function App() {
       }
     }
 
-    setSearchResults(null)
-
     if (commitLogScope === 'head' && !commitLogRev) {
-      setIncomingCommits(repoInfo.incoming_commits ?? [])
       setLocalCommits(repoInfo.commits)
       setHasMoreCommits(repoInfo.commits.length >= 50)
       return
@@ -497,7 +517,8 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [repoInfo, commitLogScope, commitLogRev, getCommitsPaginated])
+    // 依赖项不含整个 repoInfo：仅 ahead/behind 刷新时不重置「加载更多」
+  }, [repoInfo?.path, commitLogScope, commitLogRev, headFirstCommitId, getCommitsPaginated])
 
   const mergedCommitsForView =
     searchResults ??
@@ -674,6 +695,9 @@ function App() {
                 currentBranch={repoInfo.current_branch}
                 headShortId={repoInfo.head_short_id ?? undefined}
                 onResetToCommit={resetToCommit}
+                listError={commitListError}
+                hasUpstream={repoInfo.has_upstream ?? true}
+                hasOriginRemote={repoInfo.has_origin_remote ?? true}
               />
             ) : (
               <div className="text-center py-12 flex-1 flex items-center justify-center">

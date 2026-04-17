@@ -1011,6 +1011,10 @@ pub struct RepoInfo {
     /// 远程有而本地尚未合并的提交（等价于 `git log HEAD..@{upstream}`），用于列表顶部展示
     pub incoming_commits: Vec<CommitInfo>,
     pub remote_url: Option<String>, // 远程仓库URL
+    /// 当前本地分支是否已设置上游（`@{upstream}` 存在）。为 false 时 ahead/behind 无意义。
+    pub has_upstream: bool,
+    /// 是否存在名为 `origin` 的远程（推送/拉取/获取依赖此名）。
+    pub has_origin_remote: bool,
 }
 
 /// 与 Git 索引一致：正斜杠、无 `./` 前缀，避免 Windows 反斜杠导致 reset / add 未命中条目。
@@ -1022,6 +1026,46 @@ fn normalize_repo_rel_path(path: &str) -> String {
         .trim_start_matches('/')
         .to_string();
     p
+}
+
+/// 推送/拉取等与「当前检出分支」绑定的操作：分离 HEAD 时返回错误，禁止默认成 main 误推。
+fn branch_name_for_sync_commands(repo: &Repository) -> Result<String, String> {
+    let head = repo
+        .head()
+        .map_err(|e| format!("无法获取 HEAD: {}", e))?;
+    if !head.is_branch() {
+        return Err(
+            "当前为分离 HEAD（未检出本地分支），请 checkout 到某个分支后再进行推送、拉取或与远程同步。"
+                .to_string(),
+        );
+    }
+    let name = head.shorthand().map(|s| s.to_string()).ok_or_else(|| {
+        "无法解析当前分支名（分离 HEAD？），请检出一个分支后再试。".to_string()
+    })?;
+    if name == "detached" {
+        return Err(
+            "当前为分离 HEAD（未检出本地分支），请检出一个分支后再试。".to_string(),
+        );
+    }
+    Ok(name)
+}
+
+fn emit_push_log(app: &tauri::AppHandle, payload: serde_json::Value) {
+    if let Some(w) = app.get_window("main") {
+        let _ = w.emit("push-log", payload);
+    } else {
+        let _ = app.emit_all("push-log", payload);
+    }
+}
+
+fn dedupe_file_changes_by_path(v: &mut Vec<FileChange>) {
+    let mut seen = HashSet::new();
+    v.retain(|f| seen.insert(f.path.clone()));
+}
+
+fn dedupe_strings_preserve_order(v: &mut Vec<String>) {
+    let mut seen = HashSet::new();
+    v.retain(|s| seen.insert(s.clone()));
 }
 
 // 判断某路径是否在给定树（通常为 HEAD^{tree}）中被追踪
@@ -1783,6 +1827,13 @@ fn get_repository_info(repo: &Repository, path: &str) -> Result<RepoInfo> {
     }
 
     let incoming_commits = get_incoming_commits(repo, &current_branch, behind);
+
+    let has_upstream = repo
+        .find_branch(&current_branch, git2::BranchType::Local)
+        .ok()
+        .map(|b| b.upstream().is_ok())
+        .unwrap_or(false);
+    let has_origin_remote = repo.find_remote("origin").is_ok();
     
     // 获取远程仓库URL
     let remote_url = repo.find_remote("origin")
@@ -1799,6 +1850,8 @@ fn get_repository_info(repo: &Repository, path: &str) -> Result<RepoInfo> {
         behind,
         incoming_commits,
         remote_url,
+        has_upstream,
+        has_origin_remote,
     })
 }
 
@@ -2919,6 +2972,10 @@ fn collect_workspace_status(repo: &Repository) -> Result<WorkspaceStatus, String
         None,
         None,
     ).map_err(|e| format!("Failed to iterate index->workdir diff: {}", e))?;
+
+    dedupe_file_changes_by_path(&mut staged_files);
+    dedupe_file_changes_by_path(&mut unstaged_files);
+    dedupe_strings_preserve_order(&mut untracked_files);
     
     Ok(WorkspaceStatus {
         staged_files,
@@ -3273,21 +3330,17 @@ async fn push_changes(repo_path: String) -> Result<String, String> {
         }
     };
 
-    let head = match repo.head() {
-        Ok(h) => h,
-        Err(e) => {
-            log_message("ERROR", &format!("push: get HEAD failed: {}", e));
-            return Err(format!("Failed to get HEAD: {}", e));
-        }
-    };
-    let branch_name = head.shorthand().unwrap_or("main");
+    let branch_name = branch_name_for_sync_commands(&repo).map_err(|e| {
+        log_message("ERROR", &format!("push: branch for sync: {}", e));
+        e
+    })?;
 
     if let Err(e) = repo.find_remote("origin") {
         log_message("ERROR", &format!("push: find remote 'origin' failed: {}", e));
         return Err(format!("Failed to find remote 'origin': {}", e));
     }
 
-    let output = run_git_in_repo(&repo_path, &["push", "-u", "origin", branch_name])
+    let output = run_git_in_repo(&repo_path, &["push", "-u", "origin", &branch_name])
         .map_err(|e| format!("Failed to push: {}（无法执行 git）", e))?;
     if !output.status.success() {
         let detail = git_output_detail(&output);
@@ -3297,7 +3350,7 @@ async fn push_changes(repo_path: String) -> Result<String, String> {
     }
 
     // 若本地分支没有上游，自动设置到 origin/<branch>（git push -u 通常已设置）
-    if let Ok(mut branch) = repo.find_branch(branch_name, git2::BranchType::Local) {
+    if let Ok(mut branch) = repo.find_branch(&branch_name, git2::BranchType::Local) {
         if branch.upstream().is_err() {
             if let Err(e) = branch.set_upstream(Some(&format!("origin/{}", branch_name))) {
                 log_message("WARN", &format!("push: set upstream failed but push succeeded: {}", e));
@@ -3322,14 +3375,10 @@ async fn pull_changes(repo_path: String) -> Result<String, String> {
         }
     };
 
-    let head = match repo.head() {
-        Ok(h) => h,
-        Err(e) => {
-            log_message("ERROR", &format!("pull: get HEAD failed: {}", e));
-            return Err(format!("Failed to get HEAD: {}", e));
-        }
-    };
-    let branch_name = head.shorthand().unwrap_or("main");
+    let branch_name = branch_name_for_sync_commands(&repo).map_err(|e| {
+        log_message("ERROR", &format!("pull: branch for sync: {}", e));
+        e
+    })?;
 
     if let Err(e) = repo.find_remote("origin") {
         log_message("ERROR", &format!("pull: find remote 'origin' failed: {}", e));
@@ -3630,16 +3679,14 @@ async fn push_changes_with_realtime_logs(
     repo_path: String,
     app_handle: tauri::AppHandle
 ) -> Result<String, String> {
-    let window = app_handle.get_window("main").unwrap();
-    
     // 发送开始日志
-    let _ = window.emit("push-log", serde_json::json!({
+    emit_push_log(&app_handle, serde_json::json!({
         "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
         "level": "INFO",
         "message": "开始推送操作..."
     }));
     
-    let _ = window.emit("push-log", serde_json::json!({
+    emit_push_log(&app_handle, serde_json::json!({
         "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
         "level": "INFO", 
         "message": format!("正在打开仓库: {}", repo_path)
@@ -3647,7 +3694,7 @@ async fn push_changes_with_realtime_logs(
     
     let repo = match Repository::open(&repo_path) {
         Ok(r) => {
-            let _ = window.emit("push-log", serde_json::json!({
+            emit_push_log(&app_handle, serde_json::json!({
                 "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                 "level": "SUCCESS",
                 "message": "仓库打开成功"
@@ -3655,7 +3702,7 @@ async fn push_changes_with_realtime_logs(
             r
         },
         Err(e) => {
-            let _ = window.emit("push-log", serde_json::json!({
+            emit_push_log(&app_handle, serde_json::json!({
                 "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                 "level": "ERROR",
                 "message": format!("打开仓库失败: {}", e)
@@ -3665,7 +3712,7 @@ async fn push_changes_with_realtime_logs(
     };
 
     // 应用代理配置
-    let _ = window.emit("push-log", serde_json::json!({
+    emit_push_log(&app_handle, serde_json::json!({
         "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
         "level": "INFO",
         "message": "正在应用代理配置..."
@@ -3675,20 +3722,20 @@ async fn push_changes_with_realtime_logs(
     let proxy_config = match get_proxy_config().await {
         Ok((config, is_from_git)) => {
             // 配置来源
-            let _ = window.emit("push-log", serde_json::json!({
+            emit_push_log(&app_handle, serde_json::json!({
                 "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                 "level": "INFO",
                 "message": if is_from_git { "代理配置来源: Git 全局配置" } else { "代理配置来源: 应用本地配置" }
             }));
 
             if config.enabled {
-                let _ = window.emit("push-log", serde_json::json!({
+                emit_push_log(&app_handle, serde_json::json!({
                     "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                     "level": "INFO",
                     "message": format!("使用代理: {}://{}:{}", config.protocol, config.host, config.port)
                 }));
             } else {
-                let _ = window.emit("push-log", serde_json::json!({
+                emit_push_log(&app_handle, serde_json::json!({
                     "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                     "level": "INFO",
                     "message": "未启用代理"
@@ -3697,7 +3744,7 @@ async fn push_changes_with_realtime_logs(
             config
         },
         Err(e) => {
-            let _ = window.emit("push-log", serde_json::json!({
+            emit_push_log(&app_handle, serde_json::json!({
                 "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                 "level": "WARN",
                 "message": format!("获取代理配置失败: {}", e)
@@ -3716,14 +3763,14 @@ async fn push_changes_with_realtime_logs(
     // 推送使用系统 git 子进程，沿用 Git 全局配置中的代理；此处仅校验应用内代理表单格式
     if proxy_config.enabled {
         if let Err(e) = validate_proxy_protocol(&proxy_config.protocol) {
-            let _ = window.emit("push-log", serde_json::json!({
+            emit_push_log(&app_handle, serde_json::json!({
                 "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                 "level": "ERROR",
                 "message": e
             }));
             return Err(format!("代理配置错误: {}", e));
         }
-        let _ = window.emit("push-log", serde_json::json!({
+        emit_push_log(&app_handle, serde_json::json!({
             "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
             "level": "INFO",
             "message": format!(
@@ -3732,52 +3779,45 @@ async fn push_changes_with_realtime_logs(
             )
         }));
     } else if !has_local_proxy_file {
-        let _ = window.emit("push-log", serde_json::json!({
+        emit_push_log(&app_handle, serde_json::json!({
             "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
             "level": "INFO",
             "message": "libgit2 将从 Git 配置自动检测代理（http.proxy / https.proxy）；未配置则不使用代理"
         }));
     } else {
-        let _ = window.emit("push-log", serde_json::json!({
+        emit_push_log(&app_handle, serde_json::json!({
             "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
             "level": "INFO",
             "message": "libgit2：不使用代理（应用内已关闭，且存在 proxy_config.json）"
         }));
     }
 
-    let _ = window.emit("push-log", serde_json::json!({
+    emit_push_log(&app_handle, serde_json::json!({
         "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
         "level": "INFO",
-        "message": "正在获取HEAD引用..."
+        "message": "正在解析当前分支（须已检出本地分支）..."
     }));
 
-    let head = match repo.head() {
-        Ok(h) => {
-            let _ = window.emit("push-log", serde_json::json!({
+    let branch_name = match branch_name_for_sync_commands(&repo) {
+        Ok(n) => {
+            emit_push_log(&app_handle, serde_json::json!({
                 "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                 "level": "SUCCESS",
-                "message": "获取HEAD引用成功"
+                "message": format!("当前分支: {}", n)
             }));
-            h
-        },
+            n
+        }
         Err(e) => {
-            let _ = window.emit("push-log", serde_json::json!({
+            emit_push_log(&app_handle, serde_json::json!({
                 "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                 "level": "ERROR",
-                "message": format!("获取HEAD失败: {}", e)
+                "message": e.clone()
             }));
-            return Err(format!("Failed to get HEAD: {}", e));
+            return Err(e);
         }
     };
-    
-    let branch_name = head.shorthand().unwrap_or("main");
-    let _ = window.emit("push-log", serde_json::json!({
-        "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
-        "level": "INFO",
-        "message": format!("当前分支: {}", branch_name)
-    }));
 
-    let _ = window.emit("push-log", serde_json::json!({
+    emit_push_log(&app_handle, serde_json::json!({
         "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
         "level": "INFO",
         "message": "正在查找远程仓库 origin..."
@@ -3785,7 +3825,7 @@ async fn push_changes_with_realtime_logs(
 
     let remote = match repo.find_remote("origin") {
         Ok(r) => {
-            let _ = window.emit("push-log", serde_json::json!({
+            emit_push_log(&app_handle, serde_json::json!({
                 "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                 "level": "SUCCESS",
                 "message": "找到远程仓库 origin"
@@ -3793,7 +3833,7 @@ async fn push_changes_with_realtime_logs(
             r
         },
         Err(e) => {
-            let _ = window.emit("push-log", serde_json::json!({
+            emit_push_log(&app_handle, serde_json::json!({
                 "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                 "level": "ERROR",
                 "message": format!("未找到远程仓库 origin: {}", e)
@@ -3802,23 +3842,23 @@ async fn push_changes_with_realtime_logs(
         }
     };
 
-    let _ = window.emit("push-log", serde_json::json!({
+    emit_push_log(&app_handle, serde_json::json!({
         "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
         "level": "INFO",
         "message": "使用系统 Git 执行 push（与 VS / 命令行一致）..."
     }));
 
-    let _ = window.emit("push-log", serde_json::json!({
+    emit_push_log(&app_handle, serde_json::json!({
         "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
         "level": "INFO",
         "message": format!("开始推送分支 {} 到 origin...", branch_name)
     }));
 
-    let push_out = match run_git_in_repo(&repo_path, &["push", "-u", "origin", branch_name]) {
+    let push_out = match run_git_in_repo(&repo_path, &["push", "-u", "origin", &branch_name]) {
         Ok(o) => o,
         Err(e) => {
             let msg = format!("无法执行 git: {}", e);
-            let _ = window.emit("push-log", serde_json::json!({
+            emit_push_log(&app_handle, serde_json::json!({
                 "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                 "level": "ERROR",
                 "message": msg.clone()
@@ -3829,7 +3869,7 @@ async fn push_changes_with_realtime_logs(
 
     let detail = git_output_detail(&push_out);
     if !detail.is_empty() {
-        let _ = window.emit("push-log", serde_json::json!({
+        emit_push_log(&app_handle, serde_json::json!({
             "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
             "level": "INFO",
             "message": detail
@@ -3837,35 +3877,35 @@ async fn push_changes_with_realtime_logs(
     }
 
     if push_out.status.success() {
-        let _ = window.emit("push-log", serde_json::json!({
+        emit_push_log(&app_handle, serde_json::json!({
             "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
             "level": "SUCCESS",
             "message": "推送成功！"
         }));
 
-        let _ = window.emit("push-log", serde_json::json!({
+        emit_push_log(&app_handle, serde_json::json!({
             "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
             "level": "INFO",
             "message": "正在检查上游分支设置..."
         }));
 
-        if let Ok(mut branch) = repo.find_branch(branch_name, git2::BranchType::Local) {
+        if let Ok(mut branch) = repo.find_branch(&branch_name, git2::BranchType::Local) {
             if branch.upstream().is_err() {
                 if let Err(e) = branch.set_upstream(Some(&format!("origin/{}", branch_name))) {
-                    let _ = window.emit("push-log", serde_json::json!({
+                    emit_push_log(&app_handle, serde_json::json!({
                         "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                         "level": "WARN",
                         "message": format!("设置上游分支失败: {}", e)
                     }));
                 } else {
-                    let _ = window.emit("push-log", serde_json::json!({
+                    emit_push_log(&app_handle, serde_json::json!({
                         "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                         "level": "SUCCESS",
                         "message": format!("已设置上游分支: origin/{}", branch_name)
                     }));
                 }
             } else {
-                let _ = window.emit("push-log", serde_json::json!({
+                emit_push_log(&app_handle, serde_json::json!({
                     "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                     "level": "INFO",
                     "message": "上游分支已存在"
@@ -3873,7 +3913,7 @@ async fn push_changes_with_realtime_logs(
             }
         }
 
-        let _ = window.emit("push-log", serde_json::json!({
+        emit_push_log(&app_handle, serde_json::json!({
             "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
             "level": "SUCCESS",
             "message": format!("操作完成 - 已推送到 origin/{}", branch_name)
@@ -3886,13 +3926,13 @@ async fn push_changes_with_realtime_logs(
         let error_msg = format!("推送失败: {}", err_text);
         let url_msg = format!("远程仓库URL: {}", url);
 
-        let _ = window.emit("push-log", serde_json::json!({
+        emit_push_log(&app_handle, serde_json::json!({
             "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
             "level": "ERROR",
             "message": error_msg.clone()
         }));
 
-        let _ = window.emit("push-log", serde_json::json!({
+        emit_push_log(&app_handle, serde_json::json!({
             "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
             "level": "ERROR",
             "message": url_msg
@@ -3908,7 +3948,7 @@ async fn push_changes_with_realtime_logs(
             "建议：查看详细错误信息，或尝试使用命令行推送"
         };
 
-        let _ = window.emit("push-log", serde_json::json!({
+        emit_push_log(&app_handle, serde_json::json!({
             "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
             "level": "INFO",
             "message": suggestion
@@ -3944,24 +3984,20 @@ async fn push_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
     };
 
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    logs.push((timestamp, "INFO".to_string(), "正在获取HEAD引用...".to_string()));
+    logs.push((timestamp, "INFO".to_string(), "正在解析当前分支...".to_string()));
 
-    let head = match repo.head() {
-        Ok(h) => {
+    let branch_name = match branch_name_for_sync_commands(&repo) {
+        Ok(n) => {
             let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "INFO".to_string(), "获取HEAD引用成功".to_string()));
-            h
-        },
+            logs.push((timestamp, "INFO".to_string(), format!("当前分支: {}", n)));
+            n
+        }
         Err(e) => {
             let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), format!("获取HEAD失败: {}", e)));
-            return Err(format!("Failed to get HEAD: {}", e));
+            logs.push((timestamp, "ERROR".to_string(), e.clone()));
+            return Err(e);
         }
     };
-    
-    let branch_name = head.shorthand().unwrap_or("main");
-    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    logs.push((timestamp, "INFO".to_string(), format!("当前分支: {}", branch_name)));
 
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     logs.push((timestamp, "INFO".to_string(), "正在查找远程仓库 origin...".to_string()));
@@ -3985,7 +4021,7 @@ async fn push_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     logs.push((timestamp, "INFO".to_string(), format!("开始推送分支 {} 到 origin...", branch_name)));
 
-    let push_out = match run_git_in_repo(&repo_path, &["push", "-u", "origin", branch_name]) {
+    let push_out = match run_git_in_repo(&repo_path, &["push", "-u", "origin", &branch_name]) {
         Ok(o) => o,
         Err(e) => {
             let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
@@ -4015,7 +4051,7 @@ async fn push_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     logs.push((timestamp, "INFO".to_string(), "正在检查上游分支设置...".to_string()));
 
-    if let Ok(mut branch) = repo.find_branch(branch_name, git2::BranchType::Local) {
+    if let Ok(mut branch) = repo.find_branch(&branch_name, git2::BranchType::Local) {
         if branch.upstream().is_err() {
             if let Err(e) = branch.set_upstream(Some(&format!("origin/{}", branch_name))) {
                 let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
@@ -4175,24 +4211,20 @@ async fn pull_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
     };
 
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    logs.push((timestamp, "INFO".to_string(), "正在获取HEAD引用...".to_string()));
+    logs.push((timestamp, "INFO".to_string(), "正在解析当前分支...".to_string()));
 
-    let head = match repo.head() {
-        Ok(h) => {
+    let branch_name = match branch_name_for_sync_commands(&repo) {
+        Ok(n) => {
             let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "INFO".to_string(), "获取HEAD引用成功".to_string()));
-            h
-        },
+            logs.push((timestamp, "INFO".to_string(), format!("当前分支: {}", n)));
+            n
+        }
         Err(e) => {
             let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), format!("获取HEAD失败: {}", e)));
-            return Err(format!("Failed to get HEAD: {}", e));
+            logs.push((timestamp, "ERROR".to_string(), e.clone()));
+            return Err(e);
         }
     };
-    
-    let branch_name = head.shorthand().unwrap_or("main");
-    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    logs.push((timestamp, "INFO".to_string(), format!("当前分支: {}", branch_name)));
 
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     logs.push((timestamp, "INFO".to_string(), "正在查找远程仓库 origin...".to_string()));

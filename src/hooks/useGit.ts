@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { open } from '@tauri-apps/api/dialog'
 import {
@@ -15,6 +15,9 @@ import {
 import { formatTauriInvokeError } from '../utils/tauriError'
 
 export function useGit() {
+  /** 打开仓库 / 轻量刷新的世代号：仅最后一次结果写入 state，避免异步返回乱序 */
+  const repoLoadGenRef = useRef(0)
+
   const [repoInfo, setRepoInfo] = useState<RepoInfo | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -22,6 +25,7 @@ export function useGit() {
   const [autoOpenEnabled, setAutoOpenEnabled] = useState(true) // 默认启用自动打开
 
   const openRepository = useCallback(async () => {
+    const myGen = ++repoLoadGenRef.current
     try {
       setLoading(true)
       setError(null)
@@ -32,35 +36,46 @@ export function useGit() {
       })
       
       if (selectedPath && typeof selectedPath === 'string') {
-        const repoInfo: RepoInfo = await invoke('open_repository', {
+        const info: RepoInfo = await invoke('open_repository', {
           path: selectedPath,
         })
-        setRepoInfo(repoInfo)
+        if (myGen !== repoLoadGenRef.current) return
+        setRepoInfo(info)
         // 刷新最近仓库列表
         loadRecentRepos()
       }
     } catch (err) {
-      setError(formatTauriInvokeError(err, '打开仓库失败'))
+      if (myGen === repoLoadGenRef.current) {
+        setError(formatTauriInvokeError(err, '打开仓库失败'))
+      }
     } finally {
-      setLoading(false)
+      if (myGen === repoLoadGenRef.current) {
+        setLoading(false)
+      }
     }
   }, [])
 
   const openRepositoryByPath = useCallback(async (path: string) => {
+    const myGen = ++repoLoadGenRef.current
     try {
       setLoading(true)
       setError(null)
       
-      const repoInfo: RepoInfo = await invoke('open_repository', {
+      const info: RepoInfo = await invoke('open_repository', {
         path,
       })
-      setRepoInfo(repoInfo)
+      if (myGen !== repoLoadGenRef.current) return
+      setRepoInfo(info)
       // 刷新最近仓库列表
       loadRecentRepos()
     } catch (err) {
-      setError(formatTauriInvokeError(err, '打开仓库失败'))
+      if (myGen === repoLoadGenRef.current) {
+        setError(formatTauriInvokeError(err, '打开仓库失败'))
+      }
     } finally {
-      setLoading(false)
+      if (myGen === repoLoadGenRef.current) {
+        setLoading(false)
+      }
     }
   }, [])
 
@@ -76,9 +91,11 @@ export function useGit() {
   /** 重新拉取仓库元数据（ahead/behind 等），不触发全局 loading，供提交面板等轻量刷新 */
   const refreshRepoInfo = useCallback(async (): Promise<RepoInfo> => {
     if (!repoInfo) throw new Error('未打开仓库')
+    const myGen = ++repoLoadGenRef.current
     const info: RepoInfo = await invoke('open_repository', {
       path: repoInfo.path,
     })
+    if (myGen !== repoLoadGenRef.current) return info
     setRepoInfo(info)
     await loadRecentRepos()
     return info

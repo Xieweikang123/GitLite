@@ -353,6 +353,10 @@ interface UnifiedCommitViewProps {
   headShortId?: string | null
   /** 将仓库重置到指定提交（git reset） */
   onResetToCommit?: (commitId: string, mode: GitResetMode) => Promise<void>
+  /** 列表加载、搜索失败时的提示 */
+  listError?: string | null
+  hasUpstream?: boolean
+  hasOriginRemote?: boolean
 }
 
 export function UnifiedCommitView({
@@ -383,7 +387,10 @@ export function UnifiedCommitView({
   repoPath,
   currentBranch,
   headShortId,
-  onResetToCommit
+  onResetToCommit,
+  listError,
+  hasUpstream = true,
+  hasOriginRemote = true
 }: UnifiedCommitViewProps) {
   /** 筛选栏输入（待「查询」应用） */
   const [pendingStart, setPendingStart] = useState('')
@@ -1510,9 +1517,16 @@ export function UnifiedCommitView({
                   </Button>
               </div>
             </div>
+            {listError && (
+              <p className="mb-1 rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+                {listError}
+              </p>
+            )}
             <RemoteSyncBar
               ahead={aheadCount}
               behind={behindCount}
+              hasUpstream={hasUpstream}
+              hasOriginRemote={hasOriginRemote}
               disabled={syncBusy}
               onFetchChanges={onFetchChanges}
               onPullChanges={onPullChanges}

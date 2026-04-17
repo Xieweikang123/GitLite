@@ -97,6 +97,10 @@ export interface RepoInfo {
   /** 远程有而本地尚未拉取合并的提交（与 `git log HEAD..@{upstream}` 一致），展示在列表顶部 */
   incoming_commits?: CommitInfo[]
   remote_url?: string // 远程仓库URL
+  /** 当前分支是否设置上游；为 false 时 ahead/behind 不能代表「与远端同步」程度 */
+  has_upstream?: boolean
+  /** 是否存在命名为 origin 的远程 */
+  has_origin_remote?: boolean
 }
 
 /** 工作区「提交 / 推送 / 拉取」经 useGit 统一封装时使用，避免组件内重复 invoke */

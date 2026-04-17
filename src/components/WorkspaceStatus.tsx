@@ -828,6 +828,8 @@ export function WorkspaceStatus({
         <RemoteSyncBar
           ahead={repoInfo.ahead}
           behind={repoInfo.behind}
+          hasUpstream={repoInfo.has_upstream ?? true}
+          hasOriginRemote={repoInfo.has_origin_remote ?? true}
           disabled={loading}
           refreshSpinning={loading}
           onFetchChanges={onFetchChanges}

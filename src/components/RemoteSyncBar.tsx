@@ -5,6 +5,10 @@ import { cn } from '../lib/utils'
 export interface RemoteSyncBarProps {
   ahead?: number
   behind?: number
+  /** 当前分支是否已设置上游；为 false 时 0/0 不表示「已与远端一致」 */
+  hasUpstream?: boolean
+  /** 是否存在 origin 远程；为 false 时禁用获取/拉取/推送 */
+  hasOriginRemote?: boolean
   disabled?: boolean
   /** 刷新按钮图标是否显示加载旋转 */
   refreshSpinning?: boolean
@@ -21,6 +25,8 @@ export interface RemoteSyncBarProps {
 export function RemoteSyncBar({
   ahead,
   behind,
+  hasUpstream = true,
+  hasOriginRemote = true,
   disabled = false,
   refreshSpinning = false,
   onFetchChanges,
@@ -36,6 +42,9 @@ export function RemoteSyncBar({
   if (!onFetchChanges && !onPullChanges && !onPushChanges && !onRefresh) return null
 
   const compact = density === 'compact'
+  const remoteDisabled = disabled || !hasOriginRemote
+  const showUpstreamHint = hasOriginRemote && !hasUpstream && behindN === 0 && aheadN === 0
+  const showSynced = hasOriginRemote && hasUpstream && behindN === 0 && aheadN === 0
 
   return (
     <div
@@ -79,7 +88,19 @@ export function RemoteSyncBar({
             </span>
           </div>
         )}
-        {behindN === 0 && aheadN === 0 && (
+        {!hasOriginRemote && (
+          <div className="flex items-center gap-1.5 text-amber-700 dark:text-amber-300">
+            <AlertCircle className={cn('h-3.5 w-3.5 shrink-0')} />
+            <span title="同步与推送依赖名为 origin 的远程">未配置 origin 远程</span>
+          </div>
+        )}
+        {hasOriginRemote && showUpstreamHint && (
+          <div className="flex items-center gap-1.5 text-amber-700 dark:text-amber-300">
+            <AlertCircle className={cn('h-3.5 w-3.5 shrink-0')} />
+            <span title="请 git push -u 或设置 branch.*.merge 后再查看准确的待拉取 / 待推送">未设置上游分支</span>
+          </div>
+        )}
+        {hasOriginRemote && showSynced && (
           <div className="flex items-center gap-1.5 text-muted-foreground">
             <CheckCircle className={cn('h-3.5 w-3.5', compact && 'shrink-0')} />
             <span>已同步</span>
@@ -92,7 +113,7 @@ export function RemoteSyncBar({
             variant="ghost"
             size="sm"
             onClick={onFetchChanges}
-            disabled={disabled}
+            disabled={remoteDisabled}
             className={cn('px-2 text-xs', compact ? 'h-6' : 'h-7')}
             title="获取远程仓库的最新信息（不合并到本地）"
           >
@@ -104,7 +125,7 @@ export function RemoteSyncBar({
           <Button
             size="sm"
             onClick={onPullChanges}
-            disabled={disabled}
+            disabled={remoteDisabled}
             className={cn('px-2 text-xs', compact ? 'h-6' : 'h-7')}
             title="拉取并合并远程更改到当前分支"
           >
@@ -117,7 +138,7 @@ export function RemoteSyncBar({
             variant="ghost"
             size="sm"
             onClick={onPullChanges}
-            disabled={disabled}
+            disabled={remoteDisabled}
             className={cn('px-2 text-xs', compact ? 'h-6' : 'h-7')}
             title="拉取远程更改（即使没有待拉取的提交）"
           >
@@ -129,7 +150,7 @@ export function RemoteSyncBar({
           <Button
             size="sm"
             onClick={onPushChanges}
-            disabled={disabled}
+            disabled={remoteDisabled}
             className={cn('px-2 text-xs', compact ? 'h-6' : 'h-7')}
             title="将本地提交推送到远程仓库"
           >
@@ -142,7 +163,7 @@ export function RemoteSyncBar({
             variant="ghost"
             size="sm"
             onClick={onPushChanges}
-            disabled={disabled}
+            disabled={remoteDisabled}
             className={cn('px-2 text-xs', compact ? 'h-6' : 'h-7')}
             title="推送当前分支（即使没有待推送的提交）"
           >
