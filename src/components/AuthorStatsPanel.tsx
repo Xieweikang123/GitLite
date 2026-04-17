@@ -1,10 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { addDays, format, startOfWeek, subDays } from 'date-fns'
+import {
+  addDays,
+  addMonths,
+  endOfMonth,
+  endOfWeek,
+  format,
+  isSameMonth,
+  isToday,
+  startOfMonth,
+  startOfWeek,
+  subDays,
+} from 'date-fns'
 import {
   AlertCircle,
   BarChart3,
+  Calendar,
   CalendarDays,
+  ChevronLeft,
+  ChevronRight,
   FileStack,
   Flame,
   GitCompareArrows,
@@ -24,18 +38,67 @@ import type {
   TimeBucketStat,
 } from '../types/git'
 
-type ReportTab = 'authors' | 'timeline' | 'heatmap' | 'lines' | 'paths'
+type ReportTab = 'authors' | 'timeline' | 'heatmap' | 'calendar' | 'lines' | 'paths'
 type TimeGranularity = 'day' | 'week' | 'month'
 
 const REPORT_TABS: { id: ReportTab; label: string; Icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'authors', label: '作者', Icon: Users },
   { id: 'timeline', label: '时间趋势', Icon: BarChart3 },
   { id: 'heatmap', label: '贡献热力', Icon: Flame },
+  { id: 'calendar', label: '日历视图', Icon: Calendar },
   { id: 'lines', label: '增删行', Icon: GitCompareArrows },
   { id: 'paths', label: '文件热度', Icon: FileStack },
 ]
 
 const HEAT_WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
+
+/** 日历表头：完整「周一…周日」，避免单字「一、二、三」在部分字体下显示异常 */
+const CALENDAR_WEEKDAY_HEADERS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'] as const
+
+/** 提交活跃度：按绝对次数分档（背景深浅），与产品说明一致 */
+type CommitActivityBand = 'none' | 'one' | 'mid' | 'high'
+
+function getCommitActivityBand(count: number): CommitActivityBand {
+  if (count <= 0) return 'none'
+  if (count === 1) return 'one'
+  if (count <= 3) return 'mid'
+  return 'high'
+}
+
+/** 日历格：浅色 + dark（#0f1115 / #1b1f2a，border rgba(255,255,255,0.06)） */
+function calendarDayCellClass(
+  band: CommitActivityBand,
+  opts: { inMonth: boolean; isToday: boolean; isSelected: boolean }
+): string {
+  const { inMonth, isToday, isSelected } = opts
+  if (!inMonth) {
+    return cn(
+      'relative flex min-h-[2.1rem] flex-col items-center justify-center rounded-lg border border-transparent',
+      'pointer-events-none select-none opacity-45 sm:min-h-[2.35rem]',
+      'bg-zinc-100/60 dark:bg-[#0f1115]/70 dark:opacity-[0.4]'
+    )
+  }
+  const base = cn(
+    'group relative flex min-h-[2.1rem] cursor-default flex-col items-center justify-center rounded-lg border px-0.5 py-1.5',
+    'transition-all duration-150 sm:min-h-[2.35rem]',
+    'border-zinc-200/45 hover:-translate-y-px hover:shadow-sm',
+    'dark:border-white/[0.06] dark:hover:bg-white/[0.03] dark:hover:shadow-[0_2px_12px_rgba(0,0,0,0.5)]'
+  )
+  const surface = cn(
+    band === 'none' && 'bg-zinc-50 dark:bg-[#1b1f2a]',
+    band === 'one' && 'bg-blue-500/11 dark:bg-[#3b82f6]/14',
+    band === 'mid' && 'bg-blue-500/18 dark:bg-[#3b82f6]/26',
+    band === 'high' && 'bg-blue-500/26 dark:bg-[#3b82f6]/40'
+  )
+  const selected = isSelected
+    ? 'z-[1] ring-2 ring-blue-500/25 ring-offset-1 ring-offset-white dark:ring-[#3b82f6]/45 dark:ring-offset-0 dark:shadow-[inset_0_0_0_1px_rgba(59,130,246,0.28)]'
+    : ''
+  const todayDot =
+    isToday && inMonth
+      ? "after:pointer-events-none after:absolute after:right-1.5 after:top-1.5 after:h-1 after:w-1 after:rounded-full after:bg-blue-500 after:content-[''] dark:after:bg-[#3b82f6]"
+      : ''
+  return cn(base, surface, selected, todayDot)
+}
 
 /** 按仓库 / 范围 / 维度区分；切换仓库再切回时可命中缓存，避免重复计算 */
 const DIFF_AGGREGATE_PATH_LIMIT = 50
@@ -94,6 +157,8 @@ export function AuthorStatsPanel({
   const [statsRev, setStatsRev] = useState<string | null>(null)
   const [reportTab, setReportTab] = useState<ReportTab>('authors')
   const [timeGran, setTimeGran] = useState<TimeGranularity>('day')
+  /** 日历 Tab 当前展示的月份（自然月首日） */
+  const [calendarMonth, setCalendarMonth] = useState(() => startOfMonth(new Date()))
 
   const [authorRows, setAuthorRows] = useState<AuthorCommitStat[]>([])
   const [activityRows, setActivityRows] = useState<TimeBucketStat[]>([])
@@ -112,6 +177,7 @@ export function AuthorStatsPanel({
     diffDataRef.current = null
     setDiffAgg(null)
     setDiffProgress(null)
+    setCalendarMonth(startOfMonth(new Date()))
   }, [repoPath])
 
   useEffect(() => {
@@ -196,7 +262,7 @@ export function AuthorStatsPanel({
             setError(null)
             return
           }
-        } else if (reportTab === 'heatmap') {
+        } else if (reportTab === 'heatmap' || reportTab === 'calendar') {
           const k = cacheKeyActivity(repoPath, scope, rev, 'day')
           const hit = statsResultCache.heatmap.get(k)
           if (hit) {
@@ -232,7 +298,7 @@ export function AuthorStatsPanel({
           const k = cacheKeyActivity(repoPath, scope, rev, timeGran)
           statsResultCache.activity.set(k, data)
           setActivityRows(data)
-        } else if (reportTab === 'heatmap') {
+        } else if (reportTab === 'heatmap' || reportTab === 'calendar') {
           setHeatmapDays([])
           const data = await getCommitActivityStats('day', scope, rev)
           const k = cacheKeyActivity(repoPath, scope, rev, 'day')
@@ -359,13 +425,15 @@ export function AuthorStatsPanel({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2 pb-3 pt-1 sm:px-0">
+    <div className="flex min-h-0 flex-1 flex-col gap-1 pb-2 pt-0.5 sm:px-0">
       <Card className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border-border/70 shadow-sm">
-        <CardHeader className="space-y-4 border-b border-border/60 bg-muted/20 px-4 pb-4 pt-4 sm:px-6">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0 space-y-1">
-              <CardTitle className="text-lg font-semibold tracking-tight">统计与报表</CardTitle>
-              <CardDescription className="max-w-2xl text-xs leading-relaxed sm:text-sm">
+        <CardHeader className="space-y-1.5 border-b border-border/60 bg-muted/20 px-3 py-2 sm:px-4 sm:py-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+            <div className="min-w-0 flex-1 space-y-0">
+              <CardTitle className="text-base font-semibold leading-tight tracking-tight">
+                统计与报表
+              </CardTitle>
+              <CardDescription className="mt-0.5 line-clamp-2 max-w-2xl text-[11px] leading-snug text-muted-foreground sm:line-clamp-1 sm:text-xs">
                 基于当前历史范围聚合；增删行与路径为相对「首父」的 diff。
               </CardDescription>
             </div>
@@ -373,7 +441,7 @@ export function AuthorStatsPanel({
               type="button"
               variant="outline"
               size="sm"
-              className="h-9 shrink-0 gap-1.5 px-3"
+              className="h-8 shrink-0 gap-1 px-2.5 text-xs"
               disabled={loading}
               onClick={() => void handleRefresh()}
             >
@@ -386,30 +454,30 @@ export function AuthorStatsPanel({
             </Button>
           </div>
 
-          <details className="group rounded-lg border border-border/50 bg-background/50 px-3 py-2 text-xs text-muted-foreground [&_summary]:cursor-pointer [&_summary]:list-none [&_summary]:outline-none [&_summary::-webkit-details-marker]:hidden">
-            <summary className="flex items-center gap-2 font-medium text-foreground/80">
-              <Info className="h-3.5 w-3.5 shrink-0 text-primary/80" aria-hidden />
+          <details className="group text-[11px] text-muted-foreground [&_summary]:cursor-pointer [&_summary]:list-none [&_summary]:outline-none [&_summary::-webkit-details-marker]:hidden">
+            <summary className="inline-flex items-center gap-1 rounded-md py-0.5 font-medium text-foreground/75 hover:text-foreground">
+              <Info className="h-3 w-3 shrink-0 text-primary/75" aria-hidden />
               <span>数据说明</span>
-              <span className="text-[10px] text-muted-foreground group-open:opacity-0 sm:text-xs">
-                （点击展开）
+              <span className="text-[10px] font-normal text-muted-foreground/90 group-open:hidden">
+                （展开）
               </span>
             </summary>
-            <p className="mt-2 border-t border-border/40 pt-2 leading-relaxed text-muted-foreground">
-              时间线与热力图按提交作者时区换算日期。合并提交的 diff 仅相对第一父提交；全量 diff 在大型仓库可能较慢，可稍后重试。
+            <p className="mt-1.5 border-l-2 border-primary/25 pl-2.5 text-[11px] leading-relaxed text-muted-foreground">
+              时间线、热力图与日历视图按提交作者时区换算日期。合并提交的 diff 仅相对第一父提交；全量 diff 在大型仓库可能较慢，可稍后重试。
               各 Tab 的统计结果会在内存中按「仓库 + 范围」做缓存，切换仓库再打开同一仓库时可立即复用；若刚有新的提交或需最新数据，请点「刷新」。
             </p>
           </details>
 
-          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+          <div className="flex flex-col gap-1.5 sm:flex-row sm:flex-wrap sm:items-center">
             <div
-              className="inline-flex h-9 shrink-0 rounded-lg border border-input bg-background p-0.5 shadow-sm"
+              className="inline-flex h-8 shrink-0 rounded-md border border-input bg-background p-0.5 shadow-sm"
               role="group"
               aria-label="统计范围"
             >
               <button
                 type="button"
                 className={cn(
-                  'rounded-md px-3 py-1 text-xs font-medium transition-all',
+                  'rounded px-2.5 py-0.5 text-[11px] font-medium transition-all sm:text-xs',
                   statsScope === 'head'
                     ? 'bg-primary/10 text-primary shadow-sm'
                     : 'text-muted-foreground hover:text-foreground'
@@ -421,7 +489,7 @@ export function AuthorStatsPanel({
               <button
                 type="button"
                 className={cn(
-                  'rounded-md px-3 py-1 text-xs font-medium transition-all',
+                  'rounded px-2.5 py-0.5 text-[11px] font-medium transition-all sm:text-xs',
                   statsScope === 'all'
                     ? 'bg-primary/10 text-primary shadow-sm'
                     : 'text-muted-foreground hover:text-foreground'
@@ -436,10 +504,10 @@ export function AuthorStatsPanel({
             </div>
 
             {statsScope === 'head' && branchNamesSorted.length > 0 && (
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="hidden text-xs text-muted-foreground sm:inline">分支</span>
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span className="hidden text-[11px] text-muted-foreground sm:inline sm:text-xs">分支</span>
                 <select
-                  className="h-9 max-w-[min(100%,16rem)] flex-1 rounded-lg border border-input bg-background px-3 text-xs shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="h-8 max-w-[min(100%,16rem)] flex-1 rounded-md border border-input bg-background px-2 text-[11px] shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:text-xs"
                   value={statsRev ?? ''}
                   onChange={(e) => {
                     const v = e.target.value
@@ -458,15 +526,15 @@ export function AuthorStatsPanel({
             )}
 
             {reportTab === 'timeline' && (
-              <div className="ml-auto flex items-center gap-2">
-                <span className="text-xs text-muted-foreground">粒度</span>
-                <div className="inline-flex rounded-lg border border-input bg-background p-0.5 shadow-sm">
+              <div className="ml-auto flex items-center gap-1.5">
+                <span className="text-[11px] text-muted-foreground sm:text-xs">粒度</span>
+                <div className="inline-flex h-8 rounded-md border border-input bg-background p-0.5 shadow-sm">
                   {(['day', 'week', 'month'] as const).map((g) => (
                     <button
                       key={g}
                       type="button"
                       className={cn(
-                        'rounded-md px-2.5 py-1 text-xs font-medium transition-all',
+                        'rounded px-2 py-0.5 text-[11px] font-medium transition-all sm:text-xs',
                         timeGran === g
                           ? 'bg-muted text-foreground shadow-sm'
                           : 'text-muted-foreground hover:text-foreground'
@@ -482,7 +550,7 @@ export function AuthorStatsPanel({
           </div>
 
           <div
-            className="-mx-1 flex gap-0.5 overflow-x-auto pb-0.5 pt-0.5 [scrollbar-width:thin]"
+            className="-mx-0.5 flex gap-0.5 overflow-x-auto pb-px pt-px [scrollbar-width:thin]"
             role="tablist"
             aria-label="报表类型"
           >
@@ -493,14 +561,14 @@ export function AuthorStatsPanel({
                 role="tab"
                 aria-selected={reportTab === id}
                 className={cn(
-                  'flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium transition-colors sm:text-sm',
+                  'flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors sm:gap-1.5 sm:px-2.5 sm:text-xs',
                   reportTab === id
                     ? 'bg-primary/12 text-primary shadow-sm ring-1 ring-primary/25'
                     : 'text-muted-foreground hover:bg-muted/80 hover:text-foreground'
                 )}
                 onClick={() => setReportTab(id)}
               >
-                <Icon className="h-3.5 w-3.5 opacity-90 sm:h-4 sm:w-4" aria-hidden />
+                <Icon className="h-3 w-3 shrink-0 opacity-90 sm:h-3.5 sm:w-3.5" aria-hidden />
                 {label}
               </button>
             ))}
@@ -508,16 +576,24 @@ export function AuthorStatsPanel({
 
           {error && (
             <div
-              className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-sm text-destructive"
+              className="flex items-start gap-1.5 rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs text-destructive sm:text-sm"
               role="alert"
             >
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 sm:h-4 sm:w-4" aria-hidden />
               <span className="min-w-0 break-words">{error}</span>
             </div>
           )}
         </CardHeader>
 
-        <CardContent className="min-h-0 flex-1 overflow-auto px-4 py-5 sm:px-6">
+        <CardContent
+          className={cn(
+            'min-h-0 flex-1 px-3 sm:px-4',
+            /* 日历：避免比视口略高 1～2px 时出现无意义纵向滚动条；其它报表仍允许纵向滚动 */
+            reportTab === 'calendar'
+              ? 'flex flex-col overflow-hidden py-2 sm:py-3'
+              : 'overflow-auto py-3 sm:py-4'
+          )}
+        >
           {reportTab === 'authors' && (
             <AuthorsSection
               loading={loading}
@@ -548,6 +624,19 @@ export function AuthorStatsPanel({
               weekColumns={weekColumns}
               heatScale={heatScale}
             />
+          )}
+
+          {reportTab === 'calendar' && (
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+              <CalendarSection
+                loading={loading}
+                error={!!error}
+                heatmapDays={heatmapDays}
+                heatmapMap={heatmapMap}
+                calendarMonth={calendarMonth}
+                onCalendarMonthChange={setCalendarMonth}
+              />
+            </div>
           )}
 
           {(reportTab === 'lines' || reportTab === 'paths') && (
@@ -942,6 +1031,240 @@ function HeatmapSection({
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function CalendarSection({
+  loading,
+  error,
+  heatmapDays,
+  heatmapMap,
+  calendarMonth,
+  onCalendarMonthChange,
+}: {
+  loading: boolean
+  error: boolean
+  heatmapDays: TimeBucketStat[]
+  heatmapMap: Map<string, number>
+  calendarMonth: Date
+  onCalendarMonthChange: (d: Date) => void
+}) {
+  const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null)
+
+  useEffect(() => {
+    setSelectedDateKey(null)
+  }, [calendarMonth])
+
+  const gridDays = useMemo(() => {
+    const mStart = startOfMonth(calendarMonth)
+    const mEnd = endOfMonth(calendarMonth)
+    const gridStart = startOfWeek(mStart, { weekStartsOn: 1 })
+    const gridEnd = endOfWeek(mEnd, { weekStartsOn: 1 })
+    const out: Date[] = []
+    for (let d = gridStart; d <= gridEnd; d = addDays(d, 1)) {
+      out.push(d)
+    }
+    return out
+  }, [calendarMonth])
+
+  const monthStats = useMemo(() => {
+    let total = 0
+    let active = 0
+    let peak = 0
+    const mStart = startOfMonth(calendarMonth)
+    const mEnd = endOfMonth(calendarMonth)
+    for (let d = mStart; d <= mEnd; d = addDays(d, 1)) {
+      const key = format(d, 'yyyy-MM-dd')
+      const c = heatmapMap.get(key) ?? 0
+      total += c
+      if (c > 0) active++
+      if (c > peak) peak = c
+    }
+    return { total, active, peak }
+  }, [calendarMonth, heatmapMap])
+
+  if (loading && heatmapDays.length === 0) {
+    return (
+      <div
+        className="flex min-h-[12rem] items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-zinc-50 text-sm text-zinc-500 dark:border-white/[0.06] dark:bg-[#151821] dark:text-[#8b93a7]"
+        aria-busy
+      >
+        <Loader2 className="h-5 w-5 shrink-0 animate-spin opacity-80" aria-hidden />
+        正在统计每日提交…
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 rounded-xl dark:bg-[#0f1115] dark:p-1">
+      {!loading && heatmapDays.length === 0 && !error && (
+        <p className="shrink-0 text-center text-[11px] text-zinc-500 dark:text-[#8b93a7] sm:text-xs">
+          当前范围内无提交记录；日历仍展示各日，无提交不显示次数。
+        </p>
+      )}
+
+      <div
+        className={cn(
+          'flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border p-4 sm:p-5',
+          'border-zinc-200/90 bg-white dark:border-white/[0.06] dark:bg-[#151821]'
+        )}
+        role="region"
+        aria-label="提交日历"
+      >
+        <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 space-y-1">
+            <h2 className="text-[15px] font-semibold leading-snug tracking-tight text-zinc-900 dark:text-white">
+              提交日历
+            </h2>
+            <p className="text-[13px] text-zinc-500 dark:text-[#8b93a7]">{format(calendarMonth, 'yyyy年M月')}</p>
+            {!loading && (
+              <p className="pt-1 text-[12px] leading-relaxed text-zinc-600 dark:text-[#8b93a7]">
+                <span className="font-medium tabular-nums text-zinc-900 dark:text-white">{monthStats.total}</span>
+                次提交 · 活跃
+                <span className="mx-0.5 font-medium tabular-nums text-zinc-900 dark:text-white">{monthStats.active}</span>
+                天 · 峰值
+                <span className="ml-0.5 font-medium tabular-nums text-zinc-900 dark:text-white">{monthStats.peak}</span>
+                次
+              </p>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5 rounded-lg border border-zinc-200/80 bg-zinc-50/90 p-0.5 dark:border-white/[0.06] dark:bg-[#1b1f2a]">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-zinc-500 hover:bg-zinc-200/80 dark:text-[#8b93a7] dark:hover:bg-white/[0.06] dark:hover:text-zinc-200"
+              aria-label="上一月"
+              onClick={() => onCalendarMonthChange(startOfMonth(addMonths(calendarMonth, -1)))}
+            >
+              <ChevronLeft className="h-3.5 w-3.5 opacity-90" aria-hidden />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-2 text-[11px] text-zinc-500 hover:bg-zinc-200/80 dark:text-[#8b93a7] dark:hover:bg-white/[0.06] dark:hover:text-zinc-200"
+              onClick={() => onCalendarMonthChange(startOfMonth(new Date()))}
+            >
+              本月
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 text-zinc-500 hover:bg-zinc-200/80 dark:text-[#8b93a7] dark:hover:bg-white/[0.06] dark:hover:text-zinc-200"
+              aria-label="下一月"
+              onClick={() => onCalendarMonthChange(startOfMonth(addMonths(calendarMonth, 1)))}
+            >
+              <ChevronRight className="h-3.5 w-3.5 opacity-90" aria-hidden />
+            </Button>
+          </div>
+        </div>
+
+        <div className="mb-3 grid grid-cols-7 gap-2 sm:gap-2.5">
+          {CALENDAR_WEEKDAY_HEADERS.map((wd) => (
+            <div
+              key={wd}
+              className="select-none pb-0.5 text-center text-[10px] font-medium tracking-wide text-zinc-400 dark:text-[#8b93a7] sm:text-[11px]"
+            >
+              {wd}
+            </div>
+          ))}
+        </div>
+
+        <div
+          className="grid grid-cols-7 gap-2 sm:gap-2.5 [grid-auto-rows:2.1rem] sm:[grid-auto-rows:2.35rem]"
+          role="grid"
+          aria-label={`${format(calendarMonth, 'yyyy年M月')} 提交日历`}
+        >
+          {gridDays.map((day) => {
+            const key = format(day, 'yyyy-MM-dd')
+            const count = heatmapMap.get(key) ?? 0
+            const inMonth = isSameMonth(day, calendarMonth)
+            const today = isToday(day)
+            const band = getCommitActivityBand(count)
+            const isSelected = selectedDateKey === key && inMonth
+            const cellClass = calendarDayCellClass(band, {
+              inMonth,
+              isToday: today,
+              isSelected,
+            })
+            const title =
+              count > 0 ? `${key} · ${count} 次提交` : `${key} · 无提交`
+
+            const inner = (
+              <>
+                <span
+                  className={cn(
+                    'text-[13px] font-semibold tabular-nums leading-none',
+                    inMonth ? 'text-zinc-900 dark:text-white' : 'text-zinc-400 dark:text-zinc-600'
+                  )}
+                >
+                  {format(day, 'd')}
+                </span>
+                {count > 0 && (
+                  <span className="mt-0.5 text-[9px] font-medium tabular-nums leading-none text-zinc-500 dark:text-[#8b93a7]">
+                    {count}
+                  </span>
+                )}
+              </>
+            )
+
+            if (!inMonth) {
+              return (
+                <div key={key} role="gridcell" className={cellClass} title={title}>
+                  {inner}
+                </div>
+              )
+            }
+
+            return (
+              <button
+                key={key}
+                type="button"
+                role="gridcell"
+                title={title}
+                aria-label={title}
+                aria-current={today ? 'date' : undefined}
+                aria-pressed={isSelected}
+                onClick={() => setSelectedDateKey((prev) => (prev === key ? null : key))}
+                className={cn(
+                  cellClass,
+                  'focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3b82f6]/35'
+                )}
+              >
+                {inner}
+              </button>
+            )
+          })}
+        </div>
+
+        <div className="mt-5 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-zinc-200 pt-3 dark:border-white/[0.06]">
+          <span className="text-[10px] font-medium text-zinc-500 dark:text-[#8b93a7]">活跃度</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[9px] text-zinc-400 dark:text-zinc-600">低</span>
+            <span
+              className="h-2 w-2 rounded-[3px] bg-zinc-50 ring-1 ring-zinc-200/80 dark:bg-[#1b1f2a] dark:ring-white/[0.06]"
+              title="0 次"
+            />
+            <span
+              className="h-2 w-2 rounded-[3px] bg-blue-500/11 dark:bg-[#3b82f6]/14"
+              title="1 次"
+            />
+            <span
+              className="h-2 w-2 rounded-[3px] bg-blue-500/18 dark:bg-[#3b82f6]/26"
+              title="2–3 次"
+            />
+            <span
+              className="h-2 w-2 rounded-[3px] bg-blue-500/26 dark:bg-[#3b82f6]/40"
+              title="4 次及以上"
+            />
+            <span className="text-[9px] text-zinc-400 dark:text-zinc-600">高</span>
+          </div>
+          <span className="text-[9px] text-zinc-400 dark:text-zinc-600">按次数分档，非相对排名</span>
+        </div>
+      </div>
     </div>
   )
 }
