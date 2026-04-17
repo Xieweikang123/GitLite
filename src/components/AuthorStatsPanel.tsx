@@ -57,19 +57,66 @@ const HEAT_WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
 /** 日历表头：完整「周一…周日」，避免单字「一、二、三」在部分字体下显示异常 */
 const CALENDAR_WEEKDAY_HEADERS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'] as const
 
-/** 提交活跃度：按绝对次数分档（背景深浅），与产品说明一致 */
-type CommitActivityBand = 'none' | 'one' | 'mid' | 'high'
+/** 超过该次数仍用最浓一档；1…N 逐级加深，保证「次数越多一定越深」 */
+const COMMIT_HEAT_MAX_LEVEL = 16
 
-function getCommitActivityBand(count: number): CommitActivityBand {
-  if (count <= 0) return 'none'
-  if (count === 1) return 'one'
-  if (count <= 3) return 'mid'
-  return 'high'
+function commitCountHeatLevel(count: number): number {
+  if (count <= 0) return 0
+  return Math.min(count, COMMIT_HEAT_MAX_LEVEL)
 }
 
-/** 日历格：无提交 = 虚线空槽 + 内环；有提交 = 翠绿色阶（与贡献热力一致），与「无提交」拉开色差 */
+/**
+ * 热力图色块背景：按次数单调加深（与日历同档）。
+ * 使用固定档位避免「相对当月最大值」导致 1 次与 2 次落在同一桶。
+ */
+const HEATMAP_HEAT_BG: readonly string[] = [
+  'bg-emerald-500/36 dark:bg-emerald-400/28',
+  'bg-emerald-500/40 dark:bg-emerald-400/32',
+  'bg-emerald-500/44 dark:bg-emerald-400/36',
+  'bg-emerald-500/48 dark:bg-emerald-400/40',
+  'bg-emerald-500/52 dark:bg-emerald-400/44',
+  'bg-emerald-500/56 dark:bg-emerald-400/48',
+  'bg-emerald-500/60 dark:bg-emerald-400/52',
+  'bg-emerald-500/64 dark:bg-emerald-400/56',
+  'bg-emerald-500/68 dark:bg-emerald-400/60',
+  'bg-emerald-500/72 dark:bg-emerald-400/64',
+  'bg-emerald-500/76 dark:bg-emerald-400/68',
+  'bg-emerald-500/82 dark:bg-emerald-400/72',
+  'bg-emerald-500/86 dark:bg-emerald-400/76',
+  'bg-emerald-500/90 dark:bg-emerald-400/80',
+  'bg-emerald-600/92 dark:bg-emerald-500/88',
+  'bg-emerald-600 dark:bg-emerald-500',
+]
+
+function commitHeatmapBgClass(count: number): string {
+  const lvl = commitCountHeatLevel(count)
+  if (lvl === 0) return 'bg-muted/70 dark:bg-muted/50'
+  return HEATMAP_HEAT_BG[lvl - 1]
+}
+
+/** 日历有提交格：与 HEATMAP_HEAT_BG 档位一一对应，边框与 hover 同步加深 */
+const CALENDAR_HEAT_SURFACE: readonly string[] = [
+  'border border-solid border-emerald-500/46 bg-emerald-500/36 dark:border-emerald-400/40 dark:bg-emerald-400/28 dark:hover:bg-emerald-400/36',
+  'border border-solid border-emerald-500/48 bg-emerald-500/40 dark:border-emerald-400/42 dark:bg-emerald-400/32 dark:hover:bg-emerald-400/40',
+  'border border-solid border-emerald-500/50 bg-emerald-500/44 dark:border-emerald-400/44 dark:bg-emerald-400/36 dark:hover:bg-emerald-400/44',
+  'border border-solid border-emerald-500/52 bg-emerald-500/48 dark:border-emerald-400/46 dark:bg-emerald-400/40 dark:hover:bg-emerald-400/48',
+  'border border-solid border-emerald-500/54 bg-emerald-500/52 dark:border-emerald-400/48 dark:bg-emerald-400/44 dark:hover:bg-emerald-400/52',
+  'border border-solid border-emerald-500/58 bg-emerald-500/56 dark:border-emerald-400/50 dark:bg-emerald-400/48 dark:hover:bg-emerald-400/56',
+  'border border-solid border-emerald-500/62 bg-emerald-500/60 dark:border-emerald-400/52 dark:bg-emerald-400/52 dark:hover:bg-emerald-400/60',
+  'border border-solid border-emerald-500/66 bg-emerald-500/64 dark:border-emerald-400/54 dark:bg-emerald-400/56 dark:hover:bg-emerald-400/64',
+  'border border-solid border-emerald-500/70 bg-emerald-500/68 dark:border-emerald-400/56 dark:bg-emerald-400/60 dark:hover:bg-emerald-400/68',
+  'border border-solid border-emerald-500/74 bg-emerald-500/72 dark:border-emerald-400/58 dark:bg-emerald-400/64 dark:hover:bg-emerald-400/72',
+  'border border-solid border-emerald-500/78 bg-emerald-500/76 dark:border-emerald-400/60 dark:bg-emerald-400/68 dark:hover:bg-emerald-400/76',
+  'border border-solid border-emerald-600/80 bg-emerald-500/82 dark:border-emerald-400/64 dark:bg-emerald-400/72 dark:hover:bg-emerald-400/80',
+  'border border-solid border-emerald-600/82 bg-emerald-500/86 dark:border-emerald-400/68 dark:bg-emerald-400/76 dark:hover:bg-emerald-400/84',
+  'border border-solid border-emerald-600/85 bg-emerald-500/90 dark:border-emerald-400/72 dark:bg-emerald-400/80 dark:hover:bg-emerald-400/88',
+  'border border-solid border-emerald-600/88 bg-emerald-600/92 text-white shadow-[inset_0_1px_0_0_rgba(255,255,255,0.1)] dark:border-emerald-400/78 dark:bg-emerald-500/88 dark:hover:bg-emerald-400/92',
+  'border border-solid border-emerald-600/90 bg-emerald-600 text-white shadow-[inset_0_1px_0_0_rgba(255,255,255,0.12)] dark:border-emerald-400/80 dark:bg-emerald-500 dark:hover:bg-emerald-400',
+]
+
+/** 日历格：无提交 = 虚线空槽；有提交 = 按次数单调加深的翠绿色阶（与贡献热力一致） */
 function calendarDayCellClass(
-  band: CommitActivityBand,
+  count: number,
   opts: { inMonth: boolean; isToday: boolean; isSelected: boolean }
 ): string {
   const { inMonth, isToday, isSelected } = opts
@@ -86,8 +133,9 @@ function calendarDayCellClass(
     'hover:-translate-y-px hover:shadow-sm',
     'dark:hover:shadow-[0_2px_12px_rgba(0,0,0,0.5)]'
   )
+  const lvl = commitCountHeatLevel(count)
   const surface = cn(
-    band === 'none' &&
+    count <= 0 &&
       cn(
         'ring-1 ring-inset ring-zinc-200/95',
         'border border-dashed border-zinc-400/75 bg-zinc-100/95',
@@ -95,21 +143,7 @@ function calendarDayCellClass(
         'dark:[background-image:linear-gradient(135deg,rgba(255,255,255,0.035)_0%,transparent_55%)]',
         'hover:border-zinc-500 hover:bg-zinc-200/90 dark:hover:border-zinc-400/45 dark:hover:bg-[#12151c]'
       ),
-    band === 'one' &&
-      cn(
-        'border border-solid border-emerald-500/50 bg-emerald-500/40',
-        'dark:border-emerald-400/42 dark:bg-emerald-400/35 dark:hover:bg-emerald-400/44'
-      ),
-    band === 'mid' &&
-      cn(
-        'border border-solid border-emerald-500/60 bg-emerald-500/62',
-        'dark:border-emerald-400/52 dark:bg-emerald-400/52 dark:hover:bg-emerald-400/60'
-      ),
-    band === 'high' &&
-      cn(
-        'border border-solid border-emerald-600/85 bg-emerald-600 text-white shadow-[inset_0_1px_0_0_rgba(255,255,255,0.12)]',
-        'dark:border-emerald-400/75 dark:bg-emerald-500 dark:hover:bg-emerald-400'
-      )
+    count > 0 && lvl > 0 && CALENDAR_HEAT_SURFACE[lvl - 1]
   )
   const selected = isSelected
     ? 'z-[1] ring-2 ring-emerald-500/50 ring-offset-1 ring-offset-white dark:ring-emerald-400/60 dark:ring-offset-0 dark:shadow-[inset_0_0_0_1px_rgba(52,211,153,0.4)]'
@@ -459,15 +493,7 @@ export function AuthorStatsPanel({
 
   const weekColumns = Math.max(1, Math.ceil(heatmapCells.length / 7))
 
-  const heatScale = (count: number) => {
-    if (count === 0) return 'bg-muted/70 dark:bg-muted/50'
-    if (heatmapMax <= 0) return 'bg-emerald-500/35 dark:bg-emerald-400/30'
-    const t = count / heatmapMax
-    if (t < 0.25) return 'bg-emerald-500/40 dark:bg-emerald-400/35'
-    if (t < 0.5) return 'bg-emerald-500/60 dark:bg-emerald-400/50'
-    if (t < 0.75) return 'bg-emerald-500/80 dark:bg-emerald-400/65'
-    return 'bg-emerald-600 dark:bg-emerald-500'
-  }
+  const heatScale = (count: number) => commitHeatmapBgClass(count)
 
   if (!repoPath) {
     return (
@@ -1173,14 +1199,12 @@ function HeatmapSection({
           <div className="mt-4 flex flex-wrap items-center justify-end gap-3 border-t border-border/50 pt-3 text-[10px] text-muted-foreground sm:text-xs">
             <span>较少</span>
             <div className="flex gap-1">
-              {[0, 1, 2, 3, 4].map((i) => (
+              {[0, 4, 8, 12, 16].map((c) => (
                 <div
-                  key={i}
+                  key={c}
                   className={cn(
                     'h-3.5 w-3.5 rounded-sm sm:h-4 sm:w-4',
-                    heatmapMax > 0
-                      ? heatScale(Math.round((heatmapMax * i) / 4))
-                      : 'bg-muted/70'
+                    heatmapMax > 0 ? heatScale(c) : 'bg-muted/70'
                   )}
                 />
               ))}
@@ -1344,9 +1368,9 @@ function CalendarSection({
             const count = heatmapMap.get(key) ?? 0
             const inMonth = isSameMonth(day, calendarMonth)
             const today = isToday(day)
-            const band = getCommitActivityBand(count)
+            const heatLevel = commitCountHeatLevel(count)
             const isSelected = selectedDateKey === key && inMonth
-            const cellClass = calendarDayCellClass(band, {
+            const cellClass = calendarDayCellClass(count, {
               inMonth,
               isToday: today,
               isSelected,
@@ -1362,9 +1386,9 @@ function CalendarSection({
                     !inMonth && 'font-medium text-zinc-400 dark:text-zinc-600',
                     inMonth &&
                       count > 0 &&
-                      band !== 'high' &&
+                      heatLevel < 15 &&
                       'font-semibold text-zinc-900 dark:text-white',
-                    inMonth && count > 0 && band === 'high' && 'font-semibold text-white',
+                    inMonth && count > 0 && heatLevel >= 15 && 'font-semibold text-white',
                     inMonth &&
                       count <= 0 &&
                       'font-medium text-zinc-400 dark:text-zinc-500'
@@ -1377,7 +1401,7 @@ function CalendarSection({
                     <span
                       className={cn(
                         'h-1 w-1 rounded-full',
-                        band === 'high'
+                        heatLevel >= 15
                           ? 'bg-white shadow-[0_0_6px_rgba(255,255,255,0.55)]'
                           : 'bg-emerald-700 shadow-[0_0_6px_rgba(16,185,129,0.45)] dark:bg-emerald-200'
                       )}
@@ -1386,7 +1410,7 @@ function CalendarSection({
                     <span
                       className={cn(
                         'text-[9px] font-semibold tabular-nums leading-none',
-                        band === 'high'
+                        heatLevel >= 15
                           ? 'text-emerald-50'
                           : 'text-emerald-900 dark:text-emerald-100'
                       )}
