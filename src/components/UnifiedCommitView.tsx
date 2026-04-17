@@ -1347,7 +1347,7 @@ export function UnifiedCommitView({
                     onClick={() => setRightPanelCollapsed(true)}
                     title="隐藏右侧（提交摘要、文件列表、差异），仅保留本列表"
                   >
-                    <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
+                    <ChevronRight className="h-3.5 w-3.5" aria-hidden />
                     <span className="hidden sm:inline">仅列表</span>
                   </Button>
                 ) : (
@@ -1359,7 +1359,7 @@ export function UnifiedCommitView({
                     onClick={() => setRightPanelCollapsed(false)}
                     title="恢复右侧提交详情与变更"
                   >
-                    <ChevronRight className="h-3.5 w-3.5" aria-hidden />
+                    <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
                     <span className="hidden sm:inline">显示详情</span>
                   </Button>
                 )}

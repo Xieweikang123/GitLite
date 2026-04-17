@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { Badge } from './ui/badge'
 import { FileChange, type WorkspaceGitActions } from '../types/git'
 import { FileDiffModal } from './FileDiffModal'
-import { Eye, Archive, ArchiveRestore, Trash2, CheckCircle, AlertCircle, Loader2, Sparkles } from 'lucide-react'
+import { Eye, Archive, ArchiveRestore, Trash2, CheckCircle, AlertCircle, Loader2, Sparkles, RotateCcw } from 'lucide-react'
 import { shortenPathMiddle } from '../lib/utils'
 import { formatTauriInvokeError } from '../utils/tauriError'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
@@ -106,6 +106,12 @@ export function WorkspaceStatus({
   >(null)
   const [deletingUntrackedPath, setDeletingUntrackedPath] = useState<string | null>(null)
   const [deletingAllUntracked, setDeletingAllUntracked] = useState(false)
+  /** 丢弃未暂存修改：确认弹窗 */
+  const [unstagedDiscardConfirm, setUnstagedDiscardConfirm] = useState<
+    null | { kind: 'one'; path: string } | { kind: 'all' }
+  >(null)
+  const [discardingUnstagedPath, setDiscardingUnstagedPath] = useState<string | null>(null)
+  const [discardingAllUnstaged, setDiscardingAllUnstaged] = useState(false)
   /** AI 根据暂存区生成提交说明 */
   const [aiCommitMessageLoading, setAiCommitMessageLoading] = useState(false)
 
@@ -329,6 +335,37 @@ export function WorkspaceStatus({
     } finally {
       setDeletingUntrackedPath(null)
       setDeletingAllUntracked(false)
+    }
+  }
+
+  const runUnstagedDiscardConfirm = async () => {
+    if (!repoInfo || !unstagedDiscardConfirm) return
+    workspaceStatusFetchGenRef.current++
+    try {
+      setError(null)
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      if (unstagedDiscardConfirm.kind === 'one') {
+        const norm = normalizeFilePathForGit(unstagedDiscardConfirm.path)
+        setDiscardingUnstagedPath(norm)
+        await invoke('discard_unstaged_file', {
+          repoPath: repoInfo.path,
+          filePath: norm,
+        })
+      } else {
+        setDiscardingAllUnstaged(true)
+        await invoke('discard_all_unstaged', {
+          repoPath: repoInfo.path,
+        })
+      }
+      setUnstagedDiscardConfirm(null)
+      await fetchWorkspaceStatus({ silent: true })
+      await Promise.resolve(onRefresh())
+    } catch (err) {
+      setError(formatTauriInvokeError(err, '丢弃未暂存修改失败'))
+      await fetchWorkspaceStatus({ silent: true })
+    } finally {
+      setDiscardingUnstagedPath(null)
+      setDiscardingAllUnstaged(false)
     }
   }
 
@@ -1119,6 +1156,55 @@ export function WorkspaceStatus({
         </DialogContent>
       </Dialog>
 
+      <Dialog
+        open={unstagedDiscardConfirm !== null}
+        onOpenChange={(open) => {
+          if (!open) setUnstagedDiscardConfirm(null)
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>丢弃未暂存修改</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="text-sm text-muted-foreground">
+              将执行 <span className="font-mono">git restore --worktree</span>
+              ，用暂存区内容覆盖工作区中对应路径的未提交修改；已暂存的条目不会被取消。此操作不可撤销。
+            </div>
+            <div className="text-sm text-foreground">
+              {unstagedDiscardConfirm?.kind === 'all'
+                ? '确定要丢弃当前「未暂存的文件」列表中全部路径的未暂存修改吗？'
+                : unstagedDiscardConfirm?.kind === 'one'
+                  ? `确定要丢弃「${shortenPathMiddle(unstagedDiscardConfirm.path, 48)}」的未暂存修改吗？`
+                  : ''}
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => setUnstagedDiscardConfirm(null)}>
+                取消
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                disabled={discardingUnstagedPath !== null || discardingAllUnstaged}
+                onClick={() => void runUnstagedDiscardConfirm()}
+              >
+                {discardingAllUnstaged ||
+                (discardingUnstagedPath !== null &&
+                  unstagedDiscardConfirm?.kind === 'one' &&
+                  discardingUnstagedPath === normalizeFilePathForGit(unstagedDiscardConfirm.path)) ? (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin mr-1 inline" aria-hidden />
+                    处理中…
+                  </>
+                ) : (
+                  '确认丢弃'
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* 暂存的文件 */}
       {workspaceStatus?.staged_files && workspaceStatus.staged_files.length > 0 && (
         <Card className="border-l-4 border-l-green-500 dark:border-l-green-400">
@@ -1197,30 +1283,63 @@ export function WorkspaceStatus({
       {workspaceStatus?.unstaged_files && workspaceStatus.unstaged_files.length > 0 && (
         <Card className="border-l-4 border-l-orange-500 dark:border-l-orange-400">
           <CardHeader className="bg-orange-50/50 dark:bg-orange-900/10">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <CardTitle className="text-lg flex items-center gap-2 text-orange-700 dark:text-orange-300">
                 <AlertCircle className="h-5 w-5" />
                 未暂存的文件
               </CardTitle>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={stageAllFiles}
-                disabled={loading || unstagingLoading || stagingLoading}
-                className="flex items-center gap-1"
-              >
-                {loading &&
-                stagingTargetPath === null &&
-                stagingLoading &&
-                stagingBulkType === 'unstaged' ? (
-                  <>
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    处理中…
-                  </>
-                ) : (
-                  '暂存所有'
-                )}
-              </Button>
+              <div className="flex flex-wrap items-center gap-2 justify-end shrink-0">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="border-destructive/40 text-destructive hover:bg-destructive/10"
+                  onClick={() => setUnstagedDiscardConfirm({ kind: 'all' })}
+                  disabled={
+                    loading ||
+                    unstagingLoading ||
+                    stagingLoading ||
+                    discardingUnstagedPath !== null ||
+                    discardingAllUnstaged
+                  }
+                >
+                  {discardingAllUnstaged ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                      处理中…
+                    </>
+                  ) : (
+                    <>
+                      <RotateCcw className="h-3.5 w-3.5 shrink-0" />
+                      丢弃全部
+                    </>
+                  )}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={stageAllFiles}
+                  disabled={
+                    loading ||
+                    unstagingLoading ||
+                    stagingLoading ||
+                    discardingUnstagedPath !== null ||
+                    discardingAllUnstaged
+                  }
+                  className="flex items-center gap-1"
+                >
+                  {loading &&
+                  stagingTargetPath === null &&
+                  stagingLoading &&
+                  stagingBulkType === 'unstaged' ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      处理中…
+                    </>
+                  ) : (
+                    '暂存所有'
+                  )}
+                </Button>
+              </div>
             </div>
           </CardHeader>
           <CardContent>
@@ -1233,7 +1352,7 @@ export function WorkspaceStatus({
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-mono truncate" title={file.path}>{shortenPathMiddle(file.path, 56)}</div>
                   </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
+                  <div className="flex flex-wrap items-center gap-2 flex-shrink-0 justify-end">
                     <Button
                       size="sm"
                       variant="outline"
@@ -1245,8 +1364,40 @@ export function WorkspaceStatus({
                     </Button>
                     <Button
                       size="sm"
+                      variant="outline"
+                      className="border-destructive/40 text-destructive hover:bg-destructive/10 min-w-[4.5rem]"
+                      onClick={() => setUnstagedDiscardConfirm({ kind: 'one', path: file.path })}
+                      disabled={
+                        loading ||
+                        unstagingLoading ||
+                        stagingLoading ||
+                        discardingUnstagedPath !== null ||
+                        discardingAllUnstaged
+                      }
+                    >
+                      {discardingUnstagedPath === normalizeFilePathForGit(file.path) ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                          <span className="sr-only">正在丢弃未暂存修改</span>
+                          <span aria-hidden>处理中</span>
+                        </>
+                      ) : (
+                        <>
+                          <RotateCcw className="h-3.5 w-3.5 shrink-0 inline mr-0.5" aria-hidden />
+                          丢弃
+                        </>
+                      )}
+                    </Button>
+                    <Button
+                      size="sm"
                       onClick={() => stageFile(file.path)}
-                      disabled={loading || unstagingLoading || stagingLoading}
+                      disabled={
+                        loading ||
+                        unstagingLoading ||
+                        stagingLoading ||
+                        discardingUnstagedPath !== null ||
+                        discardingAllUnstaged
+                      }
                       className="min-w-[4.5rem] flex items-center justify-center gap-1.5"
                     >
                       {stagingTargetPath === normalizeFilePathForGit(file.path) ? (

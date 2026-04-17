@@ -3530,6 +3530,64 @@ async fn unstage_file(repo_path: String, file_path: String) -> Result<String, St
     Ok(format!("Successfully unstaged {}", file_path))
 }
 
+/// 丢弃指定路径的未暂存修改，使工作区与暂存区一致（`git restore --worktree -- <path>`）。
+#[tauri::command]
+async fn discard_unstaged_file(repo_path: String, file_path: String) -> Result<String, String> {
+    let file_path = normalize_repo_rel_path(&file_path);
+    if file_path.is_empty() {
+        return Err("文件路径为空".to_string());
+    }
+    log_message(
+        "INFO",
+        &format!(
+            "discard_unstaged_file: attempt | path={} file={}",
+            repo_path, file_path
+        ),
+    );
+
+    let output = run_git_in_repo(&repo_path, &["restore", "--worktree", "--", &file_path]).map_err(
+        |e| format!("无法执行 git restore（请确认已安装 Git 并加入 PATH）: {}", e),
+    )?;
+    if !output.status.success() {
+        let detail = git_output_detail(&output);
+        log_message("ERROR", &format!("discard_unstaged_file: failed | {}", detail));
+        return Err(format!("丢弃未暂存修改失败: {}", detail));
+    }
+
+    log_message(
+        "INFO",
+        &format!(
+            "discard_unstaged_file: success | path={} file={}",
+            repo_path, file_path
+        ),
+    );
+    Ok(format!("已丢弃未暂存修改: {}", file_path))
+}
+
+/// 丢弃全部未暂存修改，使工作区与暂存区一致（`git restore --worktree -- .`）。
+#[tauri::command]
+async fn discard_all_unstaged(repo_path: String) -> Result<String, String> {
+    log_message(
+        "INFO",
+        &format!("discard_all_unstaged: attempt | path={}", repo_path),
+    );
+
+    let output = run_git_in_repo(&repo_path, &["restore", "--worktree", "--", "."]).map_err(|e| {
+        format!("无法执行 git restore（请确认已安装 Git 并加入 PATH）: {}", e)
+    })?;
+    if !output.status.success() {
+        let detail = git_output_detail(&output);
+        log_message("ERROR", &format!("discard_all_unstaged: failed | {}", detail));
+        return Err(format!("丢弃全部未暂存修改失败: {}", detail));
+    }
+
+    log_message(
+        "INFO",
+        &format!("discard_all_unstaged: success | path={}", repo_path),
+    );
+    Ok("已丢弃全部未暂存修改".to_string())
+}
+
 /// 与命令行 `git commit` 一致：从仓库/全局配置读取 `user.name` 与 `user.email` 生成签名（不长期借用 `Repository`，便于后续 `stash_save` 等需 `&mut repo` 的场景）。
 fn repo_author_signature(repo: &Repository) -> Result<git2::Signature<'static>, String> {
     let cfg = repo
@@ -5337,6 +5395,8 @@ fn main() {
             remove_all_untracked_paths,
             stage_file,
             unstage_file,
+            discard_unstaged_file,
+            discard_all_unstaged,
             commit_changes,
             push_changes,
             pull_changes,
