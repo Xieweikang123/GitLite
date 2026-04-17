@@ -29,10 +29,12 @@ import {
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
 import { Button } from './ui/button'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { cn } from '../lib/utils'
 import type {
   AuthorCommitStat,
   AuthorLineStat,
+  CommitInfo,
   DiffAggregateStats,
   PathTouchStat,
   TimeBucketStat,
@@ -65,7 +67,7 @@ function getCommitActivityBand(count: number): CommitActivityBand {
   return 'high'
 }
 
-/** 日历格：浅色 + dark（#0f1115 / #1b1f2a，border rgba(255,255,255,0.06)） */
+/** 日历格：无提交 = 虚线空槽 + 内环；有提交 = 翠绿色阶（与贡献热力一致），与「无提交」拉开色差 */
 function calendarDayCellClass(
   band: CommitActivityBand,
   opts: { inMonth: boolean; isToday: boolean; isSelected: boolean }
@@ -81,21 +83,40 @@ function calendarDayCellClass(
   const base = cn(
     'group relative flex min-h-[2.1rem] cursor-default flex-col items-center justify-center rounded-lg border px-0.5 py-1.5',
     'transition-all duration-150 sm:min-h-[2.35rem]',
-    'border-zinc-200/45 hover:-translate-y-px hover:shadow-sm',
-    'dark:border-white/[0.06] dark:hover:bg-white/[0.03] dark:hover:shadow-[0_2px_12px_rgba(0,0,0,0.5)]'
+    'hover:-translate-y-px hover:shadow-sm',
+    'dark:hover:shadow-[0_2px_12px_rgba(0,0,0,0.5)]'
   )
   const surface = cn(
-    band === 'none' && 'bg-zinc-50 dark:bg-[#1b1f2a]',
-    band === 'one' && 'bg-blue-500/11 dark:bg-[#3b82f6]/14',
-    band === 'mid' && 'bg-blue-500/18 dark:bg-[#3b82f6]/26',
-    band === 'high' && 'bg-blue-500/26 dark:bg-[#3b82f6]/40'
+    band === 'none' &&
+      cn(
+        'ring-1 ring-inset ring-zinc-200/95',
+        'border border-dashed border-zinc-400/75 bg-zinc-100/95',
+        'dark:ring-white/[0.07] dark:border-zinc-500/55 dark:bg-[#0c0e14]',
+        'dark:[background-image:linear-gradient(135deg,rgba(255,255,255,0.035)_0%,transparent_55%)]',
+        'hover:border-zinc-500 hover:bg-zinc-200/90 dark:hover:border-zinc-400/45 dark:hover:bg-[#12151c]'
+      ),
+    band === 'one' &&
+      cn(
+        'border border-solid border-emerald-500/50 bg-emerald-500/40',
+        'dark:border-emerald-400/42 dark:bg-emerald-400/35 dark:hover:bg-emerald-400/44'
+      ),
+    band === 'mid' &&
+      cn(
+        'border border-solid border-emerald-500/60 bg-emerald-500/62',
+        'dark:border-emerald-400/52 dark:bg-emerald-400/52 dark:hover:bg-emerald-400/60'
+      ),
+    band === 'high' &&
+      cn(
+        'border border-solid border-emerald-600/85 bg-emerald-600 text-white shadow-[inset_0_1px_0_0_rgba(255,255,255,0.12)]',
+        'dark:border-emerald-400/75 dark:bg-emerald-500 dark:hover:bg-emerald-400'
+      )
   )
   const selected = isSelected
-    ? 'z-[1] ring-2 ring-blue-500/25 ring-offset-1 ring-offset-white dark:ring-[#3b82f6]/45 dark:ring-offset-0 dark:shadow-[inset_0_0_0_1px_rgba(59,130,246,0.28)]'
+    ? 'z-[1] ring-2 ring-emerald-500/50 ring-offset-1 ring-offset-white dark:ring-emerald-400/60 dark:ring-offset-0 dark:shadow-[inset_0_0_0_1px_rgba(52,211,153,0.4)]'
     : ''
   const todayDot =
     isToday && inMonth
-      ? "after:pointer-events-none after:absolute after:right-1.5 after:top-1.5 after:h-1 after:w-1 after:rounded-full after:bg-blue-500 after:content-[''] dark:after:bg-[#3b82f6]"
+      ? "after:pointer-events-none after:absolute after:right-1.5 after:top-1.5 after:h-1 after:w-1 after:rounded-full after:bg-emerald-600 after:content-[''] dark:after:bg-emerald-300"
       : ''
   return cn(base, surface, selected, todayDot)
 }
@@ -144,6 +165,12 @@ interface AuthorStatsPanelProps {
     rev?: string | null,
     pathLimit?: number
   ) => Promise<DiffAggregateStats>
+  getCommitsForActivityBucket: (
+    granularity: 'day' | 'week' | 'month',
+    bucketKey: string,
+    scope: 'head' | 'all',
+    rev?: string | null
+  ) => Promise<CommitInfo[]>
 }
 
 export function AuthorStatsPanel({
@@ -151,6 +178,7 @@ export function AuthorStatsPanel({
   branchNames,
   getAuthorCommitStats,
   getCommitActivityStats,
+  getCommitsForActivityBucket,
   getDiffAggregateStats,
 }: AuthorStatsPanelProps) {
   const [statsScope, setStatsScope] = useState<'head' | 'all'>('head')
@@ -167,6 +195,12 @@ export function AuthorStatsPanel({
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** 图表点击联动：按分桶列出提交 */
+  const [drillOpen, setDrillOpen] = useState(false)
+  const [drillTitle, setDrillTitle] = useState('')
+  const [drillCommits, setDrillCommits] = useState<CommitInfo[]>([])
+  const [drillLoading, setDrillLoading] = useState(false)
+  const [drillError, setDrillError] = useState<string | null>(null)
   /** diff 聚合统计进度（与 Tauri 事件 diff-aggregate-progress 同步） */
   const [diffProgress, setDiffProgress] = useState<{ current: number; total: number } | null>(null)
   const diffCacheKeyRef = useRef<string>('')
@@ -178,6 +212,7 @@ export function AuthorStatsPanel({
     setDiffAgg(null)
     setDiffProgress(null)
     setCalendarMonth(startOfMonth(new Date()))
+    setDrillOpen(false)
   }, [repoPath])
 
   useEffect(() => {
@@ -227,6 +262,30 @@ export function AuthorStatsPanel({
       rev: statsScope === 'head' ? statsRev : null,
     }),
     [statsScope, statsRev]
+  )
+
+  const openActivityDrill = useCallback(
+    async (gran: 'day' | 'week' | 'month', bucketKey: string, title: string) => {
+      setDrillOpen(true)
+      setDrillTitle(title)
+      setDrillLoading(true)
+      setDrillError(null)
+      setDrillCommits([])
+      try {
+        const list = await getCommitsForActivityBucket(
+          gran,
+          bucketKey,
+          scopeArgs.scope,
+          scopeArgs.rev
+        )
+        setDrillCommits(list)
+      } catch (e) {
+        setDrillError(e instanceof Error ? e.message : String(e))
+      } finally {
+        setDrillLoading(false)
+      }
+    },
+    [getCommitsForActivityBucket, scopeArgs.scope, scopeArgs.rev]
   )
 
   const runLoad = useCallback(
@@ -517,7 +576,7 @@ export function AuthorStatsPanel({
                 >
                   <option value="">当前检出（HEAD）</option>
                   {branchNamesSorted.map((name) => (
-                    <option key={name} value={name}>
+                    <option key={name} value={`refs/heads/${name}`}>
                       {name}
                     </option>
                   ))}
@@ -611,6 +670,14 @@ export function AuthorStatsPanel({
               rows={activityRows}
               activityMax={activityMax}
               timeGran={timeGran}
+              onBucketClick={(row) => {
+                if (row.commit_count <= 0) return
+                void openActivityDrill(
+                  timeGran,
+                  row.key,
+                  `${row.key} · ${row.commit_count} 次提交`
+                )
+              }}
             />
           )}
 
@@ -623,6 +690,9 @@ export function AuthorStatsPanel({
               heatmapMax={heatmapMax}
               weekColumns={weekColumns}
               heatScale={heatScale}
+              onDayClick={(dayKey, count) => {
+                void openActivityDrill('day', dayKey, `${dayKey} · ${count} 次提交`)
+              }}
             />
           )}
 
@@ -635,6 +705,9 @@ export function AuthorStatsPanel({
                 heatmapMap={heatmapMap}
                 calendarMonth={calendarMonth}
                 onCalendarMonthChange={setCalendarMonth}
+                onDayDrill={(dayKey, count) => {
+                  void openActivityDrill('day', dayKey, `${dayKey} · ${count} 次提交`)
+                }}
               />
             </div>
           )}
@@ -649,6 +722,52 @@ export function AuthorStatsPanel({
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={drillOpen} onOpenChange={setDrillOpen}>
+        <DialogContent className="max-h-[min(90vh,40rem)] max-w-lg gap-0 overflow-hidden p-0 sm:max-w-lg">
+          <DialogHeader className="border-b border-border/60 px-5 py-4 text-left">
+            <DialogTitle className="pr-7 text-base leading-snug">{drillTitle}</DialogTitle>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              与上方统计相同的历史范围与作者时区分桶；列表按时间由新到旧。
+            </p>
+          </DialogHeader>
+          <div className="max-h-[min(60vh,26rem)] overflow-y-auto px-5 py-3">
+            {drillLoading && (
+              <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
+                正在加载提交…
+              </div>
+            )}
+            {drillError && (
+              <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {drillError}
+              </p>
+            )}
+            {!drillLoading && !drillError && drillCommits.length === 0 && (
+              <p className="py-10 text-center text-sm text-muted-foreground">该分桶内无提交</p>
+            )}
+            {!drillLoading &&
+              !drillError &&
+              drillCommits.map((c) => (
+                <div
+                  key={c.id}
+                  className="border-b border-border/50 py-2.5 last:border-0"
+                >
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                    <span className="font-mono text-[11px] font-semibold text-primary">{c.short_id}</span>
+                    <span className="min-w-0 flex-1 text-sm font-medium leading-snug text-foreground">
+                      {c.message || '（无说明）'}
+                    </span>
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-x-2 text-[11px] text-muted-foreground">
+                    <span>{c.author}</span>
+                    <span className="tabular-nums">{c.date}</span>
+                  </div>
+                </div>
+              ))}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -770,12 +889,14 @@ function TimelineSection({
   rows,
   activityMax,
   timeGran,
+  onBucketClick,
 }: {
   loading: boolean
   error: boolean
   rows: TimeBucketStat[]
   activityMax: number
   timeGran: TimeGranularity
+  onBucketClick?: (row: TimeBucketStat) => void
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef({ active: false, startX: 0, startScroll: 0 })
@@ -785,6 +906,8 @@ function TimelineSection({
     /* 触摸设备保留系统横向滑动，仅用指针（鼠标/触控板）拖动滚动 */
     if (e.pointerType === 'touch') return
     if (e.button !== 0) return
+    /* 点击柱形查看提交时，不要误触发起横向拖动 */
+    if ((e.target as HTMLElement).closest('[data-timeline-bucket]')) return
     const el = scrollerRef.current
     if (!el) return
     dragRef.current = {
@@ -868,7 +991,7 @@ function TimelineSection({
             有提交
           </span>
           <span className="max-w-full text-[10px] leading-relaxed text-muted-foreground/90 sm:text-xs">
-            · 图表区可拖动横移；触屏请横向滑动
+            · 点击柱形查看该时段提交；空白处可拖动横移
           </span>
         </div>
         <div
@@ -897,10 +1020,23 @@ function TimelineSection({
             return (
               <div
                 key={row.key}
+                data-timeline-bucket
+                role={onBucketClick && row.commit_count > 0 ? 'button' : undefined}
+                tabIndex={onBucketClick && row.commit_count > 0 ? 0 : undefined}
                 className={cn(
                   'flex shrink-0 flex-col items-center gap-1.5 sm:gap-2',
-                  timeGran === 'day' ? 'min-w-[1.85rem] max-w-[2.75rem]' : 'min-w-[3rem] max-w-[5rem]'
+                  timeGran === 'day' ? 'min-w-[1.85rem] max-w-[2.75rem]' : 'min-w-[3rem] max-w-[5rem]',
+                  onBucketClick && row.commit_count > 0 && 'cursor-pointer rounded-md outline-none hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring'
                 )}
+                title={`${row.key}: ${row.commit_count} 次提交`}
+                onClick={() => onBucketClick?.(row)}
+                onKeyDown={(e) => {
+                  if (!onBucketClick || row.commit_count <= 0) return
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    onBucketClick(row)
+                  }
+                }}
               >
                 <span className="text-[10px] font-semibold tabular-nums text-foreground sm:text-xs">
                   {row.commit_count}
@@ -909,7 +1045,6 @@ function TimelineSection({
                   <div
                     className="w-full rounded-t-md bg-gradient-to-t from-primary/55 via-primary/75 to-primary shadow-sm ring-1 ring-primary/15 transition-[height]"
                     style={{ height: `${h}px` }}
-                    title={`${row.key}: ${row.commit_count} 次提交`}
                   />
                 </div>
                 <span
@@ -917,7 +1052,6 @@ function TimelineSection({
                     'line-clamp-3 w-full text-center leading-tight text-muted-foreground',
                     timeGran === 'day' ? 'text-[8px] sm:text-[9px]' : 'text-[10px]'
                   )}
-                  title={row.key}
                 >
                   {labelShort}
                 </span>
@@ -938,6 +1072,7 @@ function HeatmapSection({
   heatmapMax,
   weekColumns,
   heatScale,
+  onDayClick,
 }: {
   loading: boolean
   error: boolean
@@ -946,6 +1081,7 @@ function HeatmapSection({
   heatmapMax: number
   weekColumns: number
   heatScale: (count: number) => string
+  onDayClick?: (dayKey: string, count: number) => void
 }) {
   if (loading && heatmapDays.length === 0) {
     return (
@@ -971,7 +1107,9 @@ function HeatmapSection({
               <Flame className="h-3.5 w-3.5 text-orange-500/90" aria-hidden />
               贡献热力
             </div>
-            <span className="text-[11px] text-muted-foreground">周一 ← 列表示周，行表示星期</span>
+            <span className="text-[11px] text-muted-foreground">
+              周一 ← 列表示周，行表示星期 · 有提交时点击色块查看当日提交
+            </span>
           </div>
 
           <div className="flex min-w-0 gap-2 sm:gap-3">
@@ -994,20 +1132,40 @@ function HeatmapSection({
                   gridTemplateRows: 'repeat(7, 11px)',
                 }}
               >
-                {heatmapCells.map((c) => (
-                  <div
-                    key={c.key}
-                    title={`${c.key} · ${c.count} 次提交`}
-                    className={cn(
-                      'rounded-sm ring-1 ring-black/5 dark:ring-white/10',
-                      heatScale(c.count)
-                    )}
-                    style={{
-                      gridColumnStart: c.w + 1,
-                      gridRowStart: c.r + 1,
-                    }}
-                  />
-                ))}
+                {heatmapCells.map((c) => {
+                  const title = `${c.key} · ${c.count} 次提交`
+                  const interactive = c.count > 0 && onDayClick
+                  const cellClass = cn(
+                    'rounded-sm ring-1 ring-black/5 dark:ring-white/10',
+                    heatScale(c.count),
+                    interactive &&
+                      'cursor-pointer transition hover:ring-2 hover:ring-primary/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring'
+                  )
+                  return interactive ? (
+                    <button
+                      key={c.key}
+                      type="button"
+                      title={title}
+                      aria-label={title}
+                      className={cellClass}
+                      style={{
+                        gridColumnStart: c.w + 1,
+                        gridRowStart: c.r + 1,
+                      }}
+                      onClick={() => onDayClick(c.key, c.count)}
+                    />
+                  ) : (
+                    <div
+                      key={c.key}
+                      title={title}
+                      className={cellClass}
+                      style={{
+                        gridColumnStart: c.w + 1,
+                        gridRowStart: c.r + 1,
+                      }}
+                    />
+                  )
+                })}
               </div>
             </div>
           </div>
@@ -1042,6 +1200,7 @@ function CalendarSection({
   heatmapMap,
   calendarMonth,
   onCalendarMonthChange,
+  onDayDrill,
 }: {
   loading: boolean
   error: boolean
@@ -1049,6 +1208,8 @@ function CalendarSection({
   heatmapMap: Map<string, number>
   calendarMonth: Date
   onCalendarMonthChange: (d: Date) => void
+  /** 选中某日且该日有提交时，打开提交列表（与热力图联动逻辑一致） */
+  onDayDrill?: (dayKey: string, count: number) => void
 }) {
   const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null)
 
@@ -1197,15 +1358,41 @@ function CalendarSection({
               <>
                 <span
                   className={cn(
-                    'text-[13px] font-semibold tabular-nums leading-none',
-                    inMonth ? 'text-zinc-900 dark:text-white' : 'text-zinc-400 dark:text-zinc-600'
+                    'text-[13px] tabular-nums leading-none',
+                    !inMonth && 'font-medium text-zinc-400 dark:text-zinc-600',
+                    inMonth &&
+                      count > 0 &&
+                      band !== 'high' &&
+                      'font-semibold text-zinc-900 dark:text-white',
+                    inMonth && count > 0 && band === 'high' && 'font-semibold text-white',
+                    inMonth &&
+                      count <= 0 &&
+                      'font-medium text-zinc-400 dark:text-zinc-500'
                   )}
                 >
                   {format(day, 'd')}
                 </span>
                 {count > 0 && (
-                  <span className="mt-0.5 text-[9px] font-medium tabular-nums leading-none text-zinc-500 dark:text-[#8b93a7]">
-                    {count}
+                  <span className="mt-1 flex flex-col items-center gap-0.5">
+                    <span
+                      className={cn(
+                        'h-1 w-1 rounded-full',
+                        band === 'high'
+                          ? 'bg-white shadow-[0_0_6px_rgba(255,255,255,0.55)]'
+                          : 'bg-emerald-700 shadow-[0_0_6px_rgba(16,185,129,0.45)] dark:bg-emerald-200'
+                      )}
+                      aria-hidden
+                    />
+                    <span
+                      className={cn(
+                        'text-[9px] font-semibold tabular-nums leading-none',
+                        band === 'high'
+                          ? 'text-emerald-50'
+                          : 'text-emerald-900 dark:text-emerald-100'
+                      )}
+                    >
+                      {count}
+                    </span>
                   </span>
                 )}
               </>
@@ -1228,10 +1415,16 @@ function CalendarSection({
                 aria-label={title}
                 aria-current={today ? 'date' : undefined}
                 aria-pressed={isSelected}
-                onClick={() => setSelectedDateKey((prev) => (prev === key ? null : key))}
+                onClick={() => {
+                  const next = selectedDateKey === key ? null : key
+                  setSelectedDateKey(next)
+                  if (count > 0 && next !== null && onDayDrill) {
+                    onDayDrill(key, count)
+                  }
+                }}
                 className={cn(
                   cellClass,
-                  'focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3b82f6]/35'
+                  'focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 dark:focus-visible:ring-emerald-400/45'
                 )}
               >
                 {inner}
@@ -1245,19 +1438,19 @@ function CalendarSection({
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-[9px] text-zinc-400 dark:text-zinc-600">低</span>
             <span
-              className="h-2 w-2 rounded-[3px] bg-zinc-50 ring-1 ring-zinc-200/80 dark:bg-[#1b1f2a] dark:ring-white/[0.06]"
+              className="h-2 w-2 rounded-[3px] border border-dashed border-zinc-400/75 bg-zinc-100 ring-1 ring-inset ring-zinc-200/95 dark:border-zinc-500/55 dark:bg-[#0c0e14] dark:ring-white/[0.07]"
               title="0 次"
             />
             <span
-              className="h-2 w-2 rounded-[3px] bg-blue-500/11 dark:bg-[#3b82f6]/14"
+              className="h-2 w-2 rounded-[3px] border border-emerald-500/50 bg-emerald-500/40 dark:border-emerald-400/42 dark:bg-emerald-400/35"
               title="1 次"
             />
             <span
-              className="h-2 w-2 rounded-[3px] bg-blue-500/18 dark:bg-[#3b82f6]/26"
+              className="h-2 w-2 rounded-[3px] border border-emerald-500/60 bg-emerald-500/62 dark:border-emerald-400/52 dark:bg-emerald-400/52"
               title="2–3 次"
             />
             <span
-              className="h-2 w-2 rounded-[3px] bg-blue-500/26 dark:bg-[#3b82f6]/40"
+              className="h-2 w-2 rounded-[3px] border border-emerald-600/85 bg-emerald-600 dark:border-emerald-400/75 dark:bg-emerald-500"
               title="4 次及以上"
             />
             <span className="text-[9px] text-zinc-400 dark:text-zinc-600">高</span>

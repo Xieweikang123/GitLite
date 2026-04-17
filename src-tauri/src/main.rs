@@ -2344,6 +2344,89 @@ async fn search_commits(
     .map_err(|e| format!("任务已中断: {}", e))?
 }
 
+/// 与 `get_commit_activity_stats` 使用相同的作者时区与分桶键，列出某一桶内的提交（新到旧，最多 limit 条）
+fn get_commits_for_activity_bucket_inner(
+    repo: &Repository,
+    scope: CommitLogScope,
+    granularity: &str,
+    bucket_key: &str,
+    limit: usize,
+) -> Result<Vec<CommitInfo>> {
+    let g = if matches!(granularity, "day" | "week" | "month") {
+        granularity
+    } else {
+        "day"
+    };
+    let mut revwalk = repo
+        .revwalk()
+        .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
+    revwalk
+        .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+        .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
+    revwalk_push_scope(repo, &mut revwalk, scope)?;
+
+    let mut commits = Vec::new();
+    for oid_result in revwalk {
+        if commits.len() >= limit {
+            break;
+        }
+        let oid = oid_result.map_err(|e| anyhow::anyhow!("Failed to walk commits: {}", e))?;
+        let commit = repo
+            .find_commit(oid)
+            .map_err(|e| anyhow::anyhow!("Failed to find commit: {}", e))?;
+        let dt = commit_author_wall_time(&commit);
+        let key = time_bucket_key(&dt, g);
+        if key != bucket_key {
+            continue;
+        }
+        let author = commit.author();
+        let author_name = author.name().unwrap_or("Unknown").to_string();
+        let message = commit.message().unwrap_or("No message").to_string();
+        let first_line = message.lines().next().unwrap_or("").to_string();
+        let short_id = format!("{:.7}", oid);
+        let date = chrono::DateTime::from_timestamp(commit.time().seconds(), 0)
+            .unwrap_or_default()
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        commits.push(CommitInfo {
+            id: oid.to_string(),
+            short_id,
+            message: first_line,
+            author: author_name,
+            email: author.email().unwrap_or("").to_string(),
+            date,
+            parent_ids: commit_parent_ids(&commit),
+        });
+    }
+    Ok(commits)
+}
+
+#[tauri::command]
+async fn get_commits_for_activity_bucket(
+    repo_path: String,
+    scope: Option<String>,
+    rev: Option<String>,
+    granularity: String,
+    bucket_key: String,
+    limit: Option<usize>,
+) -> Result<Vec<CommitInfo>, String> {
+    let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
+    let lim = limit.unwrap_or(500).max(1).min(2000);
+    let granularity = granularity.to_lowercase();
+    let bucket_key = bucket_key.trim().to_string();
+    if bucket_key.is_empty() {
+        return Err("bucket_key 不能为空".to_string());
+    }
+    tokio::task::spawn_blocking(move || {
+        let repo = Repository::open(&repo_path)
+            .map_err(|e| format!("Failed to open repository: {}", e))?;
+        get_commits_for_activity_bucket_inner(&repo, s, granularity.as_str(), &bucket_key, lim)
+            .map_err(|e| format!("列出分桶提交失败: {}", e))
+    })
+    .await
+    .map_err(|e| format!("任务已中断: {}", e))?
+}
+
 fn walk_tree_collect_paths(
     repo: &Repository,
     tree: &git2::Tree,
@@ -5047,6 +5130,7 @@ fn main() {
             get_commit_activity_stats,
             get_diff_aggregate_stats,
             search_commits,
+            get_commits_for_activity_bucket,
             get_head_file_paths,
             get_branch_ref_tips,
             get_commits_branch_labels,

@@ -349,6 +349,28 @@ export function useGit() {
     [repoInfo]
   )
 
+  const getCommitsForActivityBucket = useCallback(
+    async (
+      granularity: 'day' | 'week' | 'month',
+      bucketKey: string,
+      scope: 'head' | 'all',
+      rev?: string | null,
+      limit?: number
+    ) => {
+      if (!repoInfo) throw new Error('No repository selected')
+      const r = rev?.trim() || null
+      return await invoke<CommitInfo[]>('get_commits_for_activity_bucket', {
+        repoPath: repoInfo.path,
+        scope: scope === 'all' ? 'all' : null,
+        rev: r,
+        granularity,
+        bucketKey: bucketKey.trim(),
+        limit: limit ?? 500,
+      })
+    },
+    [repoInfo]
+  )
+
   const getDiffAggregateStats = useCallback(
     async (scope: 'head' | 'all', rev?: string | null, pathLimit?: number) => {
       if (!repoInfo) throw new Error('No repository selected')
@@ -566,6 +588,7 @@ export function useGit() {
     searchCommits,
     getAuthorCommitStats,
     getCommitActivityStats,
+    getCommitsForActivityBucket,
     getDiffAggregateStats,
     getWorkspaceStatus,
     stageFile,

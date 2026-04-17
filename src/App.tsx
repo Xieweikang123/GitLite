@@ -50,6 +50,7 @@ function App() {
     refreshRepoInfo,
     getAuthorCommitStats,
     getCommitActivityStats,
+    getCommitsForActivityBucket,
     getDiffAggregateStats,
   } = useGit()
   
@@ -652,6 +653,7 @@ function App() {
               branchNames={repoInfo?.branches.map((b) => b.name) ?? []}
               getAuthorCommitStats={getAuthorCommitStats}
               getCommitActivityStats={getCommitActivityStats}
+              getCommitsForActivityBucket={getCommitsForActivityBucket}
               getDiffAggregateStats={getDiffAggregateStats}
             />
           </div>

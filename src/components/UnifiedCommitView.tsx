@@ -62,6 +62,12 @@ const MIN_FILE_W = 160
 const MIN_DIFF_W = 240
 const DEFAULT_PANES = { list: 340, file: 240 } as const
 
+/** 分支下拉框值为 `refs/heads/…`，界面文案只展示短名 */
+function shortLocalBranchRef(ref: string | null | undefined): string {
+  if (!ref) return ''
+  return ref.replace(/^refs\/heads\//, '')
+}
+
 function loadPanes(): { list: number; file: number } {
   if (typeof window === 'undefined') return { ...DEFAULT_PANES }
   try {
@@ -1324,7 +1330,7 @@ export function UnifiedCommitView({
                     >
                       <option value="">当前检出</option>
                       {branchNamesSorted.map((name) => (
-                        <option key={name} value={name}>
+                        <option key={name} value={`refs/heads/${name}`}>
                           {name}
                         </option>
                       ))}
@@ -1542,7 +1548,7 @@ export function UnifiedCommitView({
                 commitLogScope === 'all'
                   ? '「已加载」为当前列表条数，可继续加载。总数为所有本地分支、远程跟踪与标签可达的去重提交数（与 git log --all 类似）。'
                   : commitLogRev
-                    ? `「已加载」为当前列表条数。所选分支「${commitLogRev}」的可达提交总数与 git rev-list --count ${commitLogRev} 一致。`
+                    ? `「已加载」为当前列表条数。所选分支「${shortLocalBranchRef(commitLogRev)}」的可达提交总数与 git rev-list --count ${commitLogRev} 一致。`
                     : '「已加载」为当前列表中的条数，可向下滚动继续加载。「当前分支」总数为 HEAD 可达提交数（与 git rev-list --count HEAD 一致），含合并带来的历史。'
               }
             >
@@ -1557,7 +1563,7 @@ export function UnifiedCommitView({
                       {commitLogScope === 'all'
                         ? `全部引用共 ${headCommitTotal} 个提交`
                         : commitLogRev
-                          ? `分支「${commitLogRev}」共 ${headCommitTotal} 个提交`
+                          ? `分支「${shortLocalBranchRef(commitLogRev)}」共 ${headCommitTotal} 个提交`
                           : `当前分支共 ${headCommitTotal} 个提交`}
                     </>
                   )}
@@ -1583,7 +1589,7 @@ export function UnifiedCommitView({
                       {commitLogScope === 'all'
                         ? `全部引用共 ${headCommitTotal} 个提交`
                         : commitLogRev
-                          ? `分支「${commitLogRev}」共 ${headCommitTotal} 个提交`
+                          ? `分支「${shortLocalBranchRef(commitLogRev)}」共 ${headCommitTotal} 个提交`
                           : `当前分支共 ${headCommitTotal} 个提交`}
                     </>
                   )}
