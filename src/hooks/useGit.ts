@@ -7,6 +7,8 @@ import {
   FileChange,
   RecentRepo,
   WorkspaceStatus,
+  PullOutcome,
+  PullWithLogsResult,
   GitResetMode,
   AuthorCommitStat,
   TimeBucketStat,
@@ -464,19 +466,19 @@ export function useGit() {
     }
   }, [repoInfo])
 
-  const pullChanges = useCallback(async (): Promise<void> => {
+  const pullChanges = useCallback(async (): Promise<PullOutcome> => {
     if (!repoInfo) throw new Error('No repository open')
     
     try {
-      await invoke('pull_changes', {
+      const outcome: PullOutcome = await invoke('pull_changes', {
         repoPath: repoInfo.path,
       })
       
-      // 拉取成功后，重新获取仓库信息以更新状态
       const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
         path: repoInfo.path,
       })
       setRepoInfo(updatedRepoInfo)
+      return outcome
     } catch (err) {
       throw new Error(formatTauriInvokeError(err, '拉取失败'))
     }
@@ -562,21 +564,20 @@ export function useGit() {
     }
   }, [repoInfo])
 
-  const pullChangesWithLogs = useCallback(async () => {
+  const pullChangesWithLogs = useCallback(async (): Promise<PullWithLogsResult> => {
     if (!repoInfo) throw new Error('No repository open')
     
     try {
-      const logs: Array<[string, string, string]> = await invoke('pull_changes_with_logs', {
+      const result: PullWithLogsResult = await invoke('pull_changes_with_logs', {
         repoPath: repoInfo.path,
       })
       
-      // 拉取成功后，重新获取仓库信息以更新状态
       const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
         path: repoInfo.path,
       })
       setRepoInfo(updatedRepoInfo)
       
-      return logs
+      return result
     } catch (err) {
       throw new Error(formatTauriInvokeError(err, '拉取失败'))
     }

@@ -96,6 +96,25 @@ export interface WorkspaceStatus {
   staged_files: FileChange[]
   unstaged_files: FileChange[]
   untracked_files: string[]
+  /** 合并冲突等（与「已暂存」分列） */
+  conflicted_files?: FileChange[]
+}
+
+/** 与后端 `pull_changes` 返回一致 */
+export interface PullOutcome {
+  kind: string
+  message: string
+  head_oid_short?: string | null
+  staged_count: number
+  unstaged_count: number
+  conflicted_count: number
+  untracked_count: number
+}
+
+/** 与后端 `pull_changes_with_logs` 返回一致 */
+export interface PullWithLogsResult {
+  logs: Array<[string, string, string]>
+  outcome: PullOutcome
 }
 
 export interface RepoInfo {
@@ -120,7 +139,7 @@ export interface RepoInfo {
 export interface WorkspaceGitActions {
   commitChanges: (message: string) => Promise<void>
   pushChanges: () => Promise<void>
-  pullChanges: () => Promise<void>
+  pullChanges: () => Promise<PullOutcome>
   refreshRepoInfo: () => Promise<RepoInfo>
 }
 

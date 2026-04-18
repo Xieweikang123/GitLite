@@ -24,6 +24,7 @@ interface WorkspaceStatusData {
   staged_files: FileChange[]
   unstaged_files: FileChange[]
   untracked_files: string[]
+  conflicted_files?: FileChange[]
 }
 
 /** 与后端 normalize_repo_rel_path 对齐，避免 Windows 反斜杠与 Git 索引路径不一致 */
@@ -85,7 +86,10 @@ export function WorkspaceStatus({
   
   // 文件差异查看状态
   const [diffModalOpen, setDiffModalOpen] = useState(false)
-  const [selectedFile, setSelectedFile] = useState<{path: string, type: 'staged' | 'unstaged' | 'untracked'} | null>(null)
+  const [selectedFile, setSelectedFile] = useState<{
+    path: string
+    type: 'staged' | 'unstaged' | 'untracked' | 'conflicted'
+  } | null>(null)
   
   // 贮藏相关状态
   const [stashList, setStashList] = useState<StashInfo[]>([])
@@ -135,7 +139,10 @@ export function WorkspaceStatus({
 
       if (requestGen !== workspaceStatusFetchGenRef.current) return
 
-      setWorkspaceStatus(status)
+      setWorkspaceStatus({
+        ...status,
+        conflicted_files: status.conflicted_files ?? [],
+      })
     } catch (err) {
       if (requestGen !== workspaceStatusFetchGenRef.current) return
       setError(err instanceof Error ? err.message : '获取工作区状态失败')
@@ -415,7 +422,7 @@ export function WorkspaceStatus({
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [repoInfo, autoRefresh, refreshIntervalSec])
+  }, [repoInfo, repoInfo?.head_short_id, autoRefresh, refreshIntervalSec])
 
   // 暂存文件（等刷新完成再更新列表，行内按钮可显示 loading，避免「添加/暂存」无反馈）
   const stageFile = async (filePath: string) => {
@@ -735,6 +742,8 @@ export function WorkspaceStatus({
         return 'destructive'
       case 'renamed':
         return 'outline'
+      case 'conflicted':
+        return 'destructive'
       default:
         return 'secondary'
     }
@@ -753,13 +762,18 @@ export function WorkspaceStatus({
         return '删除(已恢复)'
       case 'renamed':
         return '重命名'
+      case 'conflicted':
+        return '冲突'
       default:
         return status
     }
   }
 
   // 查看文件差异
-  const viewFileDiff = (filePath: string, type: 'staged' | 'unstaged' | 'untracked') => {
+  const viewFileDiff = (
+    filePath: string,
+    type: 'staged' | 'unstaged' | 'untracked' | 'conflicted'
+  ) => {
     setSelectedFile({ path: filePath, type })
     setDiffModalOpen(true)
   }
@@ -791,7 +805,8 @@ export function WorkspaceStatus({
   const hasChanges = workspaceStatus && (
     workspaceStatus.staged_files.length > 0 ||
     workspaceStatus.unstaged_files.length > 0 ||
-    workspaceStatus.untracked_files.length > 0
+    workspaceStatus.untracked_files.length > 0 ||
+    (workspaceStatus.conflicted_files?.length ?? 0) > 0
   )
 
   /** 与下列表一致：不含仅表示未跟踪目录的 `path/` 占位项 */
@@ -1204,6 +1219,47 @@ export function WorkspaceStatus({
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* 合并冲突（单独列出，不计入「已暂存」） */}
+      {workspaceStatus?.conflicted_files && workspaceStatus.conflicted_files.length > 0 && (
+        <Card className="border-l-4 border-l-red-600 dark:border-l-red-500">
+          <CardHeader className="bg-red-50/50 dark:bg-red-950/20">
+            <CardTitle className="text-lg flex items-center gap-2 text-red-800 dark:text-red-300">
+              <AlertCircle className="h-5 w-5" />
+              合并冲突
+            </CardTitle>
+            <CardDescription>请解决冲突后暂存并提交；查看差异为工作区与索引侧内容（含冲突标记）。</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-2">
+              {workspaceStatus.conflicted_files.map((file, index) => (
+                <div
+                  key={index}
+                  className="flex items-start gap-2 p-2 rounded bg-red-50/30 dark:bg-red-950/10 hover:bg-red-50/50 dark:hover:bg-red-950/20 transition-colors"
+                >
+                  <Badge variant="destructive" className="flex-shrink-0">
+                    冲突
+                  </Badge>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-mono truncate" title={file.path}>
+                      {shortenPathMiddle(file.path, 56)}
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => viewFileDiff(file.path, 'conflicted')}
+                    className="flex items-center gap-1 flex-shrink-0"
+                  >
+                    <Eye className="h-3 w-3" />
+                    查看
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* 暂存的文件 */}
       {workspaceStatus?.staged_files && workspaceStatus.staged_files.length > 0 && (

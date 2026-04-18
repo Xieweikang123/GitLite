@@ -242,14 +242,19 @@ function App() {
     setIsOperationRunning(true)
     
     try {
-      const logData: Array<[string, string, string]> = await pullChangesWithLogs()
+      const { logs: logData, outcome } = await pullChangesWithLogs()
       
-      // 转换日志格式
+      // 转换日志格式，并附加结构化结果摘要（与 SourceTree 一致：拉取后工作区计数）
       const formattedLogs = logData.map(([timestamp, level, message]) => ({
         timestamp,
         level: level as 'INFO' | 'DEBUG' | 'WARN' | 'ERROR',
         message
       }))
+      formattedLogs.push({
+        timestamp: new Date().toLocaleTimeString(),
+        level: 'INFO',
+        message: `拉取结果 [${outcome.kind}] ${outcome.message} — 暂存区 ${outcome.staged_count} 项，未暂存 ${outcome.unstaged_count} 项，冲突 ${outcome.conflicted_count} 项，未跟踪 ${outcome.untracked_count} 项`,
+      })
       
       setLogs(formattedLogs)
       setIsOperationRunning(false)

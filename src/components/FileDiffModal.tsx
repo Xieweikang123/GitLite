@@ -8,7 +8,7 @@ interface FileDiffModalProps {
   onClose: () => void
   filePath: string
   repoPath: string
-  fileType: 'staged' | 'unstaged' | 'untracked'
+  fileType: 'staged' | 'unstaged' | 'untracked' | 'conflicted'
 }
 
 export function FileDiffModal({ isOpen, onClose, filePath, repoPath, fileType }: FileDiffModalProps) {
@@ -94,8 +94,8 @@ export function FileDiffModal({ isOpen, onClose, filePath, repoPath, fileType }:
           repoPath,
           filePath
         })
-      } else if (fileType === 'unstaged') {
-        // 获取未暂存文件的差异（工作区与索引的差异）
+      } else if (fileType === 'unstaged' || fileType === 'conflicted') {
+        // 未暂存 / 冲突：工作区与索引（冲突文件含 <<<<<< 等标记）
         diffContent = await invoke('get_unstaged_file_diff', {
           repoPath,
           filePath
@@ -129,6 +129,8 @@ export function FileDiffModal({ isOpen, onClose, filePath, repoPath, fileType }:
         return '已暂存文件差异'
       case 'unstaged':
         return '未暂存文件差异'
+      case 'conflicted':
+        return '冲突文件差异（工作区）'
       case 'untracked':
         return '未跟踪文件内容'
       default:

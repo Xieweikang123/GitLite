@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use chrono::{Datelike, DateTime, FixedOffset, Utc};
-use git2::{Oid, Repository, StashFlags};
+use git2::{Oid, Repository, RepositoryState, StashFlags};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -511,6 +511,27 @@ pub struct WorkspaceStatus {
     pub staged_files: Vec<FileChange>,
     pub unstaged_files: Vec<FileChange>,
     pub untracked_files: Vec<String>,
+    /// 合并冲突等：与 staged/unstaged 分列，避免与「已暂存」混淆
+    #[serde(default)]
+    pub conflicted_files: Vec<FileChange>,
+}
+
+/// 拉取结果（供前端展示与日志；`kind` 为结构化分支标识）
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PullOutcome {
+    pub kind: String,
+    pub message: String,
+    pub head_oid_short: Option<String>,
+    pub staged_count: usize,
+    pub unstaged_count: usize,
+    pub conflicted_count: usize,
+    pub untracked_count: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PullWithLogsResult {
+    pub logs: Vec<(String, String, String)>,
+    pub outcome: PullOutcome,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1210,17 +1231,6 @@ fn dedupe_strings_preserve_order(v: &mut Vec<String>) {
     v.retain(|s| seen.insert(s.clone()));
 }
 
-// 判断某路径是否在给定树（通常为 HEAD^{tree}）中被追踪
-fn path_tracked_in_tree(tree: &git2::Tree, file_path: &str) -> bool {
-    let file_path = normalize_repo_rel_path(file_path);
-    if let Ok(path) = std::path::Path::new(&file_path).strip_prefix("./") {
-        if tree.get_path(path).is_ok() {
-            return true;
-        }
-    }
-    tree.get_path(Path::new(&file_path)).is_ok()
-}
-
 // 获取最近打开的仓库列表
 #[tauri::command]
 async fn get_recent_repos() -> Result<Vec<RecentRepo>, String> {
@@ -1434,49 +1444,6 @@ fn git_output_detail(output: &std::process::Output) -> String {
         s.push_str(stderr);
     }
     s
-}
-
-/// 在 **拉取前相对 `HEAD` 无未提交改动**（`paths_dirty_vs_head` 为空）时，用系统 Git 将索引与工作区对齐到当前 `HEAD`。
-/// 与 SourceTree / 命令行 `git pull` 一致；libgit2 单独 `checkout_tree` 在部分环境下不能像官方 Git 一样可靠写回 `.git/index`，易出现「已与远程对齐但 status 仍大量 M/D」。
-///
-/// **不得**在存在未提交改动时调用，否则会丢弃本地修改。
-fn sync_index_worktree_to_head_with_cli(repo_path: &str) -> Result<(), String> {
-    let out = run_git_in_repo(repo_path, &["reset", "--hard", "HEAD"]).map_err(|e| {
-        format!("无法执行 git reset --hard（请确认已安装 Git 并加入 PATH）: {}", e)
-    })?;
-    if !out.status.success() {
-        return Err(format!(
-            "git reset --hard HEAD 失败: {}",
-            git_output_detail(&out)
-        ));
-    }
-    Ok(())
-}
-
-/// 在 **存在未提交改动**（不能使用 `reset --hard`）时，用 **libgit2** 将**索引**对齐到当前 `HEAD`，**不覆盖工作区**（等价 `git reset --mixed HEAD`）。
-///
-/// `checkout_tree` 或 `merge_commits`+`commit` 后，磁盘 `.git/index` 可能与 `HEAD` 不一致，界面会误报「大量已暂存」。
-/// 若改用**系统** `git reset --mixed`，libgit2 仍可能持有旧索引视图；此处全程在同一 `Repository` 上 `reset` 并 `index.write()`，避免混用不同实现导致的状态分裂。
-fn sync_index_to_head_mixed_libgit2(repo: &Repository) -> Result<(), String> {
-    let head = repo
-        .head()
-        .map_err(|e| format!("获取 HEAD 失败: {}", e))?;
-    let head_commit = head
-        .peel_to_commit()
-        .map_err(|e| format!("解析 HEAD 提交失败: {}", e))?;
-    repo.reset(
-        head_commit.as_object(),
-        git2::ResetType::Mixed,
-        None,
-    )
-    .map_err(|e| format!("libgit2 reset Mixed 失败: {}", e))?;
-    let mut index = repo
-        .index()
-        .map_err(|e| format!("打开索引失败: {}", e))?;
-    index
-        .write()
-        .map_err(|e| format!("写入 .git/index 失败: {}", e))?;
-    Ok(())
 }
 
 // 获取代理配置
@@ -3102,180 +3069,138 @@ async fn get_file_diff(repo_path: String, commit_id: String) -> Result<String, S
     Ok(diff_text)
 }
 
-// 收集工作区状态（供 get_workspace_status / 删除未跟踪 等复用）
-fn collect_workspace_status(repo: &Repository) -> Result<WorkspaceStatus, String> {
-    let mut staged_files = Vec::new();
-    let mut unstaged_files = Vec::new();
-    let mut untracked_files = Vec::new();
+/// 从 diff 单条 delta 生成 UI 用的文件状态（与 `git diff` 语义一致）
+fn file_change_from_delta(delta: &git2::DiffDelta) -> Option<FileChange> {
+    let path = normalize_repo_rel_path(
+        &delta
+            .new_file()
+            .path()
+            .or_else(|| delta.old_file().path())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default(),
+    );
+    if path.is_empty() {
+        return None;
+    }
+    let status = match delta.status() {
+        git2::Delta::Added => "added",
+        git2::Delta::Deleted => "deleted",
+        git2::Delta::Modified => "modified",
+        git2::Delta::Renamed => "renamed",
+        git2::Delta::Copied => "added",
+        git2::Delta::Typechange => "modified",
+        git2::Delta::Conflicted => "modified",
+        _ => "modified",
+    };
+    Some(FileChange {
+        path,
+        status: status.to_string(),
+        additions: 1,
+        deletions: 0,
+    })
+}
 
-    // 对每个 status 条目避免重复 peel HEAD tree（大仓库上可显著减少开销）
-    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
-    
-    // 使用 git status 来获取更准确的状态信息
+// 收集工作区状态（供 get_workspace_status / 删除未跟踪 等复用）
+// 双 diff 模型：已暂存 = HEAD^{tree} vs index；未暂存 = index vs worktree；冲突单独列出
+fn collect_workspace_status(repo: &Repository) -> Result<WorkspaceStatus, String> {
+    let mut conflicted_files = Vec::new();
+    let mut conflicted_paths: HashSet<String> = HashSet::new();
+
     let mut status_options = git2::StatusOptions::new();
     status_options.include_untracked(true);
     status_options.include_ignored(false);
     status_options.include_unmodified(false);
-    
-    let statuses = repo.statuses(Some(&mut status_options))
+
+    let statuses = repo
+        .statuses(Some(&mut status_options))
         .map_err(|e| format!("Failed to get statuses: {}", e))?;
-    
+
     for entry in statuses.iter() {
         let file_path = normalize_repo_rel_path(entry.path().unwrap_or(""));
         if file_path.is_empty() {
             continue;
         }
-        let status = entry.status();
-        
-        // 优先处理暂存状态，如果文件在暂存区，就不处理工作区状态
-        if status.contains(git2::Status::INDEX_NEW) {
-            staged_files.push(FileChange {
-                path: file_path.clone(),
-                status: "added".to_string(),
-                additions: 1,
-                deletions: 0,
-            });
-        } else if status.contains(git2::Status::INDEX_MODIFIED) {
-            staged_files.push(FileChange {
-                path: file_path.clone(),
-                status: "modified".to_string(),
-                additions: 1,
-                deletions: 0,
-            });
-        } else if status.contains(git2::Status::INDEX_DELETED) {
-            // 与 git status 保持一致：即便工作区有 WT_NEW，也要在暂存区显示 deleted
-            staged_files.push(FileChange {
-                path: file_path.clone(),
-                status: "deleted".to_string(),
+        if entry.status().contains(git2::Status::CONFLICTED) {
+            conflicted_paths.insert(file_path.clone());
+            conflicted_files.push(FileChange {
+                path: file_path,
+                status: "conflicted".to_string(),
                 additions: 0,
-                deletions: 1,
-            });
-        } else if status.contains(git2::Status::INDEX_RENAMED) {
-            staged_files.push(FileChange {
-                path: file_path.clone(),
-                status: "renamed".to_string(),
-                additions: 1,
-                deletions: 0,
-            });
-        }
-        
-        // 处理工作区状态（无论文件是否在暂存区）
-        if status.contains(git2::Status::WT_NEW) {
-            let in_head = head_tree
-                .as_ref()
-                .map(|t| path_tracked_in_tree(t, &file_path))
-                .unwrap_or(false);
-            // 与 git status 对齐：若该路径在 HEAD 存在且索引为 deleted，则工作区提示应为 Untracked
-            if in_head && status.contains(git2::Status::INDEX_DELETED) {
-                if !untracked_files.contains(&file_path) {
-                    untracked_files.push(file_path);
-                }
-            } else if in_head {
-                // HEAD 有且索引未删除，才视为修改
-                if !unstaged_files.iter().any(|f: &FileChange| f.path == file_path) {
-                    unstaged_files.push(FileChange {
-                        path: file_path.clone(),
-                        status: "modified".to_string(),
-                        additions: 1,
-                        deletions: 0,
-                    });
-                }
-            } else if !untracked_files.contains(&file_path) {
-                untracked_files.push(file_path);
-            }
-        } else if status.contains(git2::Status::WT_MODIFIED) {
-            // 如果文件在工作区被修改但没有暂存，添加到未暂存列表
-            if !status.contains(git2::Status::INDEX_MODIFIED) {
-                unstaged_files.push(FileChange {
-                    path: file_path.clone(),
-                    status: "modified".to_string(),
-                    additions: 1,
-                    deletions: 0,
-                });
-            }
-        } else if status.contains(git2::Status::WT_DELETED) {
-            // 如果文件在工作区被删除但没有暂存，添加到未暂存列表
-            if !status.contains(git2::Status::INDEX_DELETED) {
-                unstaged_files.push(FileChange {
-                    path: file_path.clone(),
-                    status: "deleted".to_string(),
-                    additions: 0,
-                    deletions: 1,
-                });
-            }
-        } else if status.contains(git2::Status::WT_TYPECHANGE) {
-            // 文件类型改变
-            unstaged_files.push(FileChange {
-                path: file_path.clone(),
-                status: "modified".to_string(),
-                additions: 1,
                 deletions: 0,
             });
         }
     }
-    
-    // 使用 index 到 workdir 的差异更可靠地获取"未暂存"
-    let index = repo.index().map_err(|e| format!("Failed to get index: {}", e))?;
+    dedupe_file_changes_by_path(&mut conflicted_files);
+
+    let head_tree = repo
+        .head()
+        .map_err(|e| format!("Failed to get HEAD: {}", e))?
+        .peel_to_tree()
+        .map_err(|e| format!("Failed to peel HEAD to tree: {}", e))?;
+    let index = repo
+        .index()
+        .map_err(|e| format!("Failed to get index: {}", e))?;
+
+    let staged_diff = repo
+        .diff_tree_to_index(Some(&head_tree), Some(&index), None)
+        .map_err(|e| format!("Failed to diff HEAD vs index: {}", e))?;
+    let mut staged_files = Vec::new();
+    for delta in staged_diff.deltas() {
+        if let Some(fc) = file_change_from_delta(&delta) {
+            if !conflicted_paths.contains(&fc.path) {
+                staged_files.push(fc);
+            }
+        }
+    }
+    dedupe_file_changes_by_path(&mut staged_files);
+
     let mut diff_opts = git2::DiffOptions::new();
     diff_opts.include_untracked(true).recurse_untracked_dirs(true);
-    let diff = repo.diff_index_to_workdir(Some(&index), Some(&mut diff_opts))
+    let unstaged_diff = repo
+        .diff_index_to_workdir(Some(&index), Some(&mut diff_opts))
         .map_err(|e| format!("Failed to create index->workdir diff: {}", e))?;
-    
-     
-    let mut diff_count = 0;
-    diff.foreach(
-        &mut |delta, _| {
-            diff_count += 1;
-            let file_path = normalize_repo_rel_path(
-                &delta
-                    .new_file()
-                    .path()
-                    .or_else(|| delta.old_file().path())
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default(),
-            );
-            if file_path.is_empty() {
-                return true;
-            }
-            let _delta_status = format!("{:?}", delta.status());
-            // 注意：同一文件可以同时有暂存和未暂存的修改，所以不跳过
-            // 识别类型
-            let status = match delta.status() {
-                git2::Delta::Added => "added",
-                git2::Delta::Modified => "modified",
-                git2::Delta::Deleted => "deleted",
-                git2::Delta::Renamed => "renamed",
-                git2::Delta::Untracked => {
-                    if !untracked_files.contains(&file_path) {
-                        untracked_files.push(file_path.clone());
-                    }
-                    return true;
-                },
-                _ => "modified",
-            };
-            if !unstaged_files.iter().any(|f| f.path == file_path) {
-                unstaged_files.push(FileChange {
-                    path: file_path.clone(),
-                    status: status.to_string(),
-                    additions: 1,
-                    deletions: 0,
-                });
-            }
-            true
-        },
-        None,
-        None,
-        None,
-    ).map_err(|e| format!("Failed to iterate index->workdir diff: {}", e))?;
 
-    dedupe_file_changes_by_path(&mut staged_files);
+    let mut unstaged_files = Vec::new();
+    let mut untracked_files = Vec::new();
+    for delta in unstaged_diff.deltas() {
+        let file_path = normalize_repo_rel_path(
+            &delta
+                .new_file()
+                .path()
+                .or_else(|| delta.old_file().path())
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
+        );
+        if file_path.is_empty() {
+            continue;
+        }
+        if conflicted_paths.contains(&file_path) {
+            continue;
+        }
+        match delta.status() {
+            git2::Delta::Untracked => {
+                if !untracked_files.contains(&file_path) {
+                    untracked_files.push(file_path);
+                }
+            }
+            _ => {
+                if let Some(fc) = file_change_from_delta(&delta) {
+                    if !unstaged_files.iter().any(|f: &FileChange| f.path == fc.path) {
+                        unstaged_files.push(fc);
+                    }
+                }
+            }
+        }
+    }
+
     dedupe_file_changes_by_path(&mut unstaged_files);
     dedupe_strings_preserve_order(&mut untracked_files);
-    
+
     Ok(WorkspaceStatus {
         staged_files,
         unstaged_files,
         untracked_files,
+        conflicted_files,
     })
 }
 
@@ -3715,235 +3640,308 @@ async fn push_changes(repo_path: String) -> Result<String, String> {
     Ok(format!("Successfully pushed to origin/{}", branch_name))
 }
 
-// 拉取更改
-#[tauri::command]
-async fn pull_changes(repo_path: String) -> Result<String, String> {
-    log_message("INFO", &format!("pull: attempt start | path={}", repo_path));
-
-    let repo = match Repository::open(&repo_path) {
-        Ok(r) => r,
-        Err(e) => {
-            log_message("ERROR", &format!("pull: open repository failed: {} | path={}", e, repo_path));
-            return Err(format!("Failed to open repository: {}", e));
-        }
-    };
-
-    let branch_name = branch_name_for_sync_commands(&repo).map_err(|e| {
-        log_message("ERROR", &format!("pull: branch for sync: {}", e));
-        e
-    })?;
-
-    if let Err(e) = repo.find_remote("origin") {
-        log_message("ERROR", &format!("pull: find remote 'origin' failed: {}", e));
-        return Err(format!("Failed to find remote 'origin': {}", e));
+fn pull_preflight(repo: &Repository) -> Result<(), String> {
+    match repo.state() {
+        RepositoryState::Clean => Ok(()),
+        s => Err(format!(
+            "仓库处于进行中的操作状态（{:?}），请先完成、中止或解决冲突后再拉取。",
+            s
+        )),
     }
+}
 
-    let fetch_out = run_git_in_repo(&repo_path, &["fetch", "origin"])
-        .map_err(|e| format!("Failed to fetch: {}（无法执行 git）", e))?;
+fn tauri_pull_log_line(
+    logs: &mut Option<&mut Vec<(String, String, String)>>,
+    level: &str,
+    message: impl AsRef<str>,
+) {
+    let msg = message.as_ref().to_string();
+    log_message(level, &msg);
+    if let Some(l) = logs.as_mut() {
+        let ts = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+        l.push((ts, level.to_string(), msg));
+    }
+}
+
+fn finish_pull_outcome(
+    repo_path: &str,
+    logs: &mut Option<&mut Vec<(String, String, String)>>,
+    kind: &str,
+    message: &str,
+) -> Result<PullOutcome, String> {
+    let repo = Repository::open(repo_path).map_err(|e| format!("拉取结束后重新打开仓库失败: {}", e))?;
+    let ws = collect_workspace_status(&repo)?;
+    let head_short = repo.head().ok().and_then(|h| h.peel_to_commit().ok()).map(|c| {
+        c.id()
+            .to_string()
+            .chars()
+            .take(7)
+            .collect::<String>()
+    });
+    let summary = format!(
+        "pull: 结束 kind={} | HEAD≈{} | staged={} unstaged={} conflicted={} untracked={}",
+        kind,
+        head_short.as_deref().unwrap_or("?"),
+        ws.staged_files.len(),
+        ws.unstaged_files.len(),
+        ws.conflicted_files.len(),
+        ws.untracked_files.len()
+    );
+    log_message("INFO", &summary);
+    tauri_pull_log_line(logs, "INFO", &summary);
+    Ok(PullOutcome {
+        kind: kind.to_string(),
+        message: message.to_string(),
+        head_oid_short: head_short,
+        staged_count: ws.staged_files.len(),
+        unstaged_count: ws.unstaged_files.len(),
+        conflicted_count: ws.conflicted_files.len(),
+        untracked_count: ws.untracked_files.len(),
+    })
+}
+
+/// 拉取核心逻辑：fetch 后用 **系统 git merge** 更新 HEAD/index/worktree（与 SourceTree / 命令行一致），
+/// 避免 libgit2 与 CLI 混写导致的 index 假象「大量已暂存」。
+fn execute_pull(
+    repo_path: &str,
+    mut logs: Option<&mut Vec<(String, String, String)>>,
+) -> Result<PullOutcome, String> {
+    let repo = Repository::open(repo_path).map_err(|e| format!("打开仓库失败: {}", e))?;
+    tauri_pull_log_line(
+        &mut logs,
+        "INFO",
+        &format!("pull: 开始 | path={}", repo_path),
+    );
+
+    pull_preflight(&repo)?;
+    tauri_pull_log_line(
+        &mut logs,
+        "INFO",
+        "pull: 预检通过（无进行中的 merge/rebase/cherry-pick 等）",
+    );
+
+    let branch_name = branch_name_for_sync_commands(&repo)?;
+    if let Ok(b) = repo.find_branch(&branch_name, git2::BranchType::Local) {
+        if b.upstream().is_err() {
+            tauri_pull_log_line(
+                &mut logs,
+                "WARN",
+                &format!(
+                    "pull: 当前分支未设置上游；将使用 refs/remotes/origin/{} 作为拉取目标",
+                    branch_name
+                ),
+            );
+        }
+    }
+    tauri_pull_log_line(
+        &mut logs,
+        "INFO",
+        &format!("pull: 当前分支={}", branch_name),
+    );
+
+    repo.find_remote("origin")
+        .map_err(|_| "未找到远程 origin。".to_string())?;
+
+    let head_oid = repo
+        .refname_to_id("HEAD")
+        .map_err(|e| format!("读取本地 HEAD 失败: {}", e))?;
+    let head_short = head_oid.to_string().chars().take(7).collect::<String>();
+    let dirty_paths = paths_dirty_vs_head(&repo)?;
+    tauri_pull_log_line(
+        &mut logs,
+        "INFO",
+        &format!(
+            "pull: 拉取前 HEAD={} dirty_paths={}",
+            head_short,
+            dirty_paths.len()
+        ),
+    );
+
+    tauri_pull_log_line(&mut logs, "INFO", "pull: 执行 git fetch origin …");
+    let fetch_out = run_git_in_repo(repo_path, &["fetch", "origin"])
+        .map_err(|e| format!("无法执行 git fetch: {}", e))?;
     if !fetch_out.status.success() {
         let detail = git_output_detail(&fetch_out);
-        log_message("ERROR", &format!("pull: git fetch failed: {} | branch={}", detail, branch_name));
-        let log_path = get_config_dir().join("logs").join("gitlite.log");
-        return Err(format!("Failed to fetch: {} (see log: {})", detail, log_path.display()));
+        tauri_pull_log_line(&mut logs, "ERROR", &format!("git fetch 失败: {}", detail));
+        return Err(format!("git fetch 失败: {}", detail));
     }
 
-    // 获取远程分支引用
-    let remote_branch_ref = format!("refs/remotes/origin/{}", branch_name);
-    let remote_branch_oid = match repo.refname_to_id(&remote_branch_ref) {
-        Ok(oid) => oid,
-        Err(e) => {
-            log_message("ERROR", &format!("pull: get remote branch OID failed: {} | ref={}", e, remote_branch_ref));
-            return Err(format!("Failed to get remote branch reference: {}", e));
-        }
-    };
+    let repo = Repository::open(repo_path).map_err(|e| format!("fetch 后重新打开仓库失败: {}", e))?;
 
-    // 获取本地HEAD的OID
-    let local_head_oid = match repo.refname_to_id("HEAD") {
-        Ok(oid) => oid,
-        Err(e) => {
-            log_message("ERROR", &format!("pull: get local HEAD OID failed: {}", e));
-            return Err(format!("Failed to get local HEAD reference: {}", e));
-        }
-    };
+    let remote_ref = format!("refs/remotes/origin/{}", branch_name);
+    let remote_oid = repo
+        .refname_to_id(&remote_ref)
+        .map_err(|e| format!("未找到远程分支 origin/{}: {}", branch_name, e))?;
+    let local_oid = repo
+        .refname_to_id("HEAD")
+        .map_err(|e| format!("读取本地 HEAD 失败: {}", e))?;
 
-    // 检查是否需要合并
-    if remote_branch_oid == local_head_oid {
-        log_message("INFO", &format!("pull: already up to date | branch={}", branch_name));
-        return Ok("Already up to date".to_string());
+    if remote_oid == local_oid {
+        tauri_pull_log_line(&mut logs, "INFO", "pull: fetch 后本地与远端一致（已是最新）");
+        return finish_pull_outcome(repo_path, &mut logs, "up_to_date", "已经是最新");
     }
 
-    let remote_commit = match repo.find_commit(remote_branch_oid) {
-        Ok(c) => c,
-        Err(e) => {
-            log_message("ERROR", &format!("pull: find remote commit failed: {}", e));
-            return Err(format!("Failed to find remote commit: {}", e));
-        }
-    };
+    let (ahead, behind) = repo
+        .graph_ahead_behind(local_oid, remote_oid)
+        .map_err(|e| format!("无法计算本地与远端相对位置: {}", e))?;
+    tauri_pull_log_line(
+        &mut logs,
+        "INFO",
+        &format!(
+            "pull: 分支关系（graph_ahead_behind: 本地相对远端）| ahead={} behind={}",
+            ahead, behind
+        ),
+    );
 
-    let local_commit = match repo.find_commit(local_head_oid) {
-        Ok(c) => c,
-        Err(e) => {
-            log_message("ERROR", &format!("pull: find local commit failed: {}", e));
-            return Err(format!("Failed to find local commit: {}", e));
-        }
-    };
+    if behind == 0 && ahead > 0 {
+        tauri_pull_log_line(
+            &mut logs,
+            "INFO",
+            "pull: 本地领先于远端，无需合并 — 跳过",
+        );
+        return finish_pull_outcome(
+            repo_path,
+            &mut logs,
+            "up_to_date",
+            "已经是最新（本地领先于远端，无需拉取合并）",
+        );
+    }
 
-    // 仅当：合并产生冲突，或「本地未提交」与「本次拉取会改动的路径」相交时阻断（与「有改动就禁止」不同）
-    let dirty_paths = paths_dirty_vs_head(&repo)?;
+    let local_commit = repo
+        .find_commit(local_oid)
+        .map_err(|e| format!("解析本地提交失败: {}", e))?;
+    let remote_commit = repo
+        .find_commit(remote_oid)
+        .map_err(|e| format!("解析远端提交失败: {}", e))?;
 
-    // 检查是否是快进合并
-    let is_ff = match repo.merge_base(local_head_oid, remote_branch_oid) {
-        Ok(base) => base == local_head_oid,
-        Err(_) => false,
-    };
-
-    if is_ff {
-        let local_tree = local_commit
-            .tree()
-            .map_err(|e| format!("Failed to get local tree: {}", e))?;
-        let remote_tree = remote_commit
-            .tree()
-            .map_err(|e| format!("Failed to get remote tree: {}", e))?;
+    if behind > 0 && ahead == 0 {
+        let local_tree = local_commit.tree().map_err(|e| e.to_string())?;
+        let remote_tree = remote_commit.tree().map_err(|e| e.to_string())?;
         let pull_diff = repo
             .diff_tree_to_tree(Some(&local_tree), Some(&remote_tree), None)
-            .map_err(|e| format!("Failed to diff for fast-forward paths: {}", e))?;
+            .map_err(|e| format!("计算快进差异失败: {}", e))?;
         let pull_paths = diff_paths_set(&pull_diff)?;
         if !dirty_paths.is_empty() {
             let overlap: Vec<String> = dirty_paths.intersection(&pull_paths).cloned().collect();
             if !overlap.is_empty() {
                 let sample = overlap.iter().take(8).cloned().collect::<Vec<_>>().join(", ");
-                log_message(
+                tauri_pull_log_line(
+                    &mut logs,
                     "WARN",
-                    &format!("pull: blocked — local changes overlap fast-forward paths | sample=[{}]", sample),
+                    &format!("pull: 阻塞 — 本地改动与将拉取的文件重叠: {}", sample),
                 );
                 return Err(format!(
-                    "Cannot pull: uncommitted changes would be overwritten (e.g. {}). Commit or stash first.",
+                    "无法拉取：未提交的修改会被覆盖（例如 {}）。请先提交或贮藏。",
                     sample
                 ));
             }
         }
 
-        // HEAD 常为符号引用（指向 refs/heads/…）；对符号引用直接 set_target(OID) 会报
-        // "cannot set OID on symbolic reference"。先 resolve 到直接引用再快进。
-        let mut reference = match repo.find_reference("HEAD") {
-            Ok(r) => match r.resolve() {
-                Ok(direct) => direct,
-                Err(e) => {
-                    log_message("ERROR", &format!("pull: resolve HEAD failed: {}", e));
-                    return Err(format!("Failed to resolve HEAD reference: {}", e));
-                }
-            },
-            Err(e) => {
-                log_message("ERROR", &format!("pull: find HEAD reference failed: {}", e));
-                return Err(format!("Failed to find HEAD reference: {}", e));
-            }
-        };
-
-        if let Err(e) = reference.set_target(remote_branch_oid, "Fast-forward merge") {
-            log_message("ERROR", &format!("pull: fast-forward failed: {}", e));
-            return Err(format!("Failed to fast-forward: {}", e));
+        tauri_pull_log_line(
+            &mut logs,
+            "INFO",
+            &format!("pull: 执行 git merge --ff-only origin/{}", branch_name),
+        );
+        let merge_out = run_git_in_repo(
+            repo_path,
+            &["merge", "--ff-only", &format!("origin/{}", branch_name)],
+        )
+        .map_err(|e| format!("无法执行 git merge: {}", e))?;
+        if !merge_out.status.success() {
+            let detail = git_output_detail(&merge_out);
+            tauri_pull_log_line(&mut logs, "ERROR", &format!("git merge --ff-only 失败: {}", detail));
+            return Err(format!("快进拉取失败: {}", detail));
         }
+        tauri_pull_log_line(&mut logs, "INFO", "pull: fast-forward 成功（系统 git merge）");
+        return finish_pull_outcome(
+            repo_path,
+            &mut logs,
+            "fast_forward",
+            "拉取成功（快进）",
+        );
+    }
 
-        // 仅 set_target 会只移动分支指针；需把索引与工作区同步到新 HEAD。
-        // 工作区干净时用系统 `git reset --hard HEAD`，与 SourceTree / 官方 git pull 一致；
-        // libgit2 单独 checkout_tree 在部分环境下 index 与 CLI 不一致。
-        if dirty_paths.is_empty() {
-            sync_index_worktree_to_head_with_cli(&repo_path).map_err(|e| {
-                log_message("ERROR", &format!("pull: sync worktree/index after ff failed: {}", e));
-                e
-            })?;
-        } else {
-            let treeish = remote_commit.as_object();
-            if let Err(e) = repo.checkout_tree(&treeish, None) {
-                log_message("ERROR", &format!("pull: checkout after fast-forward failed: {}", e));
-                return Err(format!(
-                    "Branch fast-forwarded but work tree failed to sync: {}. You may need to run: git reset --hard HEAD",
-                    e
-                ));
-            }
-            // 有本地未提交改动时不能用 reset --hard；checkout_tree 后需用 libgit2 Mixed 对齐索引与 HEAD，并写回 .git/index。
-            if let Err(e) = sync_index_to_head_mixed_libgit2(&repo) {
-                log_message("ERROR", &format!("pull: sync index after ff (dirty worktree) failed: {}", e));
-                return Err(e);
-            }
-        }
-
-        log_message("INFO", &format!("pull: fast-forward success | branch={}", branch_name));
-        Ok("Successfully pulled (fast-forward)".to_string())
-    } else {
-        let mut merge_index = match repo.merge_commits(&local_commit, &remote_commit, None) {
-            Ok(index) => index,
-            Err(e) => {
-                log_message("ERROR", &format!("pull: merge commits failed: {}", e));
-                return Err(format!("Failed to merge: {}", e));
-            }
-        };
-
+    if behind > 0 && ahead > 0 {
+        let mut merge_index = repo
+            .merge_commits(&local_commit, &remote_commit, None)
+            .map_err(|e| format!("预演合并失败: {}", e))?;
         if merge_index.has_conflicts() {
-            log_message("WARN", "pull: merge index has conflicts — blocking");
-            return Err(
-                "Cannot pull: merge would have conflicts. Please commit, stash, or resolve first."
-                    .to_string(),
+            tauri_pull_log_line(
+                &mut logs,
+                "WARN",
+                "pull: 预演显示合并将产生冲突 — 仍将执行 git merge 以在工作区写入冲突标记",
             );
         }
-
         let merge_tree_oid = merge_index
             .write_tree_to(&repo)
-            .map_err(|e| format!("Failed to write merge tree: {}", e))?;
-        let merge_tree = repo
-            .find_tree(merge_tree_oid)
-            .map_err(|e| format!("Failed to find merge tree: {}", e))?;
-        let local_tree = local_commit
-            .tree()
-            .map_err(|e| format!("Failed to get local tree: {}", e))?;
+            .map_err(|e| format!("写入预演合并树失败: {}", e))?;
+        let merge_tree = repo.find_tree(merge_tree_oid).map_err(|e| e.to_string())?;
+        let local_tree = local_commit.tree().map_err(|e| e.to_string())?;
         let merge_touch = repo
             .diff_tree_to_tree(Some(&local_tree), Some(&merge_tree), None)
-            .map_err(|e| format!("Failed to diff merge result paths: {}", e))?;
+            .map_err(|e| e.to_string())?;
         let merge_paths = diff_paths_set(&merge_touch)?;
         if !dirty_paths.is_empty() {
             let overlap: Vec<String> = dirty_paths.intersection(&merge_paths).cloned().collect();
             if !overlap.is_empty() {
                 let sample = overlap.iter().take(8).cloned().collect::<Vec<_>>().join(", ");
-                log_message(
+                tauri_pull_log_line(
+                    &mut logs,
                     "WARN",
-                    &format!("pull: blocked — local changes overlap merge paths | sample=[{}]", sample),
+                    &format!("pull: 阻塞 — 本地改动与合并将触及的路径重叠: {}", sample),
                 );
                 return Err(format!(
-                    "Cannot pull: uncommitted changes would be overwritten (e.g. {}). Commit or stash first.",
+                    "无法拉取：未提交的修改会被覆盖（例如 {}）。请先提交或贮藏。",
                     sample
                 ));
             }
         }
 
-        let signature = repo_author_signature(&repo)?;
-
-        let merge_commit_id = repo
-            .commit(
-                Some("HEAD"),
-                &signature,
-                &signature,
-                &format!("Merge branch 'origin/{}'", branch_name),
-                &merge_tree,
-                &[&local_commit, &remote_commit],
-            )
-            .map_err(|e| format!("创建合并提交失败：{}", e))?;
-
-        if dirty_paths.is_empty() {
-            sync_index_worktree_to_head_with_cli(&repo_path).map_err(|e| {
-                log_message("ERROR", &format!("pull: sync after merge commit failed: {}", e));
-                e
-            })?;
-        } else {
-            // merge_commits + commit 不会把合并结果完整写回磁盘 index；有本地改动时不能 --hard，用 libgit2 Mixed 只刷新 index。
-            if let Err(e) = sync_index_to_head_mixed_libgit2(&repo) {
-                log_message("ERROR", &format!("pull: sync index after merge (dirty worktree) failed: {}", e));
-                return Err(e);
+        tauri_pull_log_line(
+            &mut logs,
+            "INFO",
+            &format!("pull: 执行 git merge origin/{}（分支已分叉）", branch_name),
+        );
+        let merge_out = run_git_in_repo(
+            repo_path,
+            &["merge", &format!("origin/{}", branch_name)],
+        )
+        .map_err(|e| format!("无法执行 git merge: {}", e))?;
+        if !merge_out.status.success() {
+            let detail = git_output_detail(&merge_out);
+            let repo_after = Repository::open(repo_path).map_err(|e| e.to_string())?;
+            if repo_after.state() == RepositoryState::Merge {
+                tauri_pull_log_line(
+                    &mut logs,
+                    "WARN",
+                    &format!("pull: merge 未完成（存在冲突）: {}", detail),
+                );
+                return finish_pull_outcome(
+                    repo_path,
+                    &mut logs,
+                    "merge_conflict",
+                    "合并发生冲突，请在本地解决冲突后提交。",
+                );
             }
+            tauri_pull_log_line(&mut logs, "ERROR", &format!("git merge 失败: {}", detail));
+            return Err(format!("合并拉取失败: {}", detail));
         }
-
-        log_message("INFO", &format!("pull: merge success | branch={} merge_commit={}", branch_name, merge_commit_id));
-        Ok(format!("Successfully pulled and merged (commit: {})", merge_commit_id))
+        tauri_pull_log_line(&mut logs, "INFO", "pull: merge 提交成功（系统 git merge）");
+        return finish_pull_outcome(
+            repo_path,
+            &mut logs,
+            "merge_commit",
+            "拉取成功（已合并远程提交）",
+        );
     }
+
+    Err("pull: 未处理的分支关系（内部逻辑错误）".to_string())
+}
+
+// 拉取更改
+#[tauri::command]
+async fn pull_changes(repo_path: String) -> Result<PullOutcome, String> {
+    execute_pull(&repo_path, None)
 }
 
 // 获取远程更改（不合并）- 带日志流
@@ -4551,401 +4549,17 @@ async fn git_diagnostics(repo_path: String) -> Result<Vec<(String, String, Strin
 
 // 拉取更改 - 带日志流
 #[tauri::command]
-async fn pull_changes_with_logs(repo_path: String) -> Result<Vec<(String, String, String)>, String> {
+async fn pull_changes_with_logs(repo_path: String) -> Result<PullWithLogsResult, String> {
     let mut logs = Vec::new();
-
-    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    
-    logs.push((timestamp, "INFO".to_string(), format!("pull: attempt start | path={}", repo_path)));
-    
-    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    logs.push((timestamp, "INFO".to_string(), "正在打开仓库...".to_string()));
-    
-    let repo = match Repository::open(&repo_path) {
-        Ok(r) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "INFO".to_string(), "仓库打开成功".to_string()));
-            r
-        },
-        Err(e) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), format!("打开仓库失败: {}", e)));
-            return Err(format!("Failed to open repository: {}", e));
-        }
-    };
-
-    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    logs.push((timestamp, "INFO".to_string(), "正在解析当前分支...".to_string()));
-
-    let branch_name = match branch_name_for_sync_commands(&repo) {
-        Ok(n) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "INFO".to_string(), format!("当前分支: {}", n)));
-            n
-        }
-        Err(e) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), e.clone()));
-            return Err(e);
-        }
-    };
-
-    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    logs.push((timestamp, "INFO".to_string(), "正在查找远程仓库 origin...".to_string()));
-
-    let remote = match repo.find_remote("origin") {
-        Ok(r) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "INFO".to_string(), "找到远程仓库 origin".to_string()));
-            r
-        },
-        Err(e) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), format!("未找到远程仓库 origin: {}", e)));
-            return Err(format!("Failed to find remote 'origin': {}", e));
-        }
-    };
-
-    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    logs.push((timestamp, "INFO".to_string(), "使用系统 Git 执行 fetch（与 VS / 命令行一致）...".to_string()));
-
-    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    logs.push((timestamp, "INFO".to_string(), format!("开始获取远程分支 {}...", branch_name)));
-
-    let fetch_out = match run_git_in_repo(&repo_path, &["fetch", "origin"]) {
-        Ok(o) => o,
-        Err(e) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            let msg = format!("无法执行 git: {}", e);
-            logs.push((timestamp, "ERROR".to_string(), msg.clone()));
-            return Err(format!("Failed to fetch: {}", msg));
-        }
-    };
-    let out_txt = git_output_detail(&fetch_out);
-    if !out_txt.is_empty() {
-        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push((timestamp, "INFO".to_string(), out_txt));
-    }
-    if !fetch_out.status.success() {
-        let detail = git_output_detail(&fetch_out);
-        let url = remote.url().unwrap_or("");
-        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push((timestamp, "ERROR".to_string(), format!("获取远程信息失败: {}", detail)));
-        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push((timestamp, "ERROR".to_string(), format!("远程仓库URL: {}", url)));
-        return Err(format!("Failed to fetch: {}", detail));
-    }
-    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    logs.push((timestamp, "INFO".to_string(), "获取远程信息成功".to_string()));
-
-    // 获取远程分支引用
-    let remote_branch_ref = format!("refs/remotes/origin/{}", branch_name);
-    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    logs.push((timestamp, "INFO".to_string(), format!("正在获取远程分支引用: {}", remote_branch_ref)));
-
-    let remote_branch_oid = match repo.refname_to_id(&remote_branch_ref) {
-        Ok(oid) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "INFO".to_string(), "获取远程分支引用成功".to_string()));
-            oid
-        },
-        Err(e) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), format!("获取远程分支引用失败: {}", e)));
-            return Err(format!("Failed to get remote branch reference: {}", e));
-        }
-    };
-
-    // 获取本地HEAD的OID
-    let local_head_oid = match repo.refname_to_id("HEAD") {
-        Ok(oid) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "INFO".to_string(), "获取本地HEAD引用成功".to_string()));
-            oid
-        },
-        Err(e) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), format!("获取本地HEAD引用失败: {}", e)));
-            return Err(format!("Failed to get local HEAD reference: {}", e));
-        }
-    };
-
-    // 检查是否需要合并
-    if remote_branch_oid == local_head_oid {
-        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push((timestamp, "INFO".to_string(), "本地分支已是最新状态".to_string()));
-        
-        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push((timestamp, "SUCCESS".to_string(), "操作完成 - 无需拉取".to_string()));
-        
-        return Ok(logs);
-    }
-
-    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    logs.push((timestamp, "INFO".to_string(), "检测到远程更新，准备合并...".to_string()));
-
-    let remote_commit = match repo.find_commit(remote_branch_oid) {
-        Ok(c) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "INFO".to_string(), "找到远程提交".to_string()));
-            c
-        },
-        Err(e) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), format!("查找远程提交失败: {}", e)));
-            return Err(format!("Failed to find remote commit: {}", e));
-        }
-    };
-
-    let local_commit = match repo.find_commit(local_head_oid) {
-        Ok(c) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "INFO".to_string(), "找到本地提交".to_string()));
-            c
-        },
-        Err(e) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), format!("查找本地提交失败: {}", e)));
-            return Err(format!("Failed to find local commit: {}", e));
-        }
-    };
-
-    let dirty_paths = match paths_dirty_vs_head(&repo) {
-        Ok(p) => p,
-        Err(e) => {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), format!("检查工作区与 HEAD 差异失败: {}", e)));
-            return Err(e);
-        }
-    };
-
-    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    logs.push((timestamp, "INFO".to_string(), "正在检查合并类型...".to_string()));
-
-    let is_ff = match repo.merge_base(local_head_oid, remote_branch_oid) {
-        Ok(base) => base == local_head_oid,
-        Err(_) => false,
-    };
-
-    if is_ff {
-        let local_tree = match local_commit.tree() {
-            Ok(t) => t,
-            Err(e) => {
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "ERROR".to_string(), format!("获取本地树失败: {}", e)));
-                return Err(format!("Failed to get local tree: {}", e));
-            }
-        };
-        let remote_tree = match remote_commit.tree() {
-            Ok(t) => t,
-            Err(e) => {
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "ERROR".to_string(), format!("获取远程树失败: {}", e)));
-                return Err(format!("Failed to get remote tree: {}", e));
-            }
-        };
-        let pull_diff = match repo.diff_tree_to_tree(Some(&local_tree), Some(&remote_tree), None) {
-            Ok(d) => d,
-            Err(e) => {
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "ERROR".to_string(), format!("比较快进变更路径失败: {}", e)));
-                return Err(format!("Failed to diff for fast-forward paths: {}", e));
-            }
-        };
-        let pull_paths = match diff_paths_set(&pull_diff) {
-            Ok(p) => p,
-            Err(e) => return Err(e),
-        };
-        if !dirty_paths.is_empty() {
-            let overlap: Vec<String> = dirty_paths.intersection(&pull_paths).cloned().collect();
-            if !overlap.is_empty() {
-                let sample = overlap.iter().take(8).cloned().collect::<Vec<_>>().join(", ");
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "WARN".to_string(), format!("本地未提交改动与本次快进将修改的文件冲突（示例: {}）", sample)));
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "ERROR".to_string(), "无法拉取：请先提交或贮藏".to_string()));
-                return Err(format!(
-                    "Cannot pull: uncommitted changes would be overwritten (e.g. {}). Commit or stash first.",
-                    sample
-                ));
-            }
-        }
-
-        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push((timestamp, "INFO".to_string(), "检测到快进合并，执行快进操作...".to_string()));
-
-        let mut reference = match repo.find_reference("HEAD") {
-            Ok(r) => match r.resolve() {
-                Ok(direct) => {
-                    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                    logs.push((timestamp, "INFO".to_string(), "已解析 HEAD 为直接引用（用于快进）".to_string()));
-                    direct
-                },
-                Err(e) => {
-                    let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                    logs.push((timestamp, "ERROR".to_string(), format!("解析 HEAD 引用失败: {}", e)));
-                    return Err(format!("Failed to resolve HEAD reference: {}", e));
-                }
-            },
-            Err(e) => {
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "ERROR".to_string(), format!("查找HEAD引用失败: {}", e)));
-                return Err(format!("Failed to find HEAD reference: {}", e));
-            }
-        };
-
-        if let Err(e) = reference.set_target(remote_branch_oid, "Fast-forward merge") {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), format!("快进合并失败: {}", e)));
-            return Err(format!("Failed to fast-forward: {}", e));
-        }
-
-        if dirty_paths.is_empty() {
-            if let Err(e) = sync_index_worktree_to_head_with_cli(&repo_path) {
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "ERROR".to_string(), format!("快进后同步索引与工作区失败: {}", e)));
-                return Err(e);
-            }
-        } else {
-            let treeish = remote_commit.as_object();
-            if let Err(e) = repo.checkout_tree(&treeish, None) {
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "ERROR".to_string(), format!("快进后同步工作区失败: {}", e)));
-                return Err(format!(
-                    "Branch fast-forwarded but work tree failed to sync: {}. You may need to run: git reset --hard HEAD",
-                    e
-                ));
-            }
-        }
-        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push((timestamp, "INFO".to_string(), "已同步索引与工作区（与 git pull / SourceTree 一致：干净工作区使用系统 git reset --hard）".to_string()));
-
-        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push((timestamp, "INFO".to_string(), "快进合并成功".to_string()));
-
-        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push((timestamp, "SUCCESS".to_string(), "操作完成 - 快进合并成功".to_string()));
-
-        Ok(logs)
-    } else {
-        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push((timestamp, "INFO".to_string(), "检测到需要合并提交，开始合并操作...".to_string()));
-
-        let mut merge_index = match repo.merge_commits(&local_commit, &remote_commit, None) {
-            Ok(index) => {
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "INFO".to_string(), "已生成合并索引".to_string()));
-                index
-            },
-            Err(e) => {
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "ERROR".to_string(), format!("合并提交失败: {}", e)));
-                return Err(format!("Failed to merge: {}", e));
-            }
-        };
-
-        if merge_index.has_conflicts() {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), "自动合并存在冲突，无法拉取".to_string()));
-            return Err(
-                "Cannot pull: merge would have conflicts. Please commit, stash, or resolve first."
-                    .to_string(),
-            );
-        }
-
-        let merge_tree_oid = match merge_index.write_tree_to(&repo) {
-            Ok(oid) => oid,
-            Err(e) => {
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "ERROR".to_string(), format!("写入合并树失败: {}", e)));
-                return Err(format!("Failed to write merge tree: {}", e));
-            }
-        };
-        let merge_tree = match repo.find_tree(merge_tree_oid) {
-            Ok(t) => t,
-            Err(e) => {
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "ERROR".to_string(), format!("查找合并树失败: {}", e)));
-                return Err(format!("Failed to find merge tree: {}", e));
-            }
-        };
-        let local_tree = match local_commit.tree() {
-            Ok(t) => t,
-            Err(e) => {
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "ERROR".to_string(), format!("获取本地树失败: {}", e)));
-                return Err(format!("Failed to get local tree: {}", e));
-            }
-        };
-        let merge_touch = match repo.diff_tree_to_tree(Some(&local_tree), Some(&merge_tree), None) {
-            Ok(d) => d,
-            Err(e) => {
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "ERROR".to_string(), format!("比较合并影响路径失败: {}", e)));
-                return Err(format!("Failed to diff merge result paths: {}", e));
-            }
-        };
-        let merge_paths = match diff_paths_set(&merge_touch) {
-            Ok(p) => p,
-            Err(e) => return Err(e),
-        };
-        if !dirty_paths.is_empty() {
-            let overlap: Vec<String> = dirty_paths.intersection(&merge_paths).cloned().collect();
-            if !overlap.is_empty() {
-                let sample = overlap.iter().take(8).cloned().collect::<Vec<_>>().join(", ");
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "WARN".to_string(), format!("本地未提交改动与合并将修改的文件冲突（示例: {}）", sample)));
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "ERROR".to_string(), "无法拉取：请先提交或贮藏".to_string()));
-                return Err(format!(
-                    "Cannot pull: uncommitted changes would be overwritten (e.g. {}). Commit or stash first.",
-                    sample
-                ));
-            }
-        }
-
-        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push((timestamp, "INFO".to_string(), "正在创建合并提交...".to_string()));
-
-        let signature = repo_author_signature(&repo).map_err(|e| {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "ERROR".to_string(), e.clone()));
-            e
-        })?;
-
-        let merge_commit_id = match repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            &format!("Merge branch 'origin/{}'", branch_name),
-            &merge_tree,
-            &[&local_commit, &remote_commit],
-        ) {
-            Ok(id) => id,
-            Err(e) => {
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "ERROR".to_string(), format!("创建合并提交失败: {}", e)));
-                return Err(format!("Failed to create merge commit: {}", e));
-            }
-        };
-
-        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push((timestamp, "INFO".to_string(), "合并提交创建成功".to_string()));
-
-        if dirty_paths.is_empty() {
-            if let Err(e) = sync_index_worktree_to_head_with_cli(&repo_path) {
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "ERROR".to_string(), format!("合并后同步索引与工作区失败: {}", e)));
-                return Err(e);
-            }
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "INFO".to_string(), "已用系统 git 同步索引与工作区（与 SourceTree 一致）".to_string()));
-        }
-
-        let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-        logs.push((timestamp, "SUCCESS".to_string(), format!("操作完成 - 合并提交成功 (commit: {})", merge_commit_id)));
-
-        Ok(logs)
+    let ts = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    logs.push((
+        ts,
+        "INFO".to_string(),
+        format!("pull: attempt start | path={}", repo_path),
+    ));
+    match execute_pull(&repo_path, Some(&mut logs)) {
+        Ok(outcome) => Ok(PullWithLogsResult { logs, outcome }),
+        Err(e) => Err(e),
     }
 }
 
