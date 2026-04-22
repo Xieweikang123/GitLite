@@ -72,6 +72,19 @@ function commitCountHeatLevel(count: number): number {
 }
 
 /**
+ * 日历视图不走 16 级细分，而是使用更稳的分档：
+ * 0、1、2-3、4-7、8+。
+ * 这样颜色和下面的图例一致，视觉上也更接近「提交次数越多颜色越深」。
+ */
+function commitCountCalendarLevel(count: number): number {
+  if (count <= 0) return 0
+  if (count === 1) return 1
+  if (count <= 3) return 2
+  if (count <= 7) return 3
+  return 4
+}
+
+/**
  * 热力图色块背景：按次数单调加深（与日历同档）。
  * 使用固定档位避免「相对当月最大值」导致 1 次与 2 次落在同一桶。
  */
@@ -100,24 +113,12 @@ function commitHeatmapBgClass(count: number): string {
   return HEATMAP_HEAT_BG[lvl - 1]
 }
 
-/** 日历有提交格：与 HEATMAP_HEAT_BG 档位一一对应，边框与 hover 同步加深 */
+/** 日历有提交格：按 4 个稳定档位着色，和图例保持一致 */
 const CALENDAR_HEAT_SURFACE: readonly string[] = [
   'border border-solid border-emerald-500/46 bg-emerald-500/36 dark:border-emerald-400/40 dark:bg-emerald-400/28 dark:hover:bg-emerald-400/36',
-  'border border-solid border-emerald-500/48 bg-emerald-500/40 dark:border-emerald-400/42 dark:bg-emerald-400/32 dark:hover:bg-emerald-400/40',
-  'border border-solid border-emerald-500/50 bg-emerald-500/44 dark:border-emerald-400/44 dark:bg-emerald-400/36 dark:hover:bg-emerald-400/44',
-  'border border-solid border-emerald-500/52 bg-emerald-500/48 dark:border-emerald-400/46 dark:bg-emerald-400/40 dark:hover:bg-emerald-400/48',
-  'border border-solid border-emerald-500/54 bg-emerald-500/52 dark:border-emerald-400/48 dark:bg-emerald-400/44 dark:hover:bg-emerald-400/52',
-  'border border-solid border-emerald-500/58 bg-emerald-500/56 dark:border-emerald-400/50 dark:bg-emerald-400/48 dark:hover:bg-emerald-400/56',
-  'border border-solid border-emerald-500/62 bg-emerald-500/60 dark:border-emerald-400/52 dark:bg-emerald-400/52 dark:hover:bg-emerald-400/60',
-  'border border-solid border-emerald-500/66 bg-emerald-500/64 dark:border-emerald-400/54 dark:bg-emerald-400/56 dark:hover:bg-emerald-400/64',
-  'border border-solid border-emerald-500/70 bg-emerald-500/68 dark:border-emerald-400/56 dark:bg-emerald-400/60 dark:hover:bg-emerald-400/68',
-  'border border-solid border-emerald-500/74 bg-emerald-500/72 dark:border-emerald-400/58 dark:bg-emerald-400/64 dark:hover:bg-emerald-400/72',
-  'border border-solid border-emerald-500/78 bg-emerald-500/76 dark:border-emerald-400/60 dark:bg-emerald-400/68 dark:hover:bg-emerald-400/76',
-  'border border-solid border-emerald-600/80 bg-emerald-500/82 dark:border-emerald-400/64 dark:bg-emerald-400/72 dark:hover:bg-emerald-400/80',
-  'border border-solid border-emerald-600/82 bg-emerald-500/86 dark:border-emerald-400/68 dark:bg-emerald-400/76 dark:hover:bg-emerald-400/84',
-  'border border-solid border-emerald-600/85 bg-emerald-500/90 dark:border-emerald-400/72 dark:bg-emerald-400/80 dark:hover:bg-emerald-400/88',
-  'border border-solid border-emerald-600/88 bg-emerald-600/92 text-white shadow-[inset_0_1px_0_0_rgba(255,255,255,0.1)] dark:border-emerald-400/78 dark:bg-emerald-500/88 dark:hover:bg-emerald-400/92',
-  'border border-solid border-emerald-600/90 bg-emerald-600 text-white shadow-[inset_0_1px_0_0_rgba(255,255,255,0.12)] dark:border-emerald-400/80 dark:bg-emerald-500 dark:hover:bg-emerald-400',
+  'border border-solid border-emerald-500/56 bg-emerald-500/56 dark:border-emerald-400/48 dark:bg-emerald-400/46 dark:hover:bg-emerald-400/52',
+  'border border-solid border-emerald-500/68 bg-emerald-500/74 dark:border-emerald-400/58 dark:bg-emerald-400/66 dark:hover:bg-emerald-400/72',
+  'border border-solid border-emerald-600/86 bg-emerald-600/94 text-white shadow-[inset_0_1px_0_0_rgba(255,255,255,0.1)] dark:border-emerald-400/76 dark:bg-emerald-500/92 dark:hover:bg-emerald-400/96',
 ]
 
 /** 日历格：无提交 = 虚线空槽；有提交 = 按次数单调加深的翠绿色阶（与贡献热力一致） */
@@ -139,7 +140,7 @@ function calendarDayCellClass(
     'hover:-translate-y-px hover:shadow-sm',
     'dark:hover:shadow-[0_2px_12px_rgba(0,0,0,0.5)]'
   )
-  const lvl = commitCountHeatLevel(count)
+  const lvl = commitCountCalendarLevel(count)
   const surface = cn(
     count <= 0 &&
       cn(
@@ -1417,7 +1418,7 @@ function CalendarSection({
             const count = heatmapMap.get(key) ?? 0
             const inMonth = isSameMonth(day, calendarMonth)
             const today = isToday(day)
-            const heatLevel = commitCountHeatLevel(count)
+            const heatLevel = commitCountCalendarLevel(count)
             const isSelected = selectedDateKey === key && inMonth
             const cellClass = calendarDayCellClass(count, {
               inMonth,
@@ -1435,9 +1436,9 @@ function CalendarSection({
                     !inMonth && 'font-medium text-zinc-400 dark:text-zinc-600',
                     inMonth &&
                       count > 0 &&
-                      heatLevel < 15 &&
+                      heatLevel < 4 &&
                       'font-semibold text-zinc-900 dark:text-white',
-                    inMonth && count > 0 && heatLevel >= 15 && 'font-semibold text-white',
+                    inMonth && count > 0 && heatLevel >= 4 && 'font-semibold text-white',
                     inMonth &&
                       count <= 0 &&
                       'font-medium text-zinc-400 dark:text-zinc-500'
@@ -1450,7 +1451,7 @@ function CalendarSection({
                     <span
                       className={cn(
                         'h-1 w-1 rounded-full',
-                        heatLevel >= 15
+                        heatLevel >= 4
                           ? 'bg-white shadow-[0_0_6px_rgba(255,255,255,0.55)]'
                           : 'bg-emerald-700 shadow-[0_0_6px_rgba(16,185,129,0.45)] dark:bg-emerald-200'
                       )}
@@ -1459,7 +1460,7 @@ function CalendarSection({
                     <span
                       className={cn(
                         'text-[9px] font-semibold tabular-nums leading-none',
-                        heatLevel >= 15
+                        heatLevel >= 4
                           ? 'text-emerald-50'
                           : 'text-emerald-900 dark:text-emerald-100'
                       )}
@@ -1519,12 +1520,16 @@ function CalendarSection({
               title="1 次"
             />
             <span
-              className="h-2 w-2 rounded-[3px] border border-emerald-500/60 bg-emerald-500/62 dark:border-emerald-400/52 dark:bg-emerald-400/52"
+              className="h-2 w-2 rounded-[3px] border border-emerald-500/60 bg-emerald-500/58 dark:border-emerald-400/52 dark:bg-emerald-400/46"
               title="2–3 次"
             />
             <span
+              className="h-2 w-2 rounded-[3px] border border-emerald-500/72 bg-emerald-500/76 dark:border-emerald-400/62 dark:bg-emerald-400/66"
+              title="4–7 次"
+            />
+            <span
               className="h-2 w-2 rounded-[3px] border border-emerald-600/85 bg-emerald-600 dark:border-emerald-400/75 dark:bg-emerald-500"
-              title="4 次及以上"
+              title="8 次及以上"
             />
             <span className="text-[9px] text-zinc-400 dark:text-zinc-600">高</span>
           </div>

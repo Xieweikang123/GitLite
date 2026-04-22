@@ -542,6 +542,27 @@ pub struct StashInfo {
     pub branch: String,
 }
 
+fn guess_stash_branch(message: &str) -> String {
+    let msg = message.trim();
+    if let Some(rest) = msg.strip_prefix("WIP on ") {
+        if let Some((branch, _)) = rest.split_once(':') {
+            let branch = branch.trim();
+            if !branch.is_empty() {
+                return branch.to_string();
+            }
+        }
+    }
+    if let Some(rest) = msg.strip_prefix("On ") {
+        if let Some((branch, _)) = rest.split_once(':') {
+            let branch = branch.trim();
+            if !branch.is_empty() {
+                return branch.to_string();
+            }
+        }
+    }
+    "unknown".to_string()
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CommitDiff {
     pub commit: CommitInfo,
@@ -4733,18 +4754,6 @@ async fn get_stash_list(repo_path: String) -> Result<Vec<StashInfo>, String> {
 
     let mut stashes = Vec::new();
     
-    // 获取当前分支名
-    let current_branch = match repo.head() {
-        Ok(head) => {
-            if let Some(name) = head.shorthand() {
-                name.to_string()
-            } else {
-                "detached".to_string()
-            }
-        },
-        Err(_) => "unknown".to_string(),
-    };
-    
     // 收集贮藏信息
     let mut stash_data = Vec::new();
     repo.stash_foreach(|_index, message, oid| {
@@ -4758,6 +4767,7 @@ async fn get_stash_list(repo_path: String) -> Result<Vec<StashInfo>, String> {
             Ok(oid) => oid,
             Err(_) => continue,
         };
+        let branch = guess_stash_branch(&stash_message);
         let timestamp = match repo.find_commit(oid) {
             Ok(commit) => commit.time().seconds().to_string(),
             Err(_) => "0".to_string(),
@@ -4767,7 +4777,7 @@ async fn get_stash_list(repo_path: String) -> Result<Vec<StashInfo>, String> {
             id: stash_id,
             message: stash_message,
             timestamp,
-            branch: current_branch.clone(),
+            branch,
         });
     }
     

@@ -17,6 +17,8 @@ import {
 } from '../types/git'
 import { formatTauriInvokeError } from '../utils/tauriError'
 
+const AUTO_OPEN_ENABLED_KEY = 'gitlite:autoOpenEnabled'
+
 export function useGit() {
   /** 打开仓库 / 轻量刷新的世代号：仅最后一次结果写入 state，避免异步返回乱序 */
   const repoLoadGenRef = useRef(0)
@@ -25,7 +27,22 @@ export function useGit() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [recentRepos, setRecentRepos] = useState<RecentRepo[]>([])
-  const [autoOpenEnabled, setAutoOpenEnabled] = useState(true) // 默认启用自动打开
+  const [autoOpenEnabled, setAutoOpenEnabled] = useState(() => {
+    try {
+      const saved = localStorage.getItem(AUTO_OPEN_ENABLED_KEY)
+      return saved === null ? true : saved === '1'
+    } catch {
+      return true
+    }
+  })
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(AUTO_OPEN_ENABLED_KEY, autoOpenEnabled ? '1' : '0')
+    } catch {
+      /* ignore storage failures */
+    }
+  }, [autoOpenEnabled])
 
   const openRepository = useCallback(async () => {
     const myGen = ++repoLoadGenRef.current

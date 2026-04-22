@@ -1068,7 +1068,7 @@ export function WorkspaceStatus({
                         {stash.message}
                       </div>
                       <div className="text-xs text-muted-foreground break-words">
-                        {stash.branch} • {formatStashTimestamp(stash.timestamp)}
+                        {stash.branch && stash.branch !== 'unknown' ? stash.branch : '未知分支'} • {formatStashTimestamp(stash.timestamp)}
                       </div>
                     </div>
                     <div className="flex items-center gap-2 justify-end">
