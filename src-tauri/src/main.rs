@@ -719,23 +719,40 @@ fn read_staged_diff_cached(repo_path: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn normalize_llm_commit_message(raw: &str) -> String {
-    let mut s = raw.trim();
+fn normalize_llm_commit_message(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("模型响应为空或只有空白字符".to_string());
+    }
+
+    let mut s = trimmed;
     if s.starts_with("```") {
         if let Some(idx) = s.find('\n') {
             s = &s[idx + 1..];
+        } else {
+            return Err("模型只返回了代码块标记，没有实际内容".to_string());
         }
         if let Some(end) = s.rfind("```") {
             s = s[..end].trim_end();
         }
     }
-    s.lines()
+
+    let line = s
+        .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
-        .unwrap_or("")
-        .trim_matches('"')
-        .trim_matches('\'')
-        .to_string()
+        .ok_or_else(|| "模型返回了内容，但没有可用的首行文本".to_string())?;
+
+    let msg = line.trim_matches('"').trim_matches('\'').trim();
+    if msg.is_empty() {
+        return Err("模型返回的首行内容在清理引号后变为空".to_string());
+    }
+
+    if matches!(msg.chars().next(), Some('{') | Some('[')) {
+        return Err("模型返回了 JSON/数组格式，但这里需要纯文本提交说明".to_string());
+    }
+
+    Ok(msg.to_string())
 }
 
 /// OpenAI 兼容 chat/completions，返回 assistant 文本（单条）。
@@ -743,6 +760,7 @@ fn openai_chat_completion_text(
     config: &AiConfig,
     messages: Vec<serde_json::Value>,
     max_tokens: u32,
+    disable_thinking: bool,
 ) -> Result<String, String> {
     let base_url = config.base_url.trim().trim_end_matches('/').to_string();
     if base_url.is_empty() {
@@ -759,12 +777,24 @@ fn openai_chat_completion_text(
         .filter(|s| !s.is_empty());
 
     let url = format!("{}/chat/completions", base_url);
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": 0.3
     });
+    if disable_thinking {
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert(
+                "thinking".to_string(),
+                serde_json::json!({
+                    "type": "disabled"
+                }),
+            );
+            obj.insert("do_sample".to_string(), serde_json::json!(false));
+            obj.insert("temperature".to_string(), serde_json::json!(0.0));
+        }
+    }
 
     let resp = std::thread::spawn(move || {
         let req = ureq::post(&url).set("Content-Type", "application/json");
@@ -794,15 +824,156 @@ fn openai_chat_completion_text(
             .unwrap_or(&text);
         return Err(format!("API 错误: {}", msg));
     }
-    let content = v
+
+    let choices = v
         .get("choices")
         .and_then(|c| c.as_array())
-        .and_then(|a| a.first())
-        .and_then(|o| o.get("message"))
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-        .ok_or_else(|| "响应中无 choices[0].message.content".to_string())?;
-    Ok(content.to_string())
+        .ok_or_else(|| "响应中无 choices 数组".to_string())?;
+    let first = choices
+        .first()
+        .ok_or_else(|| "响应中 choices 为空".to_string())?;
+    let message = first.get("message");
+    let content_value = message.and_then(|m| m.get("content"));
+
+    let content = match content_value {
+        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => s.to_string(),
+        Some(serde_json::Value::String(_)) => {
+            let summary = summarize_openai_chat_response(&v);
+            log_message(
+                "WARN",
+                &format!(
+                    "openai_chat_completion_text: empty content string | summary={}",
+                    summary
+                ),
+            );
+            return Err(format!("响应中 choices[0].message.content 为空；响应摘要：{}", summary));
+        }
+        Some(serde_json::Value::Array(arr)) => {
+            let mut out = String::new();
+            for item in arr {
+                if let Some(t) = item.get("text").and_then(|x| x.as_str()) {
+                    out.push_str(t);
+                } else if let Some(t) = item.get("content").and_then(|x| x.as_str()) {
+                    out.push_str(t);
+                } else if let Some(t) = item.as_str() {
+                    out.push_str(t);
+                }
+            }
+            if out.trim().is_empty() {
+                let summary = summarize_openai_chat_response(&v);
+                log_message(
+                    "WARN",
+                    &format!(
+                        "openai_chat_completion_text: empty content array | summary={}",
+                        summary
+                    ),
+                );
+                return Err(format!(
+                    "响应中 choices[0].message.content 是数组，但没有可用文本；响应摘要：{}",
+                    summary
+                ));
+            }
+            out
+        }
+        Some(other) => {
+            let summary = summarize_openai_chat_response(&v);
+            log_message(
+                "WARN",
+                &format!(
+                    "openai_chat_completion_text: unsupported content type={} | summary={}",
+                    other,
+                    summary
+                ),
+            );
+            return Err(format!(
+                "响应中 choices[0].message.content 类型不受支持；响应摘要：{}",
+                summary
+            ));
+        }
+        None => {
+            let summary = summarize_openai_chat_response(&v);
+            let message_reasoning = message
+                .and_then(|m| m.get("reasoning_content"))
+                .and_then(|c| c.as_str())
+                .map(|s| s.chars().take(120).collect::<String>());
+            let choice_text = first
+                .get("text")
+                .and_then(|c| c.as_str())
+                .map(|s| s.chars().take(120).collect::<String>());
+            log_message(
+                "WARN",
+                &format!(
+                    "openai_chat_completion_text: missing content field | summary={} | reasoning_content_preview={:?} | choice_text_preview={:?}",
+                    summary,
+                    message_reasoning,
+                    choice_text
+                ),
+            );
+            return Err(format!("响应中无 choices[0].message.content；响应摘要：{}", summary));
+        }
+    };
+    Ok(content)
+}
+
+fn summarize_openai_chat_response(v: &serde_json::Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(s) = v.get("object").and_then(|x| x.as_str()) {
+        parts.push(format!("object={}", s));
+    }
+    if let Some(s) = v.get("model").and_then(|x| x.as_str()) {
+        parts.push(format!("model={}", s));
+    }
+    if let Some(choices) = v.get("choices").and_then(|c| c.as_array()) {
+        parts.push(format!("choices_len={}", choices.len()));
+        if let Some(first) = choices.first() {
+            if let Some(s) = first.get("finish_reason").and_then(|x| x.as_str()) {
+                parts.push(format!("finish_reason={}", s));
+            }
+            if let Some(message) = first.get("message") {
+                if let Some(content) = message.get("content") {
+                    match content {
+                        serde_json::Value::String(s) => parts.push(format!(
+                            "message.content_len={}",
+                            s.chars().count()
+                        )),
+                        serde_json::Value::Array(arr) => parts.push(format!(
+                            "message.content_array_len={}",
+                            arr.len()
+                        )),
+                        other => parts.push(format!("message.content_type={}", other)),
+                    }
+                } else {
+                    parts.push("message.content=missing".to_string());
+                }
+                if let Some(s) = message.get("reasoning_content").and_then(|x| x.as_str()) {
+                    parts.push(format!("message.reasoning_content_len={}", s.chars().count()));
+                }
+                if let Some(tc) = message.get("tool_calls").and_then(|x| x.as_array()) {
+                    parts.push(format!("message.tool_calls_len={}", tc.len()));
+                }
+            } else if let Some(s) = first.get("text").and_then(|x| x.as_str()) {
+                parts.push(format!("choice0.text_len={}", s.chars().count()));
+            }
+        }
+    }
+    if let Some(s) = v.get("usage") {
+        parts.push(format!("usage={}", s));
+    }
+    if parts.is_empty() {
+        serde_json::to_string(v)
+            .unwrap_or_else(|_| "<unprintable response>".to_string())
+            .chars()
+            .take(300)
+            .collect()
+    } else {
+        parts.join(" | ")
+    }
+}
+
+fn should_disable_thinking_for_commit_message(config: &AiConfig) -> bool {
+    let model = config.model.trim().to_ascii_lowercase();
+    let base_url = config.base_url.trim().to_ascii_lowercase();
+    model.starts_with("glm-") || base_url.contains("bigmodel.cn")
 }
 
 /// 从 OpenAI 兼容的 SSE `data:` JSON 中取本帧增量文本（不同网关/模型字段不一致）。
@@ -1050,7 +1221,8 @@ async fn generate_commit_message_ai(repo_path: String) -> Result<String, String>
     };
 
     let system = "你是 Git 提交信息助手。只根据用户给出的暂存区 diff 写一条简洁的提交说明。\
-要求：单行或极短首行；使用中文；动词开头；不要引号、不要 Markdown、不要解释。";
+要求：单行或极短首行；使用中文；动词开头；不要引号、不要 Markdown、不要解释；不要输出思考过程。\
+若信息有限，也必须给出一条最可能的提交说明。";
     let user = format!("以下为 git diff --cached：\n\n{}", diff_for_prompt);
 
     let messages = vec![
@@ -1058,11 +1230,33 @@ async fn generate_commit_message_ai(repo_path: String) -> Result<String, String>
         serde_json::json!({"role": "user", "content": user}),
     ];
 
-    let raw = openai_chat_completion_text(&config, messages, 256)?;
-    let msg = normalize_llm_commit_message(&raw);
-    if msg.is_empty() {
-        return Err("模型未返回有效提交说明，请重试".to_string());
-    }
+    let disable_thinking = should_disable_thinking_for_commit_message(&config);
+    log_message(
+        "INFO",
+        &format!(
+            "generate_commit_message_ai: request start | repo_path={} | model={} | disable_thinking={}",
+            repo_path, config.model, disable_thinking
+        ),
+    );
+    let raw = openai_chat_completion_text(&config, messages, 512, disable_thinking)?;
+    let msg = normalize_llm_commit_message(&raw).map_err(|reason| {
+        let preview: String = raw
+            .chars()
+            .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+            .take(300)
+            .collect();
+        log_message(
+            "WARN",
+            &format!(
+                "generate_commit_message_ai: invalid llm response | repo_path={} | reason={} | raw_len={} | raw_preview={}",
+                repo_path,
+                reason,
+                raw.chars().count(),
+                preview
+            ),
+        );
+        format!("模型未返回有效提交说明：{}；原始响应预览：{}", reason, preview)
+    })?;
     Ok(msg)
 }
 
