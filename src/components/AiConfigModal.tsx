@@ -36,6 +36,10 @@ const PROVIDER_PRESETS: Record<
   },
 }
 
+const DEFAULT_TEST_TIMEOUT_SECONDS = 20
+const MIN_TEST_TIMEOUT_SECONDS = 3
+const MAX_TEST_TIMEOUT_SECONDS = 120
+
 interface AiConfigModalProps {
   isOpen: boolean
   onClose: () => void
@@ -47,6 +51,15 @@ function providerLabel(p: string): string {
   return preset?.label ?? p
 }
 
+function normalizeTestTimeoutSeconds(value: unknown): number {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return DEFAULT_TEST_TIMEOUT_SECONDS
+  const i = Math.round(n)
+  if (i < MIN_TEST_TIMEOUT_SECONDS) return MIN_TEST_TIMEOUT_SECONDS
+  if (i > MAX_TEST_TIMEOUT_SECONDS) return MAX_TEST_TIMEOUT_SECONDS
+  return i
+}
+
 export function AiConfigModal({ isOpen, onClose }: AiConfigModalProps) {
   const [config, setConfig] = useState<AiConfig>({
     enabled: false,
@@ -54,6 +67,7 @@ export function AiConfigModal({ isOpen, onClose }: AiConfigModalProps) {
     base_url: PROVIDER_PRESETS.ollama.base_url,
     api_key: '',
     model: PROVIDER_PRESETS.ollama.model,
+    test_timeout_seconds: DEFAULT_TEST_TIMEOUT_SECONDS,
   })
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -76,6 +90,7 @@ export function AiConfigModal({ isOpen, onClose }: AiConfigModalProps) {
       setConfig({
         ...c,
         api_key: c.api_key ?? '',
+        test_timeout_seconds: normalizeTestTimeoutSeconds(c.test_timeout_seconds),
       })
     } catch (e) {
       console.error('加载 AI 配置失败:', e)
@@ -110,6 +125,7 @@ export function AiConfigModal({ isOpen, onClose }: AiConfigModalProps) {
         config: {
           ...config,
           api_key: apiKey.length > 0 ? apiKey : null,
+          test_timeout_seconds: normalizeTestTimeoutSeconds(config.test_timeout_seconds),
         },
       })
       setMessage({ ok: true, text: 'AI 配置已保存' })
@@ -130,6 +146,7 @@ export function AiConfigModal({ isOpen, onClose }: AiConfigModalProps) {
         config: {
           ...config,
           api_key: apiKey.length > 0 ? apiKey : null,
+          test_timeout_seconds: normalizeTestTimeoutSeconds(config.test_timeout_seconds),
         },
       })
       setTestResult({ ok: true, text: summary })
@@ -270,6 +287,31 @@ export function AiConfigModal({ isOpen, onClose }: AiConfigModalProps) {
                         : '例如 llama3.2、gpt-4o-mini'
                     }
                   />
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="ai-test-timeout">
+                    模型测试超时（秒）
+                  </Label>
+                  <Input
+                    id="ai-test-timeout"
+                    type="number"
+                    min={MIN_TEST_TIMEOUT_SECONDS}
+                    max={MAX_TEST_TIMEOUT_SECONDS}
+                    step={1}
+                    value={normalizeTestTimeoutSeconds(config.test_timeout_seconds)}
+                    onChange={(e) =>
+                      setConfig((c) => ({
+                        ...c,
+                        test_timeout_seconds: normalizeTestTimeoutSeconds(e.target.value),
+                      }))
+                    }
+                    placeholder={`${DEFAULT_TEST_TIMEOUT_SECONDS}`}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    仅用于“测试连接”，建议 {MIN_TEST_TIMEOUT_SECONDS} - {MAX_TEST_TIMEOUT_SECONDS}{' '}
+                    秒。
+                  </p>
                 </div>
               </CardContent>
             </Card>

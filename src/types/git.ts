@@ -165,4 +165,5 @@ export interface AiConfig {
   base_url: string
   api_key?: string | null
   model: string
+  test_timeout_seconds?: number
 }

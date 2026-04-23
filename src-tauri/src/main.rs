@@ -10,6 +10,7 @@ use std::fs;
 use anyhow::Result;
 use std::io::{BufRead, BufReader, Write};
 use std::sync::{Mutex, Once, OnceLock};
+use std::time::Duration;
 use tauri::{Manager, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem, CustomMenuItem, GlobalWindowEvent};
 
 /// AI 总结排查日志路径：调试构建写入仓库 `logs/ai-summary.log`；发布构建写入本机 `%LOCALAPPDATA%/GitLite/logs/`。可用环境变量 `GITLITE_AI_SUMMARY_LOG` 覆盖为绝对路径。
@@ -595,6 +596,16 @@ pub struct AiConfig {
     pub base_url: String,
     pub api_key: Option<String>,
     pub model: String,
+    #[serde(default = "default_ai_test_timeout_seconds")]
+    pub test_timeout_seconds: u64,
+}
+
+fn default_ai_test_timeout_seconds() -> u64 {
+    20
+}
+
+fn normalize_ai_test_timeout_seconds(value: u64) -> u64 {
+    value.clamp(3, 120)
 }
 
 fn default_ai_config() -> AiConfig {
@@ -604,6 +615,7 @@ fn default_ai_config() -> AiConfig {
         base_url: "http://127.0.0.1:11434/v1".to_string(),
         api_key: None,
         model: "llama3.2".to_string(),
+        test_timeout_seconds: default_ai_test_timeout_seconds(),
     }
 }
 
@@ -615,8 +627,10 @@ async fn get_ai_config() -> Result<AiConfig, String> {
     }
     let content = fs::read_to_string(&config_file)
         .map_err(|e| format!("读取 AI 配置失败: {}", e))?;
-    let config: AiConfig = serde_json::from_str(&content)
+    let mut config: AiConfig = serde_json::from_str(&content)
         .map_err(|e| format!("解析 AI 配置失败: {}", e))?;
+    config.test_timeout_seconds =
+        normalize_ai_test_timeout_seconds(config.test_timeout_seconds);
     Ok(config)
 }
 
@@ -640,6 +654,7 @@ async fn save_ai_config(config: AiConfig) -> Result<(), String> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()),
         model: model.to_string(),
+        test_timeout_seconds: normalize_ai_test_timeout_seconds(config.test_timeout_seconds),
     };
     let config_dir = get_config_dir();
     fs::create_dir_all(&config_dir).map_err(|e| format!("创建配置目录失败: {}", e))?;
@@ -666,6 +681,7 @@ async fn test_ai_connection(config: AiConfig) -> Result<String, String> {
         .as_ref()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    let timeout_seconds = normalize_ai_test_timeout_seconds(config.test_timeout_seconds);
 
     let url = format!("{}/chat/completions", base_url);
     let body = serde_json::json!({
@@ -675,7 +691,10 @@ async fn test_ai_connection(config: AiConfig) -> Result<String, String> {
     });
 
     let resp = std::thread::spawn(move || {
-        let req = ureq::post(&url).set("Content-Type", "application/json");
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(timeout_seconds))
+            .build();
+        let req = agent.post(&url).set("Content-Type", "application/json");
         let req = if let Some(ref key) = api_key {
             req.set("Authorization", &format!("Bearer {}", key))
         } else {
