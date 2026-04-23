@@ -430,6 +430,8 @@ export function UnifiedCommitView({
   const [appliedStart, setAppliedStart] = useState('')
   const [appliedEnd, setAppliedEnd] = useState('')
   const [appliedSearch, setAppliedSearch] = useState('')
+  /** 点击左侧某条分支竖线：列表仅保留带该分支名的提交（与日期/关键词筛选叠加；再点同竖线清除） */
+  const [graphRailBranchFilter, setGraphRailBranchFilter] = useState<string | null>(null)
   const [headCommitTotal, setHeadCommitTotal] = useState<number | null>(null)
   const [headCommitTotalLoading, setHeadCommitTotalLoading] = useState(false)
   const [summaryOpen, setSummaryOpen] = useState(false)
@@ -704,6 +706,10 @@ export function UnifiedCommitView({
     }
   }, [repoPath, currentBranch, commitLogScope, commitLogRev])
 
+  useEffect(() => {
+    setGraphRailBranchFilter(null)
+  }, [repoPath])
+
   // 提交列表右键菜单：点击外部、滚动、Esc 关闭
   useEffect(() => {
     if (!commitContextMenu) return
@@ -785,7 +791,8 @@ export function UnifiedCommitView({
         appliedStart ||
         appliedEnd ||
         appliedSearch.trim() ||
-        isSearchMode
+        isSearchMode ||
+        graphRailBranchFilter
       ),
     [
       pendingStart,
@@ -795,6 +802,7 @@ export function UnifiedCommitView({
       appliedEnd,
       appliedSearch,
       isSearchMode,
+      graphRailBranchFilter,
     ]
   )
 
@@ -826,11 +834,16 @@ export function UnifiedCommitView({
     setAppliedStart('')
     setAppliedEnd('')
     setAppliedSearch('')
+    setGraphRailBranchFilter(null)
     onClearSearchMode?.()
   }, [onClearSearchMode])
 
+  const onGraphBranchRailClick = useCallback((branchName: string) => {
+    setGraphRailBranchFilter((prev) => (prev === branchName ? null : branchName))
+  }, [])
+
   const filteredCommits = useMemo(() => {
-    return commits.filter(commit => {
+    return commits.filter((commit) => {
       const commitDate = getCommitDate(commit.date)
       if (commitDate) {
         if (appliedStart) {
@@ -842,11 +855,19 @@ export function UnifiedCommitView({
           if (commitDate > end) return false
         }
       }
-      if (isSearchMode || !appliedSearch.trim()) return true
-      const term = appliedSearch.toLowerCase()
-      return commit.message.toLowerCase().includes(term) ||
-             commit.author.toLowerCase().includes(term) ||
-             commit.short_id.toLowerCase().includes(term)
+      if (!isSearchMode && appliedSearch.trim()) {
+        const term = appliedSearch.toLowerCase()
+        const ok =
+          commit.message.toLowerCase().includes(term) ||
+          commit.author.toLowerCase().includes(term) ||
+          commit.short_id.toLowerCase().includes(term)
+        if (!ok) return false
+      }
+      if (graphRailBranchFilter) {
+        const labels = branchLabelsByCommit.get(commit.id)
+        if (!labels?.some((b) => b.name === graphRailBranchFilter)) return false
+      }
+      return true
     })
   }, [
     commits,
@@ -855,6 +876,8 @@ export function UnifiedCommitView({
     appliedEnd,
     getCommitDate,
     isSearchMode,
+    graphRailBranchFilter,
+    branchLabelsByCommit,
   ])
 
   const scrollCommitRowIntoView = useCallback(
@@ -2089,6 +2112,20 @@ export function UnifiedCommitView({
                           : `当前分支共 ${headCommitTotal} 个提交`}
                     </>
                   )}
+                  {graphRailBranchFilter && (
+                    <>
+                      {' '}
+                      · 仅看分支{' '}
+                      <button
+                        type="button"
+                        className="font-mono text-[10px] text-foreground underline decoration-dotted underline-offset-2 hover:text-primary"
+                        title="清除分支筛选"
+                        onClick={() => setGraphRailBranchFilter(null)}
+                      >
+                        {formatBranchLabelShort(graphRailBranchFilter)}
+                      </button>
+                    </>
+                  )}
                   {headShortNormalized && (
                     <>
                       {' '}
@@ -2117,6 +2154,20 @@ export function UnifiedCommitView({
                   )}
                   {filteredCommits.length !== commits.length && (
                     <> · 筛选后显示 {filteredCommits.length} 条</>
+                  )}
+                  {graphRailBranchFilter && (
+                    <>
+                      {' '}
+                      · 仅看分支{' '}
+                      <button
+                        type="button"
+                        className="font-mono text-[10px] text-foreground underline decoration-dotted underline-offset-2 hover:text-primary"
+                        title="清除分支筛选"
+                        onClick={() => setGraphRailBranchFilter(null)}
+                      >
+                        {formatBranchLabelShort(graphRailBranchFilter)}
+                      </button>
+                    </>
                   )}
                   {headShortNormalized && (
                     <>
@@ -2158,6 +2209,8 @@ export function UnifiedCommitView({
                       ? branchNamesByCommitIdForGraph
                       : undefined
                   }
+                  selectedGraphBranchRail={graphRailBranchFilter}
+                  onGraphBranchRailClick={onGraphBranchRailClick}
                   rowHeights={
                     commitGraphRowHeights.length === filteredCommits.length
                       ? commitGraphRowHeights
@@ -2170,17 +2223,43 @@ export function UnifiedCommitView({
                 const branchLabels = branchLabelsByCommit.get(commit.id)
                 /** 宽屏一行可排更多标签；仅作上限，窄屏仍由 flex-wrap 换行 */
                 const maxBranchBadges = 20
-                const shownBranches = branchLabels?.slice(0, maxBranchBadges)
-                const moreBranchCount =
-                  branchLabels && branchLabels.length > maxBranchBadges
-                    ? branchLabels.length - maxBranchBadges
-                    : 0
                 const allBranchesTitle =
                   branchLabels && branchLabels.length > 0
                     ? branchLabels
                         .map((b) => `${b.is_remote ? '远程' : '本地'} ${b.name}`)
                         .join('\n')
                     : undefined
+
+                /**
+                 * 按竖线筛选时：行内只突出当前分支徽章，避免与左侧「只看此分支」重复堆满屏；
+                 * 若该提交仍被其它分支指向，用「+N」保留入口，悬停可看完整列表。
+                 */
+                let shownBranches: typeof branchLabels
+                let moreBranchCount = 0
+                let moreBranchTitle: string | undefined = allBranchesTitle
+                if (graphRailBranchFilter && branchLabels?.length) {
+                  const hit = branchLabels.filter((b) => b.name === graphRailBranchFilter)
+                  if (hit.length > 0) {
+                    shownBranches = hit
+                    const hiddenOthers = branchLabels.length - hit.length
+                    if (hiddenOthers > 0) {
+                      moreBranchCount = hiddenOthers
+                      moreBranchTitle = `另有 ${hiddenOthers} 个其它分支指向此提交\n\n${allBranchesTitle ?? ''}`
+                    }
+                  } else {
+                    shownBranches = branchLabels.slice(0, maxBranchBadges)
+                    moreBranchCount =
+                      branchLabels.length > maxBranchBadges
+                        ? branchLabels.length - maxBranchBadges
+                        : 0
+                  }
+                } else {
+                  shownBranches = branchLabels?.slice(0, maxBranchBadges)
+                  moreBranchCount =
+                    branchLabels && branchLabels.length > maxBranchBadges
+                      ? branchLabels.length - maxBranchBadges
+                      : 0
+                }
                 const isRowSelected = selectedCommit?.id === commit.id
 
                 return (
@@ -2311,7 +2390,7 @@ export function UnifiedCommitView({
                           {moreBranchCount > 0 && (
                             <span
                               className="shrink-0 text-[9px] text-muted-foreground"
-                              title={allBranchesTitle}
+                              title={moreBranchTitle}
                             >
                               +{moreBranchCount}
                             </span>

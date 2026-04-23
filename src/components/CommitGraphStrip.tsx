@@ -82,6 +82,10 @@ type Props = {
   branchNamesByCommitId?: ReadonlyMap<string, readonly string[]>
   /** 与左侧列表每行实际高度一致（像素），用于竖线与节点与文字行对齐 */
   rowHeights?: number[]
+  /** 当前由竖线筛选选中的分支名（高亮该竖轨） */
+  selectedGraphBranchRail?: string | null
+  /** 点击某条分支竖线时回调（由父级切换「仅看该分支」筛选） */
+  onGraphBranchRailClick?: (branchName: string) => void
   className?: string
 }
 
@@ -165,7 +169,16 @@ function buildRailGeometry(
   return { verticals, horizontals }
 }
 
-type BranchColumnVertical = { column: number; y0: number; y1: number; pi: number }
+type BranchColumnVertical = {
+  column: number
+  branchName: string
+  y0: number
+  y1: number
+  pi: number
+}
+
+/** 列内透明命中区宽度（便于点到细竖线） */
+const RAIL_HIT_PAD_PX = 6
 
 /** 每个分支名一列：竖线从「该分支在列表中首次出现行」连到「末次出现行」（中间无标签行仍穿过） */
 function buildBranchColumnRails(
@@ -192,7 +205,7 @@ function buildBranchColumnRails(
     const y1 = Math.max(ya, yb)
     if (y1 - y0 < 0.5) continue
     const pi = hashBranchNameToPaletteIndex(name, PALETTE_LEN)
-    out.push({ column: col, y0, y1, pi })
+    out.push({ column: col, branchName: name, y0, y1, pi })
   }
   return out
 }
@@ -224,6 +237,8 @@ export function CommitGraphStrip({
   branchRailColumns,
   branchNamesByCommitId,
   rowHeights,
+  selectedGraphBranchRail,
+  onGraphBranchRailClick,
   className,
 }: Props) {
   const model = useMemo(() => computeCommitGraph(commits), [commits])
@@ -258,20 +273,33 @@ export function CommitGraphStrip({
     return buildBranchColumnRails(branchRailColumns, commits, heights, branchNamesByCommitId)
   }, [branchMode, branchRailColumns, branchNamesByCommitId, commits, heights])
 
+  const railClickable = Boolean(branchMode && onGraphBranchRailClick)
+  /** 正在按分支筛选：弱化其它竖轨，突出当前分支列 */
+  const branchRailFilterActive = Boolean(branchMode && selectedGraphBranchRail)
+
   if (commits.length === 0) return null
 
   return (
     <div
       className={cn('relative shrink-0 select-none', className)}
       style={{ width }}
-      aria-hidden
+      aria-hidden={!railClickable}
     >
-      <svg width={width} height={h} className="pointer-events-none">
-        <g className="commit-graph-rails">
+      <svg
+        width={width}
+        height={h}
+        className={cn(!railClickable && 'pointer-events-none')}
+      >
+        <g className={cn('commit-graph-rails', railClickable && 'pointer-events-none')}>
           {branchMode
             ? branchRails.map((v, idx) => {
                 const pal = paletteAt(v.pi)
                 const cx = laneCenterX(v.column)
+                const selected = selectedGraphBranchRail === v.branchName
+                const sw =
+                  branchRailFilterActive && selected
+                    ? RAIL_STROKE_PX + 1.75
+                    : RAIL_STROKE_PX
                 return (
                   <line
                     key={`br-${v.column}-${v.pi}-${idx}`}
@@ -280,8 +308,14 @@ export function CommitGraphStrip({
                     x2={cx}
                     y2={v.y1}
                     fill="none"
-                    className={pal.stroke}
-                    strokeWidth={RAIL_STROKE_PX}
+                    className={cn(
+                      pal.stroke,
+                      branchRailFilterActive &&
+                        (selected
+                          ? 'opacity-100'
+                          : 'opacity-[0.28] dark:opacity-[0.34]')
+                    )}
+                    strokeWidth={sw}
                     strokeLinecap="round"
                     vectorEffect="non-scaling-stroke"
                   />
@@ -324,33 +358,57 @@ export function CommitGraphStrip({
               )
             })}
         </g>
-        {commits.map((c, i) => {
-          const lane = branchMode
-            ? primaryBranchColumnIndex(
-                c,
-                branchRailColumns!,
-                branchColorKeyByCommitId,
-                branchNamesByCommitId!
-              )
-            : lanes[i] ?? 0
-          const pi = pickPaletteIndex(c, lane, branchColorKeyByCommitId)
-          const pal = paletteAt(pi)
-          const cx = laneCenterX(lane)
-          const cy = cumulativeCenterY(heights, i)
-          return (
-            <circle
-              key={c.id}
-              cx={cx}
-              cy={cy}
-              r={3.45}
-              className={cn(
-                pal.fill,
-                'stroke-background/85 dark:stroke-zinc-950/85',
-                'stroke-[1.25px]'
-              )}
-            />
-          )
-        })}
+        <g className={cn(railClickable && 'pointer-events-none')}>
+          {commits.map((c, i) => {
+            const lane = branchMode
+              ? primaryBranchColumnIndex(
+                  c,
+                  branchRailColumns!,
+                  branchColorKeyByCommitId,
+                  branchNamesByCommitId!
+                )
+              : lanes[i] ?? 0
+            const pi = pickPaletteIndex(c, lane, branchColorKeyByCommitId)
+            const pal = paletteAt(pi)
+            const cx = laneCenterX(lane)
+            const cy = cumulativeCenterY(heights, i)
+            return (
+              <circle
+                key={c.id}
+                cx={cx}
+                cy={cy}
+                r={3.45}
+                className={cn(
+                  pal.fill,
+                  'stroke-background/85 dark:stroke-zinc-950/85',
+                  'stroke-[1.25px]'
+                )}
+              />
+            )
+          })}
+        </g>
+        {railClickable &&
+          branchRails.map((v, idx) => {
+            const cx = laneCenterX(v.column)
+            const w = RAIL_HIT_PAD_PX * 2 + RAIL_STROKE_PX
+            return (
+              <rect
+                key={`br-hit-${v.branchName}-${idx}`}
+                x={cx - w / 2}
+                y={v.y0}
+                width={w}
+                height={Math.max(v.y1 - v.y0, 8)}
+                fill="transparent"
+                className="cursor-pointer hover:fill-foreground/[0.06] dark:hover:fill-foreground/[0.08]"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onGraphBranchRailClick?.(v.branchName)
+                }}
+              >
+                <title>{`仅看「${v.branchName}」提交（再点一次清除）`}</title>
+              </rect>
+            )
+          })}
       </svg>
     </div>
   )
