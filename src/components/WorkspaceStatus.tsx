@@ -73,6 +73,8 @@ export function WorkspaceStatus({
   /** 批量暂存时区分「未暂存」与「未跟踪」，用于横幅与行内按钮 loading */
   const [stagingBulkType, setStagingBulkType] = useState<'unstaged' | 'untracked' | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [syncInfo, setSyncInfo] = useState<string | null>(null)
+  const [syncStep, setSyncStep] = useState<string | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [refreshIntervalSec] = useState(10)
   /** 避免自动刷新与上一次 IPC 重叠（大仓库 get_workspace_status 可能较慢） */
@@ -188,6 +190,12 @@ export function WorkspaceStatus({
       fetchStashList()
     }
   }, [stashDialogOpen])
+
+  useEffect(() => {
+    if (!syncInfo) return
+    const timer = window.setTimeout(() => setSyncInfo(null), 4000)
+    return () => window.clearTimeout(timer)
+  }, [syncInfo])
 
   // 创建贮藏
   const createStash = async () => {
@@ -665,17 +673,24 @@ export function WorkspaceStatus({
   const commitAndSync = async () => {
     if (!repoInfo) return
 
+    let didCommit = false
+    let didPull = false
+    let didPush = false
+
     try {
       setLoading(true)
       setError(null)
+      setSyncInfo(null)
 
       if (workspaceStatus?.staged_files?.length) {
         if (!commitMessage.trim()) {
           setError('请先输入提交说明')
           setLoading(false)
+          setSyncStep(null)
           return
         }
 
+        setSyncStep('正在提交暂存更改…')
         if (gitActions) {
           await gitActions.commitChanges(commitMessage.trim())
         } else {
@@ -686,12 +701,32 @@ export function WorkspaceStatus({
           })
         }
 
+        didCommit = true
         setCommitMessage('')
         await fetchWorkspaceStatus()
         await syncParentRepo()
       }
 
-      if (repoInfo.behind > 0) {
+      setSyncStep('正在获取远程最新状态…')
+      if (gitActions) {
+        await gitActions.fetchChanges()
+      } else {
+        const { invoke } = await import('@tauri-apps/api/tauri')
+        await invoke('fetch_changes', {
+          repoPath: repoInfo.path,
+        })
+      }
+      await syncParentRepo()
+
+      let updatedRepoInfo = gitActions
+        ? await gitActions.refreshRepoInfo()
+        : await (async () => {
+            const { invoke } = await import('@tauri-apps/api/tauri')
+            return invoke('open_repository', { path: repoInfo.path }) as Promise<any>
+          })()
+
+      if (updatedRepoInfo.behind > 0) {
+        setSyncStep(`正在拉取远程更改（${updatedRepoInfo.behind}）…`)
         if (gitActions) {
           await gitActions.pullChanges()
         } else {
@@ -700,18 +735,19 @@ export function WorkspaceStatus({
             repoPath: repoInfo.path,
           })
         }
+        didPull = true
         await syncParentRepo()
         await fetchWorkspaceStatus()
+        updatedRepoInfo = gitActions
+          ? await gitActions.refreshRepoInfo()
+          : await (async () => {
+              const { invoke } = await import('@tauri-apps/api/tauri')
+              return invoke('open_repository', { path: repoInfo.path }) as Promise<any>
+            })()
       }
 
-      const updatedRepoInfo = gitActions
-        ? await gitActions.refreshRepoInfo()
-        : await (async () => {
-            const { invoke } = await import('@tauri-apps/api/tauri')
-            return invoke('open_repository', { path: repoInfo.path }) as Promise<any>
-          })()
-
       if (updatedRepoInfo.ahead > 0) {
+        setSyncStep(`正在推送本地提交（${updatedRepoInfo.ahead}）…`)
         if (gitActions) {
           await gitActions.pushChanges()
         } else {
@@ -720,13 +756,36 @@ export function WorkspaceStatus({
             repoPath: repoInfo.path,
           })
         }
+        didPush = true
       }
 
+      setSyncStep('正在刷新状态…')
       await fetchWorkspaceStatus()
       await syncParentRepo()
+      if (didCommit || didPull || didPush) {
+        const steps = [
+          didCommit ? '提交' : null,
+          didPull ? '拉取' : null,
+          didPush ? '推送' : null,
+        ].filter(Boolean)
+        setSyncInfo(`已完成：${steps.join('、')}`)
+      } else {
+        setSyncInfo('已是最新，无需同步')
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : '提交并同步失败')
+      const detail = formatTauriInvokeError(err, '提交并同步失败')
+      const doneSteps = [
+        didCommit ? '提交' : null,
+        didPull ? '拉取' : null,
+        didPush ? '推送' : null,
+      ].filter(Boolean)
+      if (doneSteps.length > 0) {
+        setError(`已完成${doneSteps.join('、')}，但后续失败：${detail}`)
+      } else {
+        setError(detail)
+      }
     } finally {
+      setSyncStep(null)
       setLoading(false)
     }
   }
@@ -854,6 +913,14 @@ export function WorkspaceStatus({
         </div>
       )}
 
+      {syncInfo && !error && (
+        <div className="fixed left-1/2 top-20 z-[95] w-[min(90vw,42rem)] -translate-x-1/2 px-4">
+          <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3 shadow-lg backdrop-blur-sm">
+            <p className="break-words text-sm text-emerald-700 dark:text-emerald-300">{syncInfo}</p>
+          </div>
+        </div>
+      )}
+
       {(unstagingLoading || stagingLoading) && (
         <div
           className="sticky top-2 z-20 flex items-center gap-2 p-3 rounded-lg border border-border bg-muted/95 backdrop-blur-sm shadow-sm text-sm text-muted-foreground"
@@ -872,6 +939,17 @@ export function WorkspaceStatus({
                   ? '正在暂存全部未跟踪文件…'
                   : '正在暂存全部未暂存文件…'}
           </span>
+        </div>
+      )}
+
+      {loading && syncStep && !unstagingLoading && !stagingLoading && (
+        <div
+          className="sticky top-2 z-20 flex items-center gap-2 rounded-lg border border-border bg-muted/95 p-3 text-sm text-muted-foreground shadow-sm backdrop-blur-sm"
+          role="status"
+          aria-live="polite"
+        >
+          <Loader2 className="h-4 w-4 animate-spin shrink-0 text-foreground/70" />
+          <span>{syncStep}</span>
         </div>
       )}
 
@@ -978,7 +1056,7 @@ export function WorkspaceStatus({
               }
               variant="default"
             >
-              提交并同步
+              {loading && syncStep ? '同步中…' : '提交并同步'}
             </Button>
             <div className="relative">
               <Button 

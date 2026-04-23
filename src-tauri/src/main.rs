@@ -755,6 +755,33 @@ fn normalize_llm_commit_message(raw: &str) -> Result<String, String> {
     Ok(msg.to_string())
 }
 
+/// AI 未给出可用提交说明时的兜底文案：尽量基于 diff 中的文件信息生成简短首行。
+fn fallback_commit_message_from_diff(diff_text: &str) -> String {
+    let mut files: HashSet<String> = HashSet::new();
+    for line in diff_text.lines() {
+        if let Some(rest) = line.strip_prefix("diff --git a/") {
+            if let Some((left, _)) = rest.split_once(" b/") {
+                let path = left.trim();
+                if !path.is_empty() {
+                    files.insert(path.to_string());
+                }
+            }
+        }
+    }
+
+    let file_count = files.len();
+    if file_count == 0 {
+        return "更新代码".to_string();
+    }
+    if file_count == 1 {
+        if let Some(path) = files.iter().next() {
+            let short = path.rsplit('/').next().unwrap_or(path.as_str());
+            return format!("更新 {}", short);
+        }
+    }
+    format!("更新 {} 个文件", file_count)
+}
+
 /// OpenAI 兼容 chat/completions，返回 assistant 文本（单条）。
 fn openai_chat_completion_text(
     config: &AiConfig,
@@ -1238,25 +1265,43 @@ async fn generate_commit_message_ai(repo_path: String) -> Result<String, String>
             repo_path, config.model, disable_thinking
         ),
     );
-    let raw = openai_chat_completion_text(&config, messages, 512, disable_thinking)?;
-    let msg = normalize_llm_commit_message(&raw).map_err(|reason| {
-        let preview: String = raw
-            .chars()
-            .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
-            .take(300)
-            .collect();
-        log_message(
-            "WARN",
-            &format!(
-                "generate_commit_message_ai: invalid llm response | repo_path={} | reason={} | raw_len={} | raw_preview={}",
-                repo_path,
-                reason,
-                raw.chars().count(),
-                preview
-            ),
-        );
-        format!("模型未返回有效提交说明：{}；原始响应预览：{}", reason, preview)
-    })?;
+    let raw = match openai_chat_completion_text(&config, messages, 512, disable_thinking) {
+        Ok(raw) => raw,
+        Err(e) => {
+            let fallback = fallback_commit_message_from_diff(&diff_for_prompt);
+            log_message(
+                "WARN",
+                &format!(
+                    "generate_commit_message_ai: llm request failed, use fallback | repo_path={} | reason={} | fallback={}",
+                    repo_path, e, fallback
+                ),
+            );
+            return Ok(fallback);
+        }
+    };
+    let msg = match normalize_llm_commit_message(&raw) {
+        Ok(msg) => msg,
+        Err(reason) => {
+            let preview: String = raw
+                .chars()
+                .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+                .take(300)
+                .collect();
+            let fallback = fallback_commit_message_from_diff(&diff_for_prompt);
+            log_message(
+                "WARN",
+                &format!(
+                    "generate_commit_message_ai: invalid llm response, use fallback | repo_path={} | reason={} | raw_len={} | raw_preview={} | fallback={}",
+                    repo_path,
+                    reason,
+                    raw.chars().count(),
+                    preview,
+                    fallback
+                ),
+            );
+            fallback
+        }
+    };
     Ok(msg)
 }
 
@@ -3819,7 +3864,7 @@ async fn push_changes(repo_path: String) -> Result<String, String> {
         Ok(r) => r,
         Err(e) => {
             log_message("ERROR", &format!("push: open repository failed: {} | path={}", e, repo_path));
-            return Err(format!("Failed to open repository: {}", e));
+            return Err(format!("无法打开仓库：{}", e));
         }
     };
 
@@ -3830,16 +3875,15 @@ async fn push_changes(repo_path: String) -> Result<String, String> {
 
     if let Err(e) = repo.find_remote("origin") {
         log_message("ERROR", &format!("push: find remote 'origin' failed: {}", e));
-        return Err(format!("Failed to find remote 'origin': {}", e));
+        return Err(format!("未找到远程 origin：{}", e));
     }
 
     let output = run_git_in_repo(&repo_path, &["push", "-u", "origin", &branch_name])
-        .map_err(|e| format!("Failed to push: {}（无法执行 git）", e))?;
+        .map_err(|e| format!("推送失败：{}（无法执行 git）", e))?;
     if !output.status.success() {
         let detail = git_output_detail(&output);
         log_message("ERROR", &format!("push: git push failed: {} | branch={}", detail, branch_name));
-        let log_path = get_config_dir().join("logs").join("gitlite.log");
-        return Err(format!("Failed to push: {} (see log: {})", detail, log_path.display()));
+        return Err(format!("推送失败：{}", detail));
     }
 
     // 若本地分支没有上游，自动设置到 origin/<branch>（git push -u 通常已设置）
@@ -3852,7 +3896,7 @@ async fn push_changes(repo_path: String) -> Result<String, String> {
     }
 
     log_message("INFO", &format!("push: success | branch={}", branch_name));
-    Ok(format!("Successfully pushed to origin/{}", branch_name))
+    Ok(format!("推送成功：origin/{}", branch_name))
 }
 
 fn pull_preflight(repo: &Repository) -> Result<(), String> {
@@ -4835,39 +4879,19 @@ async fn get_staged_file_diff(repo_path: String, file_path: String) -> Result<St
 // 获取未暂存文件的差异
 #[tauri::command]
 async fn get_unstaged_file_diff(repo_path: String, file_path: String) -> Result<String, String> {
-    let repo = Repository::open(&repo_path)
-        .map_err(|e| format!("Failed to open repository: {}", e))?;
-    
-    let index = repo.index()
-        .map_err(|e| format!("Failed to get index: {}", e))?;
-    
-    let diff = repo.diff_index_to_workdir(Some(&index), None)
-        .map_err(|e| format!("Failed to create diff: {}", e))?;
-    
-    let mut diff_text = String::new();
-    diff.print(git2::DiffFormat::Patch, |delta, _hunk, line| {
-        // 检查是否是目标文件
-        let current_file = delta.new_file().path()
-            .or_else(|| delta.old_file().path())
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        
-        if git_paths_equal(&current_file, &file_path) {
-            // 添加diff行前缀
-            let prefix = match line.origin() {
-                '+' => "+",
-                '-' => "-",
-                ' ' => " ",
-                _ => "",
-            };
-            // 安全地处理 UTF-8 编码
-            let content = std::str::from_utf8(line.content()).unwrap_or("[INVALID UTF-8]");
-            diff_text.push_str(&format!("{}{}\n", prefix, content));
-        }
-        true
-    }).map_err(|e| format!("Failed to print diff: {}", e))?;
-    
-    Ok(diff_text)
+    // 展示更完整上下文：等价 `git diff -U999999 -- <file>`（索引 vs 工作区）
+    let output = run_git_in_repo(
+        &repo_path,
+        &["diff", "-U999999", "--", file_path.as_str()],
+    )
+    .map_err(|e| format!("无法执行 git diff：{}", e))?;
+
+    if !output.status.success() {
+        let detail = git_output_detail(&output);
+        return Err(format!("读取未暂存差异失败：{}", detail));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 // 获取未跟踪文件的内容

@@ -138,6 +138,7 @@ export interface RepoInfo {
 /** 工作区「提交 / 推送 / 拉取」经 useGit 统一封装时使用，避免组件内重复 invoke */
 export interface WorkspaceGitActions {
   commitChanges: (message: string) => Promise<void>
+  fetchChanges: () => Promise<unknown>
   pushChanges: () => Promise<void>
   pullChanges: () => Promise<PullOutcome>
   refreshRepoInfo: () => Promise<RepoInfo>

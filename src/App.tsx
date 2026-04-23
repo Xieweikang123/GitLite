@@ -42,6 +42,7 @@ function App() {
     getFileDiff,
     getSingleFileDiff,
     fetchChangesWithLogs,
+    fetchChanges,
     pushChangesWithRealtimeLogs,
     pullChangesWithLogs,
     commitChanges,
@@ -634,6 +635,7 @@ function App() {
                 repoInfo
                   ? {
                       commitChanges,
+                      fetchChanges,
                       pushChanges,
                       pullChanges,
                       refreshRepoInfo,
