@@ -4203,6 +4203,36 @@ async fn pull_changes(repo_path: String) -> Result<PullOutcome, String> {
     execute_pull(&repo_path, None)
 }
 
+// 获取远程更改（不合并）- 简版（供普通按钮与同步流程调用）
+#[tauri::command]
+async fn fetch_changes(repo_path: String) -> Result<String, String> {
+    log_message("INFO", &format!("fetch: attempt start | path={}", repo_path));
+
+    let repo = Repository::open(&repo_path).map_err(|e| {
+        log_message(
+            "ERROR",
+            &format!("fetch: open repository failed: {} | path={}", e, repo_path),
+        );
+        format!("无法打开仓库：{}", e)
+    })?;
+
+    if let Err(e) = repo.find_remote("origin") {
+        log_message("ERROR", &format!("fetch: find remote 'origin' failed: {}", e));
+        return Err(format!("未找到远程 origin：{}", e));
+    }
+
+    let output = run_git_in_repo(&repo_path, &["fetch", "origin"])
+        .map_err(|e| format!("获取失败：{}（无法执行 git）", e))?;
+    if !output.status.success() {
+        let detail = git_output_detail(&output);
+        log_message("ERROR", &format!("fetch: git fetch failed: {}", detail));
+        return Err(format!("获取失败：{}", detail));
+    }
+
+    log_message("INFO", "fetch: success");
+    Ok("获取成功：已更新远程状态".to_string())
+}
+
 // 获取远程更改（不合并）- 带日志流
 #[tauri::command]
 async fn fetch_changes_with_logs(repo_path: String) -> Result<Vec<(String, String, String)>, String> {
@@ -5279,6 +5309,7 @@ fn main() {
             commit_changes,
             push_changes,
             pull_changes,
+            fetch_changes,
             fetch_changes_with_logs,
             push_changes_with_logs,
             push_changes_with_realtime_logs,
