@@ -3101,9 +3101,14 @@ async fn checkout_branch(repo_path: String, branch_name: String) -> Result<Strin
     Ok(format!("已切换到 {}", branch_name))
 }
 
-/// 从当前 HEAD 创建本地分支；`checkout` 为 true 时等价于 `git checkout -b`。
+/// 从指定提交（默认 HEAD）创建本地分支；`checkout` 为 true 时等价于 `git checkout -b`。
 #[tauri::command]
-async fn create_branch(repo_path: String, branch_name: String, checkout: bool) -> Result<String, String> {
+async fn create_branch(
+    repo_path: String,
+    branch_name: String,
+    checkout: bool,
+    start_point: Option<String>,
+) -> Result<String, String> {
     let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
 
     let name = branch_name.trim();
@@ -3115,10 +3120,15 @@ async fn create_branch(repo_path: String, branch_name: String, checkout: bool) -
         return Err(format!("分支「{}」已存在", name));
     }
 
-    let head = repo.head().map_err(|e| format!("无法获取 HEAD: {}", e))?;
-    let commit = head
-        .peel_to_commit()
-        .map_err(|e| format!("无法解析当前提交: {}", e))?;
+    let commit = if let Some(start) = start_point.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        let oid = Oid::from_str(start).map_err(|e| format!("无效的起点提交 ID: {}", e))?;
+        repo.find_commit(oid)
+            .map_err(|e| format!("找不到起点提交「{}」: {}", start, e))?
+    } else {
+        let head = repo.head().map_err(|e| format!("无法获取 HEAD: {}", e))?;
+        head.peel_to_commit()
+            .map_err(|e| format!("无法解析当前提交: {}", e))?
+    };
 
     repo.branch(name, &commit, false)
         .map_err(|e| format!("创建分支失败: {}", e.message()))?;

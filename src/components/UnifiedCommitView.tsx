@@ -359,6 +359,8 @@ interface UnifiedCommitViewProps {
   headShortId?: string | null
   /** 将仓库重置到指定提交（git reset） */
   onResetToCommit?: (commitId: string, mode: GitResetMode) => Promise<void>
+  /** 从指定提交创建分支（可选检出） */
+  onCreateBranch?: (branchName: string, checkout: boolean, startPoint?: string) => Promise<boolean>
   /** 列表加载、搜索失败时的提示 */
   listError?: string | null
   hasUpstream?: boolean
@@ -394,6 +396,7 @@ export function UnifiedCommitView({
   currentBranch,
   headShortId,
   onResetToCommit,
+  onCreateBranch,
   listError,
   hasUpstream = true,
   hasOriginRemote = true
@@ -427,6 +430,12 @@ export function UnifiedCommitView({
   const [resetMode, setResetMode] = useState<GitResetMode>('mixed')
   const [resetSubmitting, setResetSubmitting] = useState(false)
   const [resetDialogError, setResetDialogError] = useState<string | null>(null)
+  const [createBranchDialogOpen, setCreateBranchDialogOpen] = useState(false)
+  const [createBranchTargetCommit, setCreateBranchTargetCommit] = useState<CommitInfo | null>(null)
+  const [newBranchName, setNewBranchName] = useState('')
+  const [createBranchCheckout, setCreateBranchCheckout] = useState(true)
+  const [createBranchSubmitting, setCreateBranchSubmitting] = useState(false)
+  const [createBranchDialogError, setCreateBranchDialogError] = useState<string | null>(null)
   const [commitContextMenu, setCommitContextMenu] = useState<{
     x: number
     y: number
@@ -1048,6 +1057,36 @@ export function UnifiedCommitView({
     setResetDialogError(null)
     setResetDialogOpen(true)
   }, [])
+
+  const openCreateBranchDialogForCommit = useCallback((commit: CommitInfo) => {
+    setCreateBranchTargetCommit(commit)
+    setNewBranchName('')
+    setCreateBranchCheckout(true)
+    setCreateBranchDialogError(null)
+    setCreateBranchDialogOpen(true)
+  }, [])
+
+  const handleConfirmCreateBranch = useCallback(async () => {
+    if (!onCreateBranch || !createBranchTargetCommit) return
+    const name = newBranchName.trim()
+    if (!name) {
+      setCreateBranchDialogError('分支名不能为空')
+      return
+    }
+    setCreateBranchDialogError(null)
+    setCreateBranchSubmitting(true)
+    try {
+      const ok = await onCreateBranch(name, createBranchCheckout, createBranchTargetCommit.id)
+      if (!ok) return
+      setCreateBranchDialogOpen(false)
+      setCreateBranchTargetCommit(null)
+      setNewBranchName('')
+    } catch (e) {
+      setCreateBranchDialogError(formatTauriInvokeError(e, '创建分支失败'))
+    } finally {
+      setCreateBranchSubmitting(false)
+    }
+  }, [onCreateBranch, createBranchTargetCommit, newBranchName, createBranchCheckout])
 
   const handleConfirmReset = useCallback(async () => {
     if (!onResetToCommit || !resetTargetCommit) return
@@ -1671,7 +1710,7 @@ export function UnifiedCommitView({
                   )}
                   onClick={() => handleCommitSelect(commit)}
                   onContextMenu={(e) => {
-                    if (!onResetToCommit) return
+                    if (!onResetToCommit && !onCreateBranch) return
                     e.preventDefault()
                     e.stopPropagation()
                     setCommitContextMenu({ x: e.clientX, y: e.clientY, commit })
@@ -1841,11 +1880,11 @@ export function UnifiedCommitView({
             <CardContent className="flex flex-1 flex-col items-center justify-center gap-2 px-6 py-12 text-center text-muted-foreground">
               <GitCompare className="h-14 w-14 shrink-0 opacity-40" />
               <p className="text-sm font-medium text-foreground">选择提交查看变更</p>
-              <p className="max-w-sm text-xs leading-relaxed opacity-80">
-                在左侧提交记录中点击任意一条，右侧将显示该提交的说明与文件列表。可拖动中间竖条调整列表宽度。在提交项上右键可选择「重置到此提交」。
-              </p>
-            </CardContent>
-          </Card>
+                <p className="max-w-sm text-xs leading-relaxed opacity-80">
+                  在左侧提交记录中点击任意一条，右侧将显示该提交的说明与文件列表。可拖动中间竖条调整列表宽度。在提交项上右键可选择「从此提交创建分支」或「重置到此提交」。
+                </p>
+              </CardContent>
+            </Card>
         ) : (
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <CommitDetailStrip commit={selectedCommit} />
@@ -2039,27 +2078,47 @@ export function UnifiedCommitView({
             className="fixed z-[200] min-w-[11rem] rounded-lg border border-border/60 bg-popover p-1 text-popover-foreground shadow-lg shadow-black/20 outline-none backdrop-blur-sm dark:border-white/[0.08] dark:shadow-black/50"
             style={{
               left: Math.min(Math.max(6, commitContextMenu.x), window.innerWidth - 220),
-              top: Math.min(Math.max(6, commitContextMenu.y), window.innerHeight - 56),
+              top: Math.min(
+                Math.max(6, commitContextMenu.y),
+                window.innerHeight - (onCreateBranch && onResetToCommit ? 104 : 56)
+              ),
             }}
           >
-            <button
-              type="button"
-              role="menuitem"
-              className="flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={syncBusy || isCommitCheckedOut(commitContextMenu.commit)}
-              title={
-                isCommitCheckedOut(commitContextMenu.commit)
-                  ? '工作区已在此提交'
-                  : '将分支重置到该提交（与 git reset 一致）'
-              }
-              onClick={() => {
-                openResetDialogForCommit(commitContextMenu.commit)
-                setCommitContextMenu(null)
-              }}
-            >
-              <RotateCcw className="h-3.5 w-3.5 shrink-0" />
-              重置到此提交
-            </button>
+            {onCreateBranch && (
+              <button
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm text-foreground hover:bg-accent"
+                title="从该提交创建新分支"
+                onClick={() => {
+                  openCreateBranchDialogForCommit(commitContextMenu.commit)
+                  setCommitContextMenu(null)
+                }}
+              >
+                <GitBranch className="h-3.5 w-3.5 shrink-0" />
+                从此提交创建分支
+              </button>
+            )}
+            {onResetToCommit && (
+              <button
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={syncBusy || isCommitCheckedOut(commitContextMenu.commit)}
+                title={
+                  isCommitCheckedOut(commitContextMenu.commit)
+                    ? '工作区已在此提交'
+                    : '将分支重置到该提交（与 git reset 一致）'
+                }
+                onClick={() => {
+                  openResetDialogForCommit(commitContextMenu.commit)
+                  setCommitContextMenu(null)
+                }}
+              >
+                <RotateCcw className="h-3.5 w-3.5 shrink-0" />
+                重置到此提交
+              </button>
+            )}
           </div>,
           document.body
         )}
@@ -2345,6 +2404,89 @@ export function UnifiedCommitView({
                     </span>
                   ) : (
                     '确认重置'
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={createBranchDialogOpen}
+        onOpenChange={(open) => {
+          setCreateBranchDialogOpen(open)
+          if (!open) {
+            setCreateBranchDialogError(null)
+            setCreateBranchTargetCommit(null)
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>从该提交创建分支</DialogTitle>
+          </DialogHeader>
+          {createBranchTargetCommit && (
+            <div className="space-y-4 text-sm">
+              <div className="rounded-md border border-border bg-muted/30 px-3 py-2">
+                <p className="font-mono text-xs text-muted-foreground">{createBranchTargetCommit.short_id}</p>
+                <p className="mt-1 line-clamp-2 text-foreground" title={createBranchTargetCommit.message}>
+                  {createBranchTargetCommit.message.split('\n')[0]}
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="context-new-branch-name">分支名</Label>
+                <Input
+                  id="context-new-branch-name"
+                  value={newBranchName}
+                  onChange={(e) => setNewBranchName(e.target.value)}
+                  placeholder="例如 feature/login"
+                  autoFocus
+                  disabled={createBranchSubmitting}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void handleConfirmCreateBranch()
+                  }}
+                />
+              </div>
+              <label
+                htmlFor="context-create-branch-checkout"
+                className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-border px-3 py-2"
+              >
+                <span className="text-sm font-normal text-foreground">创建后切换到新分支</span>
+                <input
+                  id="context-create-branch-checkout"
+                  type="checkbox"
+                  checked={createBranchCheckout}
+                  onChange={(e) => setCreateBranchCheckout(e.target.checked)}
+                  disabled={createBranchSubmitting}
+                />
+              </label>
+              {createBranchDialogError && (
+                <p className="whitespace-pre-wrap text-xs text-destructive">{createBranchDialogError}</p>
+              )}
+              <div className="flex justify-end gap-2 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCreateBranchDialogOpen(false)}
+                  disabled={createBranchSubmitting}
+                >
+                  取消
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void handleConfirmCreateBranch()}
+                  disabled={createBranchSubmitting || !newBranchName.trim()}
+                >
+                  {createBranchSubmitting ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      创建中…
+                    </span>
+                  ) : (
+                    '创建分支'
                   )}
                 </Button>
               </div>

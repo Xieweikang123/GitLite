@@ -20,7 +20,7 @@ import { cn } from '../lib/utils'
 
 interface TopToolbarProps {
   onBranchSelect: (branchName: string) => void
-  onCreateBranch?: (branchName: string, checkout: boolean) => Promise<boolean>
+  onCreateBranch?: (branchName: string, checkout: boolean, startPoint?: string) => Promise<boolean>
   onOpenRemoteRepository?: () => void
   onPullChanges?: () => void
   loading: boolean
@@ -41,6 +41,7 @@ export function TopToolbar({
 }: TopToolbarProps) {
   const [createBranchOpen, setCreateBranchOpen] = useState(false)
   const [newBranchName, setNewBranchName] = useState('')
+  const [branchStartPoint, setBranchStartPoint] = useState('')
   const [checkoutAfterCreate, setCheckoutAfterCreate] = useState(true)
 
   const [branchPopoverOpen, setBranchPopoverOpen] = useState(false)
@@ -51,6 +52,7 @@ export function TopToolbar({
 
   const handleOpenCreateBranch = () => {
     setNewBranchName('')
+    setBranchStartPoint('')
     setCheckoutAfterCreate(true)
     setCreateBranchOpen(true)
   }
@@ -58,10 +60,12 @@ export function TopToolbar({
   const handleSubmitCreateBranch = async () => {
     const name = newBranchName.trim()
     if (!name || !onCreateBranch) return
-    const ok = await onCreateBranch(name, checkoutAfterCreate)
+    const startPoint = branchStartPoint.trim() || undefined
+    const ok = await onCreateBranch(name, checkoutAfterCreate, startPoint)
     if (ok) {
       setCreateBranchOpen(false)
       setNewBranchName('')
+      setBranchStartPoint('')
     }
   }
   const branches = (repoInfo?.branches ?? []) as BranchInfo[]
@@ -314,7 +318,7 @@ export function TopToolbar({
           </DialogHeader>
           <div className="space-y-4 pt-1">
             <p className="text-sm text-muted-foreground">
-              从当前提交创建本地分支；名称需符合 Git 规范且不能与已有本地分支重名。
+              可从指定提交创建本地分支；起点留空时默认使用当前 HEAD。
             </p>
             <div className="space-y-2">
               <Label htmlFor="new-branch-name">分支名</Label>
@@ -327,6 +331,19 @@ export function TopToolbar({
                   if (e.key === 'Enter') void handleSubmitCreateBranch()
                 }}
                 autoFocus
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="new-branch-start-point">起点提交（可选）</Label>
+              <Input
+                id="new-branch-start-point"
+                value={branchStartPoint}
+                onChange={(e) => setBranchStartPoint(e.target.value)}
+                placeholder="例如 a1b2c3d 或完整 commit hash"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void handleSubmitCreateBranch()
+                }}
+                disabled={loading}
               />
             </div>
             <div className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">

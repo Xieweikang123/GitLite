@@ -114,8 +114,12 @@ function App() {
     setSelectedFile(null)
   }
 
-  const handleCreateBranch = async (branchName: string, checkout: boolean) => {
-    const ok = await createBranch(branchName, checkout)
+  const handleCreateBranch = async (
+    branchName: string,
+    checkout: boolean,
+    startPoint?: string
+  ) => {
+    const ok = await createBranch(branchName, checkout, startPoint)
     if (ok && checkout) {
       setSelectedCommit(null)
       setCommitFiles([])
@@ -223,12 +227,16 @@ function App() {
   const handleOpenRemoteRepository = async () => {
     if (repoInfo?.remote_url) {
       try {
-        // 使用 Tauri 的 shell API 在默认浏览器中打开外部链接
-        await invoke('open_external_url', { url: repoInfo.remote_url })
+        const isTauriRuntime = typeof (window as any).__TAURI_IPC__ === 'function'
+        if (isTauriRuntime) {
+          // 在 Tauri 中必须走后端命令，避免 window.open 导致 about:blank 上下文
+          await invoke('open_external_url', { url: repoInfo.remote_url })
+        } else {
+          // 仅浏览器预览环境兜底
+          window.open(repoInfo.remote_url, '_blank', 'noopener,noreferrer')
+        }
       } catch (error) {
         console.error('Failed to open remote repository:', error)
-        // 如果 Tauri API 失败，回退到 window.open
-        window.open(repoInfo.remote_url, '_blank')
       }
     }
   }
@@ -706,6 +714,7 @@ function App() {
                 currentBranch={repoInfo.current_branch}
                 headShortId={repoInfo.head_short_id ?? undefined}
                 onResetToCommit={resetToCommit}
+                onCreateBranch={handleCreateBranch}
                 listError={commitListError}
                 hasUpstream={repoInfo.has_upstream ?? true}
                 hasOriginRemote={repoInfo.has_origin_remote ?? true}

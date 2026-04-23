@@ -189,7 +189,11 @@ export function useGit() {
   }, [repoInfo])
 
   const createBranch = useCallback(
-    async (branchName: string, checkout: boolean = true): Promise<boolean> => {
+    async (
+      branchName: string,
+      checkout: boolean = true,
+      startPoint?: string
+    ): Promise<boolean> => {
       if (!repoInfo) return false
 
       try {
@@ -200,6 +204,7 @@ export function useGit() {
           repoPath: repoInfo.path,
           branchName: branchName.trim(),
           checkout,
+          startPoint: startPoint?.trim() || undefined,
         })
 
         const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
