@@ -47,6 +47,7 @@ import type {
 
 type ReportTab = 'authors' | 'timeline' | 'heatmap' | 'calendar' | 'lines' | 'paths' | 'territory'
 type TimeGranularity = 'day' | 'week' | 'month'
+type CalendarGranularity = 'day' | 'month' | 'year'
 
 const REPORT_TABS: { id: ReportTab; label: string; Icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'authors', label: '作者', Icon: Users },
@@ -91,21 +92,21 @@ function commitCountCalendarLevel(count: number): number {
  * 使用固定档位避免「相对当月最大值」导致 1 次与 2 次落在同一桶。
  */
 const HEATMAP_HEAT_BG: readonly string[] = [
-  'bg-emerald-500/36 dark:bg-emerald-400/28',
-  'bg-emerald-500/40 dark:bg-emerald-400/32',
-  'bg-emerald-500/44 dark:bg-emerald-400/36',
-  'bg-emerald-500/48 dark:bg-emerald-400/40',
-  'bg-emerald-500/52 dark:bg-emerald-400/44',
-  'bg-emerald-500/56 dark:bg-emerald-400/48',
-  'bg-emerald-500/60 dark:bg-emerald-400/52',
-  'bg-emerald-500/64 dark:bg-emerald-400/56',
-  'bg-emerald-500/68 dark:bg-emerald-400/60',
-  'bg-emerald-500/72 dark:bg-emerald-400/64',
-  'bg-emerald-500/76 dark:bg-emerald-400/68',
-  'bg-emerald-500/82 dark:bg-emerald-400/72',
-  'bg-emerald-500/86 dark:bg-emerald-400/76',
+  'bg-emerald-500/[0.36] dark:bg-emerald-400/[0.28]',
+  'bg-emerald-500/40 dark:bg-emerald-400/[0.32]',
+  'bg-emerald-500/[0.44] dark:bg-emerald-400/[0.36]',
+  'bg-emerald-500/[0.48] dark:bg-emerald-400/40',
+  'bg-emerald-500/[0.52] dark:bg-emerald-400/[0.44]',
+  'bg-emerald-500/[0.56] dark:bg-emerald-400/[0.48]',
+  'bg-emerald-500/60 dark:bg-emerald-400/[0.52]',
+  'bg-emerald-500/[0.64] dark:bg-emerald-400/[0.56]',
+  'bg-emerald-500/[0.68] dark:bg-emerald-400/60',
+  'bg-emerald-500/[0.72] dark:bg-emerald-400/[0.64]',
+  'bg-emerald-500/[0.76] dark:bg-emerald-400/[0.68]',
+  'bg-emerald-500/[0.82] dark:bg-emerald-400/[0.72]',
+  'bg-emerald-500/[0.86] dark:bg-emerald-400/[0.76]',
   'bg-emerald-500/90 dark:bg-emerald-400/80',
-  'bg-emerald-600/92 dark:bg-emerald-500/88',
+  'bg-emerald-600/[0.92] dark:bg-emerald-500/[0.88]',
   'bg-emerald-600 dark:bg-emerald-500',
 ]
 
@@ -117,12 +118,12 @@ function commitHeatmapBgClass(count: number): string {
 
 /** 日历有提交格：按 6 个稳定档位着色，让强度递增更直观 */
 const CALENDAR_HEAT_SURFACE: readonly string[] = [
-  'border border-solid border-emerald-500/45 bg-emerald-500/18 dark:border-emerald-400/35 dark:bg-emerald-950/35 dark:hover:bg-emerald-900/45',
+  'border border-solid border-emerald-500/45 bg-emerald-500/[0.18] dark:border-emerald-400/35 dark:bg-emerald-950/35 dark:hover:bg-emerald-900/45',
   'border border-solid border-emerald-500/50 bg-emerald-500/30 dark:border-emerald-400/40 dark:bg-emerald-900/45 dark:hover:bg-emerald-800/55',
-  'border border-solid border-emerald-500/56 bg-emerald-500/44 dark:border-emerald-400/46 dark:bg-emerald-800/58 dark:hover:bg-emerald-700/64',
-  'border border-solid border-emerald-500/62 bg-emerald-500/60 dark:border-emerald-400/52 dark:bg-emerald-700/68 dark:hover:bg-emerald-600/74',
-  'border border-solid border-emerald-600/76 bg-emerald-600/80 text-white shadow-[inset_0_1px_0_0_rgba(255,255,255,0.08)] dark:border-emerald-400/64 dark:bg-emerald-600/82 dark:hover:bg-emerald-500/88',
-  'border border-solid border-emerald-700/88 bg-emerald-700/92 text-white shadow-[inset_0_1px_0_0_rgba(255,255,255,0.1)] dark:border-emerald-300/74 dark:bg-emerald-500/92 dark:hover:bg-emerald-400/96',
+  'border border-solid border-emerald-500/[0.56] bg-emerald-500/[0.44] dark:border-emerald-400/[0.46] dark:bg-emerald-800/[0.58] dark:hover:bg-emerald-700/[0.64]',
+  'border border-solid border-emerald-500/[0.62] bg-emerald-500/60 dark:border-emerald-400/[0.52] dark:bg-emerald-700/[0.68] dark:hover:bg-emerald-600/[0.74]',
+  'border border-solid border-emerald-600/[0.76] bg-emerald-600/80 text-white shadow-[inset_0_1px_0_0_rgba(255,255,255,0.08)] dark:border-emerald-400/[0.64] dark:bg-emerald-600/[0.82] dark:hover:bg-emerald-500/[0.88]',
+  'border border-solid border-emerald-700/[0.88] bg-emerald-700/[0.92] text-white shadow-[inset_0_1px_0_0_rgba(255,255,255,0.1)] dark:border-emerald-300/[0.74] dark:bg-emerald-500/[0.92] dark:hover:bg-emerald-400/[0.96]',
 ]
 
 /** 日历格：无提交 = 虚线空槽；有提交 = 按次数单调加深的翠绿色阶（与贡献热力一致） */
@@ -166,6 +167,39 @@ function calendarDayCellClass(
   return cn(base, surface, selected, todayDot)
 }
 
+function relativeCalendarLevel(count: number, maxCount: number): number {
+  if (count <= 0 || maxCount <= 0) return 0
+  return Math.max(1, Math.min(6, Math.ceil((count / maxCount) * 6)))
+}
+
+function calendarBucketCellClass(
+  level: number,
+  opts: { isSelected: boolean; isCurrent: boolean; interactive: boolean }
+): string {
+  const { isSelected, isCurrent, interactive } = opts
+  const base = cn(
+    'relative flex min-h-[3.2rem] flex-col items-center justify-center rounded-lg border px-1 py-2 text-center',
+    'transition-all duration-150 sm:min-h-[3.5rem]',
+    interactive && 'cursor-pointer hover:-translate-y-px hover:shadow-sm dark:hover:shadow-[0_2px_12px_rgba(0,0,0,0.5)]',
+    !interactive && 'cursor-default'
+  )
+  const surface =
+    level <= 0
+      ? cn(
+          'ring-1 ring-inset ring-zinc-200/95',
+          'border border-dashed border-zinc-400/75 bg-zinc-100/95',
+          'dark:ring-white/[0.07] dark:border-zinc-500/55 dark:bg-[#0c0e14]'
+        )
+      : CALENDAR_HEAT_SURFACE[level - 1]
+  const selected = isSelected
+    ? 'z-[1] ring-2 ring-emerald-500/50 ring-offset-1 ring-offset-white dark:ring-emerald-400/60 dark:ring-offset-0'
+    : ''
+  const current = isCurrent
+    ? "after:pointer-events-none after:absolute after:right-1.5 after:top-1.5 after:h-1 after:w-1 after:rounded-full after:bg-emerald-600 after:content-[''] dark:after:bg-emerald-300"
+    : ''
+  return cn(base, surface, selected, current)
+}
+
 /** 按仓库 / 范围 / 维度区分；切换仓库再切回时可命中缓存，避免重复计算 */
 const DIFF_AGGREGATE_PATH_LIMIT = 50
 /** 文件领地：返回的文件路径条数上限（与后端默认一致） */
@@ -175,6 +209,8 @@ const statsResultCache = {
   activity: new Map<string, TimeBucketStat[]>(),
   /** 热力图固定按日 */
   heatmap: new Map<string, TimeBucketStat[]>(),
+  /** 日历按维度缓存：day / month / year(复用 month 数据) */
+  calendar: new Map<string, TimeBucketStat[]>(),
   diff: new Map<string, DiffAggregateStats>(),
   territory: new Map<string, FileTerritoryStat[]>(),
 }
@@ -248,12 +284,14 @@ export function AuthorStatsPanel({
   const [statsRev, setStatsRev] = useState<string | null>(null)
   const [reportTab, setReportTab] = useState<ReportTab>('authors')
   const [timeGran, setTimeGran] = useState<TimeGranularity>('day')
+  const [calendarGranularity, setCalendarGranularity] = useState<CalendarGranularity>('day')
   /** 日历 Tab 当前展示的月份（自然月首日） */
   const [calendarMonth, setCalendarMonth] = useState(() => startOfMonth(new Date()))
 
   const [authorRows, setAuthorRows] = useState<AuthorCommitStat[]>([])
   const [activityRows, setActivityRows] = useState<TimeBucketStat[]>([])
   const [heatmapDays, setHeatmapDays] = useState<TimeBucketStat[]>([])
+  const [calendarRows, setCalendarRows] = useState<TimeBucketStat[]>([])
   const [diffAgg, setDiffAgg] = useState<DiffAggregateStats | null>(null)
   const [territoryRows, setTerritoryRows] = useState<FileTerritoryStat[]>([])
 
@@ -276,6 +314,8 @@ export function AuthorStatsPanel({
     setDiffAgg(null)
     setTerritoryRows([])
     setDiffProgress(null)
+    setCalendarGranularity('day')
+    setCalendarRows([])
     setCalendarMonth(startOfMonth(new Date()))
     setDrillOpen(false)
   }, [repoPath])
@@ -386,11 +426,21 @@ export function AuthorStatsPanel({
             setError(null)
             return
           }
-        } else if (reportTab === 'heatmap' || reportTab === 'calendar') {
+        } else if (reportTab === 'heatmap') {
           const k = cacheKeyActivity(repoPath, scope, rev, 'day')
           const hit = statsResultCache.heatmap.get(k)
           if (hit) {
             setHeatmapDays(hit)
+            setError(null)
+            return
+          }
+        } else if (reportTab === 'calendar') {
+          const calendarFetchGran: TimeGranularity =
+            calendarGranularity === 'day' ? 'day' : 'month'
+          const k = cacheKeyActivity(repoPath, scope, rev, calendarFetchGran)
+          const hit = statsResultCache.calendar.get(k)
+          if (hit) {
+            setCalendarRows(hit)
             setError(null)
             return
           }
@@ -430,12 +480,20 @@ export function AuthorStatsPanel({
           const k = cacheKeyActivity(repoPath, scope, rev, timeGran)
           statsResultCache.activity.set(k, data)
           setActivityRows(data)
-        } else if (reportTab === 'heatmap' || reportTab === 'calendar') {
+        } else if (reportTab === 'heatmap') {
           setHeatmapDays([])
           const data = await getCommitActivityStats('day', scope, rev)
           const k = cacheKeyActivity(repoPath, scope, rev, 'day')
           statsResultCache.heatmap.set(k, data)
           setHeatmapDays(data)
+        } else if (reportTab === 'calendar') {
+          setCalendarRows([])
+          const calendarFetchGran: TimeGranularity =
+            calendarGranularity === 'day' ? 'day' : 'month'
+          const data = await getCommitActivityStats(calendarFetchGran, scope, rev)
+          const k = cacheKeyActivity(repoPath, scope, rev, calendarFetchGran)
+          statsResultCache.calendar.set(k, data)
+          setCalendarRows(data)
         } else if (reportTab === 'territory') {
           setTerritoryRows([])
           setDiffProgress({ current: 0, total: 0 })
@@ -458,6 +516,7 @@ export function AuthorStatsPanel({
         setAuthorRows([])
         setActivityRows([])
         setHeatmapDays([])
+        setCalendarRows([])
         setTerritoryRows([])
         setDiffAgg(null)
         diffDataRef.current = null
@@ -475,6 +534,7 @@ export function AuthorStatsPanel({
       repoPath,
       reportTab,
       timeGran,
+      calendarGranularity,
       scopeArgs.scope,
       scopeArgs.rev,
       getAuthorCommitStats,
@@ -776,12 +836,16 @@ export function AuthorStatsPanel({
               <CalendarSection
                 loading={loading}
                 error={!!error}
-                heatmapDays={heatmapDays}
-                heatmapMap={heatmapMap}
+                calendarRows={calendarRows}
+                granularity={calendarGranularity}
+                onGranularityChange={setCalendarGranularity}
                 calendarMonth={calendarMonth}
                 onCalendarMonthChange={setCalendarMonth}
                 onDayDrill={(dayKey, count) => {
                   void openActivityDrill('day', dayKey, `${dayKey} · ${count} 次提交`)
+                }}
+                onMonthDrill={(monthKey, count) => {
+                  void openActivityDrill('month', monthKey, `${monthKey} · ${count} 次提交`)
                 }}
               />
             </div>
@@ -1274,28 +1338,48 @@ function HeatmapSection({
 function CalendarSection({
   loading,
   error,
-  heatmapDays,
-  heatmapMap,
+  calendarRows,
+  granularity,
+  onGranularityChange,
   calendarMonth,
   onCalendarMonthChange,
   onDayDrill,
+  onMonthDrill,
 }: {
   loading: boolean
   error: boolean
-  heatmapDays: TimeBucketStat[]
-  heatmapMap: Map<string, number>
+  calendarRows: TimeBucketStat[]
+  granularity: CalendarGranularity
+  onGranularityChange: (v: CalendarGranularity) => void
   calendarMonth: Date
   onCalendarMonthChange: (d: Date) => void
   /** 选中某日且该日有提交时，打开提交列表（与热力图联动逻辑一致） */
   onDayDrill?: (dayKey: string, count: number) => void
+  /** 选中某月且该月有提交时，打开提交列表 */
+  onMonthDrill?: (monthKey: string, count: number) => void
 }) {
-  const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null)
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
 
   useEffect(() => {
-    setSelectedDateKey(null)
-  }, [calendarMonth])
+    setSelectedKey(null)
+  }, [calendarMonth, granularity])
+
+  const dayMap = useMemo(() => {
+    if (granularity !== 'day') return new Map<string, number>()
+    const m = new Map<string, number>()
+    for (const row of calendarRows) m.set(row.key, row.commit_count)
+    return m
+  }, [calendarRows, granularity])
+
+  const monthMap = useMemo(() => {
+    if (granularity === 'day') return new Map<string, number>()
+    const m = new Map<string, number>()
+    for (const row of calendarRows) m.set(row.key, row.commit_count)
+    return m
+  }, [calendarRows, granularity])
 
   const gridDays = useMemo(() => {
+    if (granularity !== 'day') return []
     const mStart = startOfMonth(calendarMonth)
     const mEnd = endOfMonth(calendarMonth)
     const gridStart = startOfWeek(mStart, { weekStartsOn: 1 })
@@ -1305,41 +1389,103 @@ function CalendarSection({
       out.push(d)
     }
     return out
-  }, [calendarMonth])
+  }, [calendarMonth, granularity])
 
-  const monthStats = useMemo(() => {
+  const monthCells = useMemo(() => {
+    if (granularity !== 'month') return []
+    const y = calendarMonth.getFullYear()
+    return Array.from({ length: 12 }, (_, i) => {
+      const d = new Date(y, i, 1)
+      const key = format(d, 'yyyy-MM')
+      return { key, count: monthMap.get(key) ?? 0, date: d }
+    })
+  }, [calendarMonth, monthMap, granularity])
+
+  const yearCells = useMemo(() => {
+    if (granularity !== 'year') return []
+    const yearCountMap = new Map<number, number>()
+    for (const [k, v] of monthMap.entries()) {
+      const y = Number.parseInt(k.slice(0, 4), 10)
+      if (Number.isNaN(y)) continue
+      yearCountMap.set(y, (yearCountMap.get(y) ?? 0) + v)
+    }
+    const focusYear = calendarMonth.getFullYear()
+    const blockStartYear = Math.floor(focusYear / 12) * 12
+    return Array.from({ length: 12 }, (_, i) => {
+      const year = blockStartYear + i
+      return {
+        key: String(year),
+        year,
+        count: yearCountMap.get(year) ?? 0,
+        isCurrent: year === new Date().getFullYear(),
+      }
+    })
+  }, [calendarMonth, monthMap, granularity])
+
+  const summary = useMemo(() => {
+    if (granularity === 'day') {
+      let total = 0
+      let active = 0
+      let peak = 0
+      const mStart = startOfMonth(calendarMonth)
+      const mEnd = endOfMonth(calendarMonth)
+      for (let d = mStart; d <= mEnd; d = addDays(d, 1)) {
+        const key = format(d, 'yyyy-MM-dd')
+        const c = dayMap.get(key) ?? 0
+        total += c
+        if (c > 0) active++
+        peak = Math.max(peak, c)
+      }
+      return { total, active, peak, unit: '天' }
+    }
+    if (granularity === 'month') {
+      let total = 0
+      let active = 0
+      let peak = 0
+      for (const c of monthCells) {
+        total += c.count
+        if (c.count > 0) active++
+        peak = Math.max(peak, c.count)
+      }
+      return { total, active, peak, unit: '月' }
+    }
     let total = 0
     let active = 0
     let peak = 0
-    const mStart = startOfMonth(calendarMonth)
-    const mEnd = endOfMonth(calendarMonth)
-    for (let d = mStart; d <= mEnd; d = addDays(d, 1)) {
-      const key = format(d, 'yyyy-MM-dd')
-      const c = heatmapMap.get(key) ?? 0
-      total += c
-      if (c > 0) active++
-      if (c > peak) peak = c
+    for (const c of yearCells) {
+      total += c.count
+      if (c.count > 0) active++
+      peak = Math.max(peak, c.count)
     }
-    return { total, active, peak }
-  }, [calendarMonth, heatmapMap])
+    return { total, active, peak, unit: '年' }
+  }, [calendarMonth, dayMap, granularity, monthCells, yearCells])
 
-  if (loading && heatmapDays.length === 0) {
+  const headerTitle =
+    granularity === 'day'
+      ? format(calendarMonth, 'yyyy年M月')
+      : granularity === 'month'
+        ? format(calendarMonth, 'yyyy年')
+        : `${Math.floor(calendarMonth.getFullYear() / 12) * 12} - ${
+            Math.floor(calendarMonth.getFullYear() / 12) * 12 + 11
+          }`
+
+  if (loading && calendarRows.length === 0) {
     return (
       <div
         className="flex min-h-[12rem] items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-zinc-50 text-sm text-zinc-500 dark:border-white/[0.06] dark:bg-[#151821] dark:text-[#8b93a7]"
         aria-busy
       >
         <Loader2 className="h-5 w-5 shrink-0 animate-spin opacity-80" aria-hidden />
-        正在统计每日提交…
+        正在统计提交活跃度…
       </div>
     )
   }
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 rounded-xl dark:bg-[#0f1115] dark:p-1">
-      {!loading && heatmapDays.length === 0 && !error && (
+      {!loading && calendarRows.length === 0 && !error && (
         <p className="shrink-0 text-center text-[11px] text-zinc-500 dark:text-[#8b93a7] sm:text-xs">
-          当前范围内无提交记录；日历仍展示各日，无提交不显示次数。
+          当前范围内无提交记录；仍可切换维度查看空日历。
         </p>
       )}
 
@@ -1356,26 +1502,61 @@ function CalendarSection({
             <h2 className="text-[15px] font-semibold leading-snug tracking-tight text-zinc-900 dark:text-white">
               提交日历
             </h2>
-            <p className="text-[13px] text-zinc-500 dark:text-[#8b93a7]">{format(calendarMonth, 'yyyy年M月')}</p>
+            <p className="text-[13px] text-zinc-500 dark:text-[#8b93a7]">{headerTitle}</p>
             {!loading && (
               <p className="pt-1 text-[12px] leading-relaxed text-zinc-600 dark:text-[#8b93a7]">
-                <span className="font-medium tabular-nums text-zinc-900 dark:text-white">{monthStats.total}</span>
+                <span className="font-medium tabular-nums text-zinc-900 dark:text-white">{summary.total}</span>
                 次提交 · 活跃
-                <span className="mx-0.5 font-medium tabular-nums text-zinc-900 dark:text-white">{monthStats.active}</span>
-                天 · 峰值
-                <span className="ml-0.5 font-medium tabular-nums text-zinc-900 dark:text-white">{monthStats.peak}</span>
+                <span className="mx-0.5 font-medium tabular-nums text-zinc-900 dark:text-white">{summary.active}</span>
+                {summary.unit} · 峰值
+                <span className="ml-0.5 font-medium tabular-nums text-zinc-900 dark:text-white">{summary.peak}</span>
                 次
               </p>
             )}
           </div>
-          <div className="flex shrink-0 items-center gap-0.5 rounded-lg border border-zinc-200/80 bg-zinc-50/90 p-0.5 dark:border-white/[0.06] dark:bg-[#1b1f2a]">
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+            <div className="flex items-center gap-0.5 rounded-lg border border-zinc-200/80 bg-zinc-50/90 p-0.5 dark:border-white/[0.06] dark:bg-[#1b1f2a]">
+              {([
+                ['day', '日'],
+                ['month', '月'],
+                ['year', '年'],
+              ] as const).map(([key, label]) => (
+                <Button
+                  key={key}
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className={cn(
+                    'h-7 px-2 text-[11px]',
+                    granularity === key
+                      ? 'bg-zinc-200/90 text-zinc-900 dark:bg-white/[0.12] dark:text-white'
+                      : 'text-zinc-500 hover:bg-zinc-200/80 dark:text-[#8b93a7] dark:hover:bg-white/[0.06] dark:hover:text-zinc-200'
+                  )}
+                  onClick={() => onGranularityChange(key)}
+                >
+                  {label}维度
+                </Button>
+              ))}
+            </div>
+            <div className="flex items-center gap-0.5 rounded-lg border border-zinc-200/80 bg-zinc-50/90 p-0.5 dark:border-white/[0.06] dark:bg-[#1b1f2a]">
             <Button
               type="button"
               variant="ghost"
               size="icon"
               className="h-7 w-7 text-zinc-500 hover:bg-zinc-200/80 dark:text-[#8b93a7] dark:hover:bg-white/[0.06] dark:hover:text-zinc-200"
-              aria-label="上一月"
-              onClick={() => onCalendarMonthChange(startOfMonth(addMonths(calendarMonth, -1)))}
+              aria-label={
+                granularity === 'day' ? '上一月' : granularity === 'month' ? '上一年' : '上一组年份'
+              }
+              onClick={() =>
+                onCalendarMonthChange(
+                  startOfMonth(
+                    addMonths(
+                      calendarMonth,
+                      granularity === 'day' ? -1 : granularity === 'month' ? -12 : -144
+                    )
+                  )
+                )
+              }
             >
               <ChevronLeft className="h-3.5 w-3.5 opacity-90" aria-hidden />
             </Button>
@@ -1386,130 +1567,223 @@ function CalendarSection({
               className="h-7 px-2 text-[11px] text-zinc-500 hover:bg-zinc-200/80 dark:text-[#8b93a7] dark:hover:bg-white/[0.06] dark:hover:text-zinc-200"
               onClick={() => onCalendarMonthChange(startOfMonth(new Date()))}
             >
-              本月
+              {granularity === 'day' ? '本月' : granularity === 'month' ? '今年' : '今年组'}
             </Button>
             <Button
               type="button"
               variant="ghost"
               size="icon"
               className="h-7 w-7 text-zinc-500 hover:bg-zinc-200/80 dark:text-[#8b93a7] dark:hover:bg-white/[0.06] dark:hover:text-zinc-200"
-              aria-label="下一月"
-              onClick={() => onCalendarMonthChange(startOfMonth(addMonths(calendarMonth, 1)))}
+              aria-label={
+                granularity === 'day' ? '下一月' : granularity === 'month' ? '下一年' : '下一组年份'
+              }
+              onClick={() =>
+                onCalendarMonthChange(
+                  startOfMonth(
+                    addMonths(
+                      calendarMonth,
+                      granularity === 'day' ? 1 : granularity === 'month' ? 12 : 144
+                    )
+                  )
+                )
+              }
             >
               <ChevronRight className="h-3.5 w-3.5 opacity-90" aria-hidden />
             </Button>
+            </div>
           </div>
         </div>
 
-        <div className="mb-3 grid grid-cols-7 gap-2 sm:gap-2.5">
-          {CALENDAR_WEEKDAY_HEADERS.map((wd) => (
-            <div
-              key={wd}
-              className="select-none pb-0.5 text-center text-[10px] font-medium tracking-wide text-zinc-400 dark:text-[#8b93a7] sm:text-[11px]"
-            >
-              {wd}
-            </div>
-          ))}
-        </div>
-
-        <div
-          className="grid grid-cols-7 gap-2 sm:gap-2.5 [grid-auto-rows:2.1rem] sm:[grid-auto-rows:2.35rem]"
-          role="grid"
-          aria-label={`${format(calendarMonth, 'yyyy年M月')} 提交日历`}
-        >
-          {gridDays.map((day) => {
-            const key = format(day, 'yyyy-MM-dd')
-            const count = heatmapMap.get(key) ?? 0
-            const inMonth = isSameMonth(day, calendarMonth)
-            const today = isToday(day)
-            const heatLevel = commitCountCalendarLevel(count)
-            const isSelected = selectedDateKey === key && inMonth
-            const cellClass = calendarDayCellClass(count, {
-              inMonth,
-              isToday: today,
-              isSelected,
-            })
-            const title =
-              count > 0 ? `${key} · ${count} 次提交` : `${key} · 无提交`
-
-            const inner = (
-              <>
-                <span
-                  className={cn(
-                    'text-[13px] tabular-nums leading-none',
-                    !inMonth && 'font-medium text-zinc-400 dark:text-zinc-600',
-                    inMonth &&
-                      count > 0 &&
-                    heatLevel < 5 &&
-                      'font-semibold text-zinc-900 dark:text-white',
-                    inMonth && count > 0 && heatLevel >= 5 && 'font-semibold text-white',
-                    inMonth &&
-                      count <= 0 &&
-                      'font-medium text-zinc-400 dark:text-zinc-500'
-                  )}
+        {granularity === 'day' && (
+          <>
+            <div className="mb-3 grid grid-cols-7 gap-2 sm:gap-2.5">
+              {CALENDAR_WEEKDAY_HEADERS.map((wd) => (
+                <div
+                  key={wd}
+                  className="select-none pb-0.5 text-center text-[10px] font-medium tracking-wide text-zinc-400 dark:text-[#8b93a7] sm:text-[11px]"
                 >
-                  {format(day, 'd')}
-                </span>
-                {count > 0 && (
-                  <span className="mt-1 flex flex-col items-center gap-0.5">
+                  {wd}
+                </div>
+              ))}
+            </div>
+            <div
+              className="grid grid-cols-7 gap-2 sm:gap-2.5 [grid-auto-rows:2.1rem] sm:[grid-auto-rows:2.35rem]"
+              role="grid"
+              aria-label={`${format(calendarMonth, 'yyyy年M月')} 提交日历`}
+            >
+              {gridDays.map((day) => {
+                const key = format(day, 'yyyy-MM-dd')
+                const count = dayMap.get(key) ?? 0
+                const inMonth = isSameMonth(day, calendarMonth)
+                const today = isToday(day)
+                const heatLevel = commitCountCalendarLevel(count)
+                const isSelected = selectedKey === key && inMonth
+                const cellClass = calendarDayCellClass(count, {
+                  inMonth,
+                  isToday: today,
+                  isSelected,
+                })
+                const title = count > 0 ? `${key} · ${count} 次提交` : `${key} · 无提交`
+
+                const inner = (
+                  <>
                     <span
                       className={cn(
-                        'h-1 w-1 rounded-full',
-                        heatLevel >= 5
-                          ? 'bg-white shadow-[0_0_6px_rgba(255,255,255,0.55)]'
-                          : 'bg-emerald-700 shadow-[0_0_6px_rgba(16,185,129,0.45)] dark:bg-emerald-200'
-                      )}
-                      aria-hidden
-                    />
-                    <span
-                      className={cn(
-                        'text-[9px] font-semibold tabular-nums leading-none',
-                        heatLevel >= 5
-                          ? 'text-emerald-50'
-                          : 'text-emerald-900 dark:text-emerald-100'
+                        'text-[13px] tabular-nums leading-none',
+                        !inMonth && 'font-medium text-zinc-400 dark:text-zinc-600',
+                        inMonth && count > 0 && heatLevel < 5 && 'font-semibold text-zinc-900 dark:text-white',
+                        inMonth && count > 0 && heatLevel >= 5 && 'font-semibold text-white',
+                        inMonth && count <= 0 && 'font-medium text-zinc-400 dark:text-zinc-500'
                       )}
                     >
-                      {count}
+                      {format(day, 'd')}
                     </span>
-                  </span>
-                )}
-              </>
-            )
+                    {count > 0 && (
+                      <span className="mt-1 flex flex-col items-center gap-0.5">
+                        <span
+                          className={cn(
+                            'h-1 w-1 rounded-full',
+                            heatLevel >= 5
+                              ? 'bg-white shadow-[0_0_6px_rgba(255,255,255,0.55)]'
+                              : 'bg-emerald-700 shadow-[0_0_6px_rgba(16,185,129,0.45)] dark:bg-emerald-200'
+                          )}
+                          aria-hidden
+                        />
+                        <span
+                          className={cn(
+                            'text-[9px] font-semibold tabular-nums leading-none',
+                            heatLevel >= 5 ? 'text-emerald-50' : 'text-emerald-900 dark:text-emerald-100'
+                          )}
+                        >
+                          {count}
+                        </span>
+                      </span>
+                    )}
+                  </>
+                )
 
-            if (!inMonth) {
-              return (
-                <div key={key} role="gridcell" className={cellClass} title={title}>
-                  {inner}
-                </div>
-              )
-            }
+                if (!inMonth) {
+                  return (
+                    <div key={key} role="gridcell" className={cellClass} title={title}>
+                      {inner}
+                    </div>
+                  )
+                }
 
-            return (
-              <button
-                key={key}
-                type="button"
-                role="gridcell"
-                title={title}
-                aria-label={title}
-                aria-current={today ? 'date' : undefined}
-                aria-pressed={isSelected}
-                onClick={() => {
-                  const next = selectedDateKey === key ? null : key
-                  setSelectedDateKey(next)
-                  if (count > 0 && next !== null && onDayDrill) {
-                    onDayDrill(key, count)
-                  }
-                }}
-                className={cn(
-                  cellClass,
-                  'focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 dark:focus-visible:ring-emerald-400/45'
-                )}
-              >
-                {inner}
-              </button>
-            )
-          })}
-        </div>
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    role="gridcell"
+                    title={title}
+                    aria-label={title}
+                    aria-current={today ? 'date' : undefined}
+                    aria-pressed={isSelected}
+                    onClick={() => {
+                      const next = selectedKey === key ? null : key
+                      setSelectedKey(next)
+                      if (count > 0 && next !== null && onDayDrill) onDayDrill(key, count)
+                    }}
+                    className={cn(
+                      cellClass,
+                      'focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 dark:focus-visible:ring-emerald-400/45'
+                    )}
+                  >
+                    {inner}
+                  </button>
+                )
+              })}
+            </div>
+          </>
+        )}
+
+        {granularity === 'month' && (
+          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 sm:gap-2.5" role="grid" aria-label={`${format(calendarMonth, 'yyyy年')} 提交月历`}>
+            {(() => {
+              const maxMonthCount = monthCells.reduce((m, c) => Math.max(m, c.count), 0)
+              return monthCells.map((cell) => {
+                const level = relativeCalendarLevel(cell.count, maxMonthCount)
+                const isSelected = selectedKey === cell.key
+                const isCurrent = format(cell.date, 'yyyy-MM') === format(new Date(), 'yyyy-MM')
+                const title = `${cell.key} · ${cell.count} 次提交`
+                return (
+                  <button
+                    key={cell.key}
+                    type="button"
+                    role="gridcell"
+                    title={title}
+                    aria-label={title}
+                    aria-pressed={isSelected}
+                    className={cn(
+                      calendarBucketCellClass(level, {
+                        isSelected,
+                        isCurrent,
+                        interactive: true,
+                      }),
+                      'focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 dark:focus-visible:ring-emerald-400/45'
+                    )}
+                    onClick={() => {
+                      const next = selectedKey === cell.key ? null : cell.key
+                      setSelectedKey(next)
+                      if (cell.count > 0 && next !== null && onMonthDrill) onMonthDrill(cell.key, cell.count)
+                    }}
+                  >
+                    <span className={cn('text-[12px] font-semibold', level >= 5 ? 'text-white' : 'text-zinc-800 dark:text-zinc-100')}>
+                      {format(cell.date, 'M月')}
+                    </span>
+                    <span className={cn('mt-1 text-[11px] tabular-nums', level >= 5 ? 'text-emerald-50' : 'text-zinc-500 dark:text-zinc-300')}>
+                      {cell.count}
+                    </span>
+                  </button>
+                )
+              })
+            })()}
+          </div>
+        )}
+
+        {granularity === 'year' && (
+          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 sm:gap-2.5" role="grid" aria-label="提交年历">
+            {(() => {
+              const maxYearCount = yearCells.reduce((m, c) => Math.max(m, c.count), 0)
+              return yearCells.map((cell) => {
+                const level = relativeCalendarLevel(cell.count, maxYearCount)
+                const isSelected = selectedKey === cell.key
+                const title = `${cell.year} 年 · ${cell.count} 次提交`
+                return (
+                  <button
+                    key={cell.key}
+                    type="button"
+                    role="gridcell"
+                    title={title}
+                    aria-label={title}
+                    aria-pressed={isSelected}
+                    className={cn(
+                      calendarBucketCellClass(level, {
+                        isSelected,
+                        isCurrent: cell.isCurrent,
+                        interactive: true,
+                      }),
+                      'focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 dark:focus-visible:ring-emerald-400/45'
+                    )}
+                    onClick={() => {
+                      const next = selectedKey === cell.key ? null : cell.key
+                      setSelectedKey(next)
+                      onCalendarMonthChange(startOfMonth(new Date(cell.year, 0, 1)))
+                      onGranularityChange('month')
+                    }}
+                  >
+                    <span className={cn('text-[12px] font-semibold', level >= 5 ? 'text-white' : 'text-zinc-800 dark:text-zinc-100')}>
+                      {cell.year}
+                    </span>
+                    <span className={cn('mt-1 text-[11px] tabular-nums', level >= 5 ? 'text-emerald-50' : 'text-zinc-500 dark:text-zinc-300')}>
+                      {cell.count}
+                    </span>
+                  </button>
+                )
+              })
+            })()}
+          </div>
+        )}
 
         <div className="mt-5 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-zinc-200 pt-3 dark:border-white/[0.06]">
           <span className="text-[10px] font-medium text-zinc-500 dark:text-[#8b93a7]">活跃度</span>
@@ -1520,27 +1794,27 @@ function CalendarSection({
               title="0 次"
             />
             <span
-              className="h-2 w-2 rounded-[3px] border border-emerald-500/50 bg-emerald-500/40 dark:border-emerald-400/42 dark:bg-emerald-400/35"
+              className="h-2 w-2 rounded-[3px] border border-emerald-500/50 bg-emerald-500/40 dark:border-emerald-400/[0.42] dark:bg-emerald-400/35"
               title="1 次"
             />
             <span
-              className="h-2 w-2 rounded-[3px] border border-emerald-500/52 bg-emerald-500/30 dark:border-emerald-400/40 dark:bg-emerald-900/45"
+              className="h-2 w-2 rounded-[3px] border border-emerald-500/[0.52] bg-emerald-500/30 dark:border-emerald-400/40 dark:bg-emerald-900/45"
               title="2 次"
             />
             <span
-              className="h-2 w-2 rounded-[3px] border border-emerald-500/56 bg-emerald-500/44 dark:border-emerald-400/46 dark:bg-emerald-800/58"
+              className="h-2 w-2 rounded-[3px] border border-emerald-500/[0.56] bg-emerald-500/[0.44] dark:border-emerald-400/[0.46] dark:bg-emerald-800/[0.58]"
               title="3–4 次"
             />
             <span
-              className="h-2 w-2 rounded-[3px] border border-emerald-500/62 bg-emerald-500/60 dark:border-emerald-400/52 dark:bg-emerald-700/68"
+              className="h-2 w-2 rounded-[3px] border border-emerald-500/[0.62] bg-emerald-500/60 dark:border-emerald-400/[0.52] dark:bg-emerald-700/[0.68]"
               title="5–7 次"
             />
             <span
-              className="h-2 w-2 rounded-[3px] border border-emerald-600/76 bg-emerald-600/80 dark:border-emerald-400/64 dark:bg-emerald-600/82"
+              className="h-2 w-2 rounded-[3px] border border-emerald-600/[0.76] bg-emerald-600/80 dark:border-emerald-400/[0.64] dark:bg-emerald-600/[0.82]"
               title="8–11 次"
             />
             <span
-              className="h-2 w-2 rounded-[3px] border border-emerald-700/88 bg-emerald-700/92 dark:border-emerald-300/74 dark:bg-emerald-500"
+              className="h-2 w-2 rounded-[3px] border border-emerald-700/[0.88] bg-emerald-700/[0.92] dark:border-emerald-300/[0.74] dark:bg-emerald-500/[0.92]"
               title="12 次及以上"
             />
             <span className="text-[9px] text-zinc-400 dark:text-zinc-600">高</span>
