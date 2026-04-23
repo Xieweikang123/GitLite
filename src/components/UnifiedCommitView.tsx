@@ -62,6 +62,9 @@ const MIN_FILE_W = 160
 const MIN_DIFF_W = 240
 const DEFAULT_PANES = { list: 340, file: 240 } as const
 
+/** 左侧「每分支一竖线」最多占多少列，避免极多远程分支时图过宽 */
+const MAX_BRANCH_RAIL_COLS = 40
+
 /** 分支下拉框值为 `refs/heads/…`，界面文案只展示短名 */
 function shortLocalBranchRef(ref: string | null | undefined): string {
   if (!ref) return ''
@@ -941,6 +944,43 @@ export function UnifiedCommitView({
       m.set(c.id, prefer.name)
     }
     return m
+  }, [filteredCommits, branchLabelsByCommit, currentBranch])
+
+  /** 左侧「每分支一竖线」：提交 → 分支名列表（与后端 get_commits_branch_labels 一致） */
+  const branchNamesByCommitIdForGraph = useMemo(() => {
+    const m = new Map<string, readonly string[]>()
+    for (const c of filteredCommits) {
+      const labels = branchLabelsByCommit.get(c.id)
+      if (!labels?.length) continue
+      m.set(c.id, labels.map((b) => b.name))
+    }
+    return m
+  }, [filteredCommits, branchLabelsByCommit])
+
+  /** 当前列表内出现过的分支名 → 列顺序（当前分支优先，其次本地名，再远程） */
+  const branchRailColumns = useMemo(() => {
+    const set = new Set<string>()
+    for (const c of filteredCommits) {
+      const labels = branchLabelsByCommit.get(c.id)
+      if (!labels) continue
+      for (const b of labels) set.add(b.name)
+    }
+    const names = [...set]
+    if (names.length === 0) return [] as string[]
+
+    const rank = (n: string) => {
+      if (n === currentBranch || n === `origin/${currentBranch}`) return 0
+      if (n.endsWith(`/${currentBranch}`)) return 0
+      if (!n.includes('/')) return 1
+      return 2
+    }
+    names.sort((a, b) => {
+      const ra = rank(a)
+      const rb = rank(b)
+      if (ra !== rb) return ra - rb
+      return a.localeCompare(b)
+    })
+    return names.slice(0, MAX_BRANCH_RAIL_COLS)
   }, [filteredCommits, branchLabelsByCommit, currentBranch])
 
   useLayoutEffect(() => {
@@ -2110,6 +2150,14 @@ export function UnifiedCommitView({
                   className="border-r border-border/35 bg-muted/20 pl-0.5 pr-0.5 dark:bg-muted/10"
                   commits={filteredCommits}
                   branchColorKeyByCommitId={graphBranchColorByCommit}
+                  branchRailColumns={
+                    branchRailColumns.length > 0 ? branchRailColumns : undefined
+                  }
+                  branchNamesByCommitId={
+                    branchNamesByCommitIdForGraph.size > 0
+                      ? branchNamesByCommitIdForGraph
+                      : undefined
+                  }
                   rowHeights={
                     commitGraphRowHeights.length === filteredCommits.length
                       ? commitGraphRowHeights
