@@ -14,6 +14,7 @@ import {
   TimeBucketStat,
   DiffAggregateStats,
   FileTerritoryStat,
+  RemoteManagementInfo,
 } from '../types/git'
 import { formatTauriInvokeError } from '../utils/tauriError'
 
@@ -365,6 +366,116 @@ export function useGit() {
         return true
       } catch (err) {
         setError(formatTauriInvokeError(err, '合并分支失败'))
+        return false
+      } finally {
+        setLoading(false)
+      }
+    },
+    [repoInfo]
+  )
+
+  const getRemoteManagementInfo = useCallback(async (): Promise<RemoteManagementInfo> => {
+    if (!repoInfo) throw new Error('No repository open')
+    return await invoke<RemoteManagementInfo>('get_remote_management_info', {
+      repoPath: repoInfo.path,
+    })
+  }, [repoInfo])
+
+  const addRemote = useCallback(
+    async (name: string, url: string): Promise<boolean> => {
+      if (!repoInfo) return false
+      try {
+        setLoading(true)
+        setError(null)
+        await invoke('add_remote', {
+          repoPath: repoInfo.path,
+          name: name.trim(),
+          url: url.trim(),
+        })
+        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
+          path: repoInfo.path,
+        })
+        setRepoInfo(updatedRepoInfo)
+        return true
+      } catch (err) {
+        setError(formatTauriInvokeError(err, '新增远程失败'))
+        return false
+      } finally {
+        setLoading(false)
+      }
+    },
+    [repoInfo]
+  )
+
+  const updateRemote = useCallback(
+    async (name: string, url: string): Promise<boolean> => {
+      if (!repoInfo) return false
+      try {
+        setLoading(true)
+        setError(null)
+        await invoke('update_remote', {
+          repoPath: repoInfo.path,
+          name: name.trim(),
+          url: url.trim(),
+        })
+        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
+          path: repoInfo.path,
+        })
+        setRepoInfo(updatedRepoInfo)
+        return true
+      } catch (err) {
+        setError(formatTauriInvokeError(err, '更新远程失败'))
+        return false
+      } finally {
+        setLoading(false)
+      }
+    },
+    [repoInfo]
+  )
+
+  const removeRemote = useCallback(
+    async (name: string): Promise<boolean> => {
+      if (!repoInfo) return false
+      try {
+        setLoading(true)
+        setError(null)
+        await invoke('remove_remote', {
+          repoPath: repoInfo.path,
+          name: name.trim(),
+        })
+        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
+          path: repoInfo.path,
+        })
+        setRepoInfo(updatedRepoInfo)
+        return true
+      } catch (err) {
+        setError(formatTauriInvokeError(err, '删除远程失败'))
+        return false
+      } finally {
+        setLoading(false)
+      }
+    },
+    [repoInfo]
+  )
+
+  const setBranchUpstream = useCallback(
+    async (branchName: string, upstreamRef?: string | null): Promise<boolean> => {
+      if (!repoInfo) return false
+      try {
+        setLoading(true)
+        setError(null)
+        await invoke('set_branch_upstream', {
+          repoPath: repoInfo.path,
+          branchName: branchName.trim(),
+          upstreamRef: upstreamRef?.trim() || null,
+        })
+        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
+          path: repoInfo.path,
+        })
+        setRepoInfo(updatedRepoInfo)
+        return true
+      } catch (err) {
+        setError(formatTauriInvokeError(err, '设置上游失败'))
         return false
       } finally {
         setLoading(false)
@@ -852,6 +963,11 @@ export function useGit() {
     deleteBranch,
     renameBranch,
     mergeBranch,
+    getRemoteManagementInfo,
+    addRemote,
+    updateRemote,
+    removeRemote,
+    setBranchUpstream,
     resetToCommit,
     cherryPickCommit,
     revertCommit,

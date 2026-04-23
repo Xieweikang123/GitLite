@@ -135,6 +135,24 @@ export interface RepoInfo {
   has_origin_remote?: boolean
 }
 
+export interface RemoteItem {
+  name: string
+  fetch_url?: string | null
+  push_url?: string | null
+}
+
+export interface BranchUpstreamItem {
+  name: string
+  upstream?: string | null
+  is_current: boolean
+}
+
+export interface RemoteManagementInfo {
+  remotes: RemoteItem[]
+  branches: BranchUpstreamItem[]
+  current_branch: string
+}
+
 /** 工作区「提交 / 推送 / 拉取」经 useGit 统一封装时使用，避免组件内重复 invoke */
 export interface WorkspaceGitActions {
   commitChanges: (message: string) => Promise<void>

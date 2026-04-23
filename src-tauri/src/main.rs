@@ -536,6 +536,27 @@ pub struct PullWithLogsResult {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct RemoteItem {
+    pub name: String,
+    pub fetch_url: Option<String>,
+    pub push_url: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BranchUpstreamItem {
+    pub name: String,
+    pub upstream: Option<String>,
+    pub is_current: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RemoteManagementInfo {
+    pub remotes: Vec<RemoteItem>,
+    pub branches: Vec<BranchUpstreamItem>,
+    pub current_branch: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct StashInfo {
     pub id: String,
     pub message: String,
@@ -2321,6 +2342,157 @@ async fn clone_repository(
 
     Repository::open(&dest_path).map_err(|e| format!("克隆后无法打开仓库: {}", e))?;
     Ok(format!("已克隆到 {}", dest_path.display()))
+}
+
+#[tauri::command]
+async fn get_remote_management_info(repo_path: String) -> Result<RemoteManagementInfo, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
+    let current_branch = repo
+        .head()
+        .ok()
+        .and_then(|h| h.shorthand().map(|s| s.to_string()))
+        .unwrap_or_else(|| "detached".to_string());
+
+    let remotes = repo
+        .remotes()
+        .map_err(|e| format!("读取远程列表失败: {}", e))?;
+    let mut remote_items = Vec::new();
+    for i in 0..remotes.len() {
+        let Some(name) = remotes.get(i) else {
+            continue;
+        };
+        let remote = repo
+            .find_remote(name)
+            .map_err(|e| format!("读取远程 {} 失败: {}", name, e))?;
+        remote_items.push(RemoteItem {
+            name: name.to_string(),
+            fetch_url: remote.url().map(|s| s.to_string()),
+            push_url: remote.pushurl().map(|s| s.to_string()),
+        });
+    }
+    remote_items.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let branch_iter = repo
+        .branches(Some(git2::BranchType::Local))
+        .map_err(|e| format!("读取本地分支失败: {}", e))?;
+    let mut branches = Vec::new();
+    for branch_result in branch_iter {
+        let (branch, _) = branch_result.map_err(|e| format!("读取分支失败: {}", e))?;
+        let name = branch
+            .name()
+            .map_err(|e| format!("读取分支名失败: {}", e))?
+            .unwrap_or("unknown")
+            .to_string();
+        let upstream = branch
+            .upstream()
+            .ok()
+            .and_then(|up| up.name().ok().flatten().map(|s| s.to_string()))
+            .map(|s| {
+                s.strip_prefix("refs/remotes/")
+                    .map(|x| x.to_string())
+                    .unwrap_or(s)
+            });
+        branches.push(BranchUpstreamItem {
+            is_current: name == current_branch,
+            name,
+            upstream,
+        });
+    }
+    branches.sort_by(|a, b| a.name.cmp(&b.name));
+
+    Ok(RemoteManagementInfo {
+        remotes: remote_items,
+        branches,
+        current_branch,
+    })
+}
+
+#[tauri::command]
+async fn add_remote(repo_path: String, name: String, url: String) -> Result<String, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
+    let remote_name = name.trim();
+    let remote_url = url.trim();
+    if remote_name.is_empty() {
+        return Err("远程名称不能为空".to_string());
+    }
+    if remote_url.is_empty() {
+        return Err("远程地址不能为空".to_string());
+    }
+    if repo.find_remote(remote_name).is_ok() {
+        return Err(format!("远程 {} 已存在", remote_name));
+    }
+    repo.remote(remote_name, remote_url)
+        .map_err(|e| format!("新增远程失败: {}", e.message()))?;
+    Ok(format!("已新增远程 {} -> {}", remote_name, remote_url))
+}
+
+#[tauri::command]
+async fn update_remote(repo_path: String, name: String, url: String) -> Result<String, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
+    let remote_name = name.trim();
+    let remote_url = url.trim();
+    if remote_name.is_empty() {
+        return Err("远程名称不能为空".to_string());
+    }
+    if remote_url.is_empty() {
+        return Err("远程地址不能为空".to_string());
+    }
+    repo.find_remote(remote_name)
+        .map_err(|_| format!("未找到远程 {}", remote_name))?;
+    repo.remote_set_url(remote_name, remote_url)
+        .map_err(|e| format!("更新远程失败: {}", e.message()))?;
+    Ok(format!("已更新远程 {} -> {}", remote_name, remote_url))
+}
+
+#[tauri::command]
+async fn remove_remote(repo_path: String, name: String) -> Result<String, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
+    let remote_name = name.trim();
+    if remote_name.is_empty() {
+        return Err("远程名称不能为空".to_string());
+    }
+    repo.find_remote(remote_name)
+        .map_err(|_| format!("未找到远程 {}", remote_name))?;
+    repo.remote_delete(remote_name)
+        .map_err(|e| format!("删除远程失败: {}", e.message()))?;
+    Ok(format!("已删除远程 {}", remote_name))
+}
+
+#[tauri::command]
+async fn set_branch_upstream(
+    repo_path: String,
+    branch_name: String,
+    upstream_ref: Option<String>,
+) -> Result<String, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
+    let name = branch_name.trim();
+    if name.is_empty() {
+        return Err("分支名不能为空".to_string());
+    }
+
+    let mut branch = repo
+        .find_branch(name, git2::BranchType::Local)
+        .map_err(|_| format!("未找到本地分支 {}", name))?;
+
+    let normalized_upstream = upstream_ref
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            s.strip_prefix("refs/remotes/")
+                .map(|x| x.to_string())
+                .unwrap_or(s)
+        });
+
+    branch
+        .set_upstream(normalized_upstream.as_deref())
+        .map_err(|e| format!("设置上游失败: {}", e.message()))?;
+
+    if let Some(up) = normalized_upstream {
+        Ok(format!("已将 {} 的上游设置为 {}", name, up))
+    } else {
+        Ok(format!("已清除 {} 的上游分支", name))
+    }
 }
 
 // 获取仓库信息
@@ -5654,6 +5826,11 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             init_repository,
             clone_repository,
+            get_remote_management_info,
+            add_remote,
+            update_remote,
+            remove_remote,
+            set_branch_upstream,
             open_repository,
             get_commits_paginated,
             get_commit_count_head,

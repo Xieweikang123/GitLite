@@ -14,6 +14,7 @@ import { UnifiedCommitView } from './components/UnifiedCommitView'
 import { LogModal } from './components/LogModal'
 import { ProxyConfigModal } from './components/ProxyConfigModal'
 import { AiConfigModal } from './components/AiConfigModal'
+import { RemoteManageModal } from './components/RemoteManageModal'
 import { RepoFileTree } from './components/RepoFileTree'
 import { AuthorStatsPanel } from './components/AuthorStatsPanel'
 import { CommitInfo, FileChange } from './types/git'
@@ -40,6 +41,11 @@ function App() {
     deleteBranch,
     renameBranch,
     mergeBranch,
+    getRemoteManagementInfo,
+    addRemote,
+    updateRemote,
+    removeRemote,
+    setBranchUpstream,
     resetToCommit,
     cherryPickCommit,
     revertCommit,
@@ -89,6 +95,7 @@ function App() {
   // 代理 / AI 配置弹窗状态
   const [proxyConfigOpen, setProxyConfigOpen] = useState(false)
   const [aiConfigOpen, setAiConfigOpen] = useState(false)
+  const [remoteManageOpen, setRemoteManageOpen] = useState(false)
 
   /** 提交文件列表请求序号：避免快速切换提交时后返回的请求覆盖当前选中 */
   const commitFilesReqRef = React.useRef(0)
@@ -680,6 +687,7 @@ function App() {
         onRenameBranch={handleRenameBranch}
         onMergeBranch={handleMergeBranch}
         onOpenRemoteRepository={handleOpenRemoteRepository}
+        onOpenRemoteManage={() => setRemoteManageOpen(true)}
         onPullChanges={handlePullChanges}
         loading={loading}
         repoInfo={repoInfo}
@@ -858,6 +866,17 @@ function App() {
         onClose={() => setProxyConfigOpen(false)}
       />
       <AiConfigModal isOpen={aiConfigOpen} onClose={() => setAiConfigOpen(false)} />
+      <RemoteManageModal
+        isOpen={remoteManageOpen}
+        onClose={() => setRemoteManageOpen(false)}
+        repoPath={repoInfo?.path}
+        loading={loading}
+        getRemoteManagementInfo={getRemoteManagementInfo}
+        addRemote={addRemote}
+        updateRemote={updateRemote}
+        removeRemote={removeRemote}
+        setBranchUpstream={setBranchUpstream}
+      />
     </div>
   )
 }

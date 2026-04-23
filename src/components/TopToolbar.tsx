@@ -22,6 +22,7 @@ import {
   Plus,
   ChevronDown,
   GitMerge,
+  Network,
 } from 'lucide-react'
 import { BranchInfo } from '../types/git'
 import { cn } from '../lib/utils'
@@ -33,6 +34,7 @@ interface TopToolbarProps {
   onRenameBranch?: (oldName: string, newName: string) => Promise<boolean>
   onMergeBranch?: (sourceBranch: string, ffOnly: boolean) => Promise<boolean>
   onOpenRemoteRepository?: () => void
+  onOpenRemoteManage?: () => void
   onPullChanges?: () => void
   loading: boolean
   repoInfo: any
@@ -47,6 +49,7 @@ export function TopToolbar({
   onRenameBranch,
   onMergeBranch,
   onOpenRemoteRepository,
+  onOpenRemoteManage,
   onPullChanges,
   loading,
   repoInfo,
@@ -230,6 +233,19 @@ export function TopToolbar({
                 className="h-4 w-4 text-muted-foreground cursor-pointer hover:text-foreground"
                 onClick={onOpenRemoteRepository}
               />
+              {onOpenRemoteManage && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8 shrink-0"
+                  title="远程管理（remote / upstream）"
+                  disabled={loading}
+                  onClick={onOpenRemoteManage}
+                >
+                  <Network className="h-4 w-4" />
+                </Button>
+              )}
               <Popover open={branchPopoverOpen} onOpenChange={onBranchPopoverOpenChange}>
                 <PopoverTrigger asChild>
                   <Button
