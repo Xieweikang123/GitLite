@@ -31,10 +31,15 @@ function App() {
     setAutoOpenEnabled,
     openRepository, 
     openRepositoryByPath,
+    initRepository,
+    cloneRepository,
     removeRecentRepo,
     updateRecentRepoEntry,
     checkoutBranch,
     createBranch,
+    deleteBranch,
+    renameBranch,
+    mergeBranch,
     resetToCommit,
     getCommitFiles, 
     getCommitsPaginated,
@@ -156,6 +161,69 @@ function App() {
     setSelectedCommit(null)
     setCommitFiles([])
     setSelectedFile(null)
+  }
+
+  const handleInitRepository = async (
+    path: string,
+    initialBranch?: string
+  ) => {
+    const ok = await initRepository(path, initialBranch)
+    if (!ok) return false
+    setSelectedCommit(null)
+    setCommitFiles([])
+    setSelectedFile(null)
+    setIncomingCommits([])
+    setLocalCommits([])
+    setHasMoreCommits(true)
+    setSearchResults(null)
+    return true
+  }
+
+  const handleCloneRepository = async (
+    remoteUrl: string,
+    destinationPath: string,
+    branch?: string
+  ) => {
+    const ok = await cloneRepository(remoteUrl, destinationPath, branch)
+    if (!ok) return false
+    setSelectedCommit(null)
+    setCommitFiles([])
+    setSelectedFile(null)
+    setIncomingCommits([])
+    setLocalCommits([])
+    setHasMoreCommits(true)
+    setSearchResults(null)
+    return true
+  }
+
+  const handleDeleteBranch = async (branchName: string, force: boolean) => {
+    const ok = await deleteBranch(branchName, force)
+    if (!ok) return false
+    setSelectedCommit(null)
+    setCommitFiles([])
+    setSelectedFile(null)
+    return true
+  }
+
+  const handleRenameBranch = async (oldName: string, newName: string) => {
+    const ok = await renameBranch(oldName, newName)
+    if (!ok) return false
+    setSelectedCommit(null)
+    setCommitFiles([])
+    setSelectedFile(null)
+    return true
+  }
+
+  const handleMergeBranch = async (sourceBranch: string, ffOnly: boolean) => {
+    const ok = await mergeBranch(sourceBranch, ffOnly)
+    if (!ok) return false
+    setSelectedCommit(null)
+    setCommitFiles([])
+    setSelectedFile(null)
+    setIncomingCommits([])
+    setLocalCommits([])
+    setHasMoreCommits(true)
+    return true
   }
 
   const handleSearchFullRepo = async (term: string) => {
@@ -559,6 +627,8 @@ function App() {
         onToggleAutoOpen={setAutoOpenEnabled}
         loading={loading}
         repoInfo={repoInfo}
+        onInitRepository={handleInitRepository}
+        onCloneRepository={handleCloneRepository}
         onOpenProxyConfig={() => setProxyConfigOpen(true)}
         onOpenAiConfig={() => setAiConfigOpen(true)}
       />
@@ -567,6 +637,9 @@ function App() {
       <TopToolbar
         onBranchSelect={handleBranchSelect}
         onCreateBranch={handleCreateBranch}
+        onDeleteBranch={handleDeleteBranch}
+        onRenameBranch={handleRenameBranch}
+        onMergeBranch={handleMergeBranch}
         onOpenRemoteRepository={handleOpenRemoteRepository}
         onPullChanges={handlePullChanges}
         loading={loading}

@@ -1755,6 +1755,11 @@ fn run_git_in_repo(repo_path: &str, args: &[&str]) -> Result<std::process::Outpu
         .output()
 }
 
+/// 直接执行系统 `git`（不带 `-C`），用于 clone 等仓库外命令。
+fn run_git(args: &[&str]) -> Result<std::process::Output, std::io::Error> {
+    git_command().args(args).output()
+}
+
 fn git_output_detail(output: &std::process::Output) -> String {
     let stdout_lossy = String::from_utf8_lossy(&output.stdout);
     let stderr_lossy = String::from_utf8_lossy(&output.stderr);
@@ -2229,6 +2234,93 @@ async fn open_repository(path: String) -> Result<RepoInfo, String> {
     }
 
     Ok(repo_info)
+}
+
+/// 初始化一个新的 Git 仓库（等价于 `git init`）。
+#[tauri::command]
+async fn init_repository(path: String, initial_branch: Option<String>) -> Result<String, String> {
+    let p = path.trim();
+    if p.is_empty() {
+        return Err("仓库路径不能为空".to_string());
+    }
+
+    let target = PathBuf::from(p);
+    if !target.exists() {
+        return Err(format!("目录不存在: {}", p));
+    }
+    if !target.is_dir() {
+        return Err(format!("目标不是目录: {}", p));
+    }
+
+    if Repository::open(&target).is_ok() {
+        return Err("该目录已经是一个 Git 仓库".to_string());
+    }
+
+    let mut opts = git2::RepositoryInitOptions::new();
+    if let Some(b) = initial_branch
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        opts.initial_head(b);
+    }
+
+    Repository::init_opts(&target, &opts).map_err(|e| format!("初始化仓库失败: {}", e.message()))?;
+    Ok(format!("已初始化仓库: {}", target.display()))
+}
+
+/// 克隆远程仓库到本地目录（等价于 `git clone`）。
+#[tauri::command]
+async fn clone_repository(
+    remote_url: String,
+    destination_path: String,
+    branch: Option<String>,
+) -> Result<String, String> {
+    let url = remote_url.trim();
+    let dest = destination_path.trim();
+    if url.is_empty() {
+        return Err("远程地址不能为空".to_string());
+    }
+    if dest.is_empty() {
+        return Err("目标路径不能为空".to_string());
+    }
+
+    let dest_path = PathBuf::from(dest);
+    if dest_path.exists() {
+        if !dest_path.is_dir() {
+            return Err("目标路径已存在且不是目录".to_string());
+        }
+        let mut rd = fs::read_dir(&dest_path).map_err(|e| format!("读取目标目录失败: {}", e))?;
+        if rd.next().is_some() {
+            return Err("目标目录非空，请选择一个空目录或不存在的路径".to_string());
+        }
+    } else if let Some(parent) = dest_path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent).map_err(|e| format!("创建父目录失败: {}", e))?;
+        }
+    }
+
+    let branch_name = branch
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let mut owned_args: Vec<String> = vec!["clone".to_string()];
+    if let Some(b) = branch_name.as_ref() {
+        owned_args.push("--branch".to_string());
+        owned_args.push(b.clone());
+    }
+    owned_args.push(url.to_string());
+    owned_args.push(dest.to_string());
+    let args: Vec<&str> = owned_args.iter().map(|s| s.as_str()).collect();
+
+    let out = run_git(&args).map_err(|e| format!("无法执行 git clone: {}", e))?;
+    if !out.status.success() {
+        return Err(format!("克隆失败: {}", git_output_detail(&out)));
+    }
+
+    Repository::open(&dest_path).map_err(|e| format!("克隆后无法打开仓库: {}", e))?;
+    Ok(format!("已克隆到 {}", dest_path.display()))
 }
 
 // 获取仓库信息
@@ -3178,6 +3270,106 @@ async fn create_branch(
     } else {
         Ok(format!("已创建分支 {}", name))
     }
+}
+
+/// 删除本地分支；默认行为等同 `git branch -d`，`force=true` 时等同 `git branch -D`。
+#[tauri::command]
+async fn delete_branch(repo_path: String, branch_name: String, force: bool) -> Result<String, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
+    pull_preflight(&repo)?;
+
+    let name = branch_name.trim();
+    if name.is_empty() {
+        return Err("分支名不能为空".to_string());
+    }
+
+    let current = repo
+        .head()
+        .ok()
+        .and_then(|h| h.shorthand().map(|s| s.to_string()))
+        .unwrap_or_default();
+    if current == name {
+        return Err("不能删除当前分支，请先切换到其他分支".to_string());
+    }
+
+    repo.find_branch(name, git2::BranchType::Local)
+        .map_err(|_| format!("未找到本地分支「{}」", name))?;
+
+    let mode = if force { "-D" } else { "-d" };
+    let out = run_git_in_repo(&repo_path, &["branch", mode, name])
+        .map_err(|e| format!("无法执行 git branch {}: {}", mode, e))?;
+    if !out.status.success() {
+        return Err(format!("删除分支失败: {}", git_output_detail(&out)));
+    }
+    Ok(format!("已删除分支 {}", name))
+}
+
+/// 重命名本地分支（等价于 `git branch -m`）。
+#[tauri::command]
+async fn rename_branch(repo_path: String, old_name: String, new_name: String) -> Result<String, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
+    pull_preflight(&repo)?;
+
+    let old_n = old_name.trim();
+    let new_n = new_name.trim();
+    if old_n.is_empty() || new_n.is_empty() {
+        return Err("旧分支名和新分支名都不能为空".to_string());
+    }
+    if old_n == new_n {
+        return Err("新旧分支名相同，无需重命名".to_string());
+    }
+
+    let mut branch = repo
+        .find_branch(old_n, git2::BranchType::Local)
+        .map_err(|_| format!("未找到本地分支「{}」", old_n))?;
+    if repo.find_branch(new_n, git2::BranchType::Local).is_ok() {
+        return Err(format!("分支「{}」已存在", new_n));
+    }
+
+    branch
+        .rename(new_n, false)
+        .map_err(|e| format!("重命名分支失败: {}", e.message()))?;
+    Ok(format!("已将分支 {} 重命名为 {}", old_n, new_n))
+}
+
+/// 将指定分支合并到当前分支（`ff_only=true` 时等价于 `git merge --ff-only`）。
+#[tauri::command]
+async fn merge_branch(repo_path: String, source_branch: String, ff_only: bool) -> Result<String, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
+    pull_preflight(&repo)?;
+
+    let source = source_branch.trim();
+    if source.is_empty() {
+        return Err("待合并分支不能为空".to_string());
+    }
+    let current = repo
+        .head()
+        .ok()
+        .and_then(|h| h.shorthand().map(|s| s.to_string()))
+        .unwrap_or_default();
+    if current == source {
+        return Err("不能将当前分支合并到自身".to_string());
+    }
+
+    repo.find_branch(source, git2::BranchType::Local)
+        .map_err(|_| format!("未找到本地分支「{}」", source))?;
+
+    let args: Vec<&str> = if ff_only {
+        vec!["merge", "--ff-only", source]
+    } else {
+        vec!["merge", "--no-edit", source]
+    };
+    let out = run_git_in_repo(&repo_path, &args).map_err(|e| format!("无法执行 git merge: {}", e))?;
+    if !out.status.success() {
+        let detail = git_output_detail(&out);
+        let repo_after = Repository::open(&repo_path).map_err(|e| format!("合并失败后无法重新打开仓库: {}", e))?;
+        if repo_after.state() == RepositoryState::Merge {
+            return Err(format!("合并产生冲突，请先解决冲突后继续: {}", detail));
+        }
+        return Err(format!("合并失败: {}", detail));
+    }
+
+    Ok(format!("已将 {} 合并到当前分支", source))
 }
 
 /// 将当前分支（或分离 HEAD）重置到指定提交，行为与 `git reset --soft|--mixed|--hard` 一致。
@@ -5353,6 +5545,8 @@ fn main() {
             handle_window_event(&event);
         })
         .invoke_handler(tauri::generate_handler![
+            init_repository,
+            clone_repository,
             open_repository,
             get_commits_paginated,
             get_commit_count_head,
@@ -5367,6 +5561,9 @@ fn main() {
             get_commits_branch_labels,
             checkout_branch,
             create_branch,
+            delete_branch,
+            rename_branch,
+            merge_branch,
             reset_to_commit,
             get_file_diff,
             get_commit_files,

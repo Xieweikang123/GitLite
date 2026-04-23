@@ -14,13 +14,24 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
 import { Switch } from './ui/switch'
-import { GitBranch, Moon, Sun, GitPullRequest, Plus, ChevronDown } from 'lucide-react'
+import {
+  GitBranch,
+  Moon,
+  Sun,
+  GitPullRequest,
+  Plus,
+  ChevronDown,
+  GitMerge,
+} from 'lucide-react'
 import { BranchInfo } from '../types/git'
 import { cn } from '../lib/utils'
 
 interface TopToolbarProps {
   onBranchSelect: (branchName: string) => void
   onCreateBranch?: (branchName: string, checkout: boolean, startPoint?: string) => Promise<boolean>
+  onDeleteBranch?: (branchName: string, force: boolean) => Promise<boolean>
+  onRenameBranch?: (oldName: string, newName: string) => Promise<boolean>
+  onMergeBranch?: (sourceBranch: string, ffOnly: boolean) => Promise<boolean>
   onOpenRemoteRepository?: () => void
   onPullChanges?: () => void
   loading: boolean
@@ -32,6 +43,9 @@ interface TopToolbarProps {
 export function TopToolbar({
   onBranchSelect,
   onCreateBranch,
+  onDeleteBranch,
+  onRenameBranch,
+  onMergeBranch,
   onOpenRemoteRepository,
   onPullChanges,
   loading,
@@ -40,9 +54,16 @@ export function TopToolbar({
   onToggleDarkMode
 }: TopToolbarProps) {
   const [createBranchOpen, setCreateBranchOpen] = useState(false)
+  const [branchManageOpen, setBranchManageOpen] = useState(false)
   const [newBranchName, setNewBranchName] = useState('')
   const [branchStartPoint, setBranchStartPoint] = useState('')
   const [checkoutAfterCreate, setCheckoutAfterCreate] = useState(true)
+  const [renameFrom, setRenameFrom] = useState('')
+  const [renameTo, setRenameTo] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState('')
+  const [deleteForce, setDeleteForce] = useState(false)
+  const [mergeSource, setMergeSource] = useState('')
+  const [mergeFfOnly, setMergeFfOnly] = useState(true)
 
   const [branchPopoverOpen, setBranchPopoverOpen] = useState(false)
   const [branchSearch, setBranchSearch] = useState('')
@@ -69,6 +90,15 @@ export function TopToolbar({
     }
   }
   const branches = (repoInfo?.branches ?? []) as BranchInfo[]
+  const localBranches = useMemo(() => branches.filter((b) => !b.is_remote), [branches])
+  const currentLocalBranch = useMemo(
+    () => localBranches.find((b) => b.is_current)?.name ?? repoInfo?.current_branch ?? '',
+    [localBranches, repoInfo?.current_branch]
+  )
+  const nonCurrentLocalBranches = useMemo(
+    () => localBranches.filter((b) => b.name !== currentLocalBranch),
+    [localBranches, currentLocalBranch]
+  )
   const filteredBranches = useMemo(() => {
     const q = branchSearch.trim().toLowerCase()
     if (!q) return branches
@@ -78,6 +108,16 @@ export function TopToolbar({
   useEffect(() => {
     setBranchActiveIdx(0)
   }, [branchSearch, branchPopoverOpen])
+
+  useEffect(() => {
+    if (!branchManageOpen) return
+    setRenameFrom(currentLocalBranch)
+    setRenameTo('')
+    setDeleteTarget(nonCurrentLocalBranches[0]?.name ?? '')
+    setDeleteForce(false)
+    setMergeSource(nonCurrentLocalBranches[0]?.name ?? '')
+    setMergeFfOnly(true)
+  }, [branchManageOpen, currentLocalBranch, nonCurrentLocalBranches])
 
   useEffect(() => {
     if (branchActiveIdx >= filteredBranches.length) {
@@ -138,6 +178,38 @@ export function TopToolbar({
       console.error('无法打开文件夹:', error)
     }
   }
+
+  const handleRenameBranch = async () => {
+    if (!onRenameBranch) return
+    const from = renameFrom.trim()
+    const to = renameTo.trim()
+    if (!from || !to) return
+    const ok = await onRenameBranch(from, to)
+    if (ok) {
+      setBranchManageOpen(false)
+    }
+  }
+
+  const handleDeleteBranch = async () => {
+    if (!onDeleteBranch) return
+    const target = deleteTarget.trim()
+    if (!target) return
+    const ok = await onDeleteBranch(target, deleteForce)
+    if (ok) {
+      setBranchManageOpen(false)
+    }
+  }
+
+  const handleMergeBranch = async () => {
+    if (!onMergeBranch) return
+    const source = mergeSource.trim()
+    if (!source) return
+    const ok = await onMergeBranch(source, mergeFfOnly)
+    if (ok) {
+      setBranchManageOpen(false)
+    }
+  }
+
   return (
     <div className="flex items-center justify-between bg-card border-b px-6 py-3">
       {/* 左侧：应用标题（紧凑） */}
@@ -249,17 +321,32 @@ export function TopToolbar({
                 </PopoverContent>
               </Popover>
               {onCreateBranch && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon"
-                  className="h-8 w-8 shrink-0"
-                  title="新建分支"
-                  disabled={loading}
-                  onClick={handleOpenCreateBranch}
-                >
-                  <Plus className="h-4 w-4" />
-                </Button>
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="h-8 w-8 shrink-0"
+                    title="新建分支"
+                    disabled={loading}
+                    onClick={handleOpenCreateBranch}
+                  >
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="h-8 w-8 shrink-0"
+                    title="分支管理（重命名/删除/合并）"
+                    disabled={
+                      loading || (!onDeleteBranch && !onRenameBranch && !onMergeBranch)
+                    }
+                    onClick={() => setBranchManageOpen(true)}
+                  >
+                    <GitMerge className="h-4 w-4" />
+                  </Button>
+                </>
               )}
             </div>
             <div className="flex items-center gap-3 text-sm">
@@ -374,6 +461,147 @@ export function TopToolbar({
                 创建
               </Button>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={branchManageOpen} onOpenChange={setBranchManageOpen}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>分支管理</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-4 pt-1">
+            {onRenameBranch && (
+              <div className="grid gap-2 rounded-md border border-border p-3">
+                <p className="text-sm font-medium">重命名分支</p>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="rename-branch-from">原分支</Label>
+                  <select
+                    id="rename-branch-from"
+                    value={renameFrom}
+                    onChange={(e) => setRenameFrom(e.target.value)}
+                    className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                    disabled={loading || localBranches.length === 0}
+                  >
+                    {localBranches.map((b) => (
+                      <option key={b.name} value={b.name}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="rename-branch-to">新分支名</Label>
+                  <Input
+                    id="rename-branch-to"
+                    value={renameTo}
+                    onChange={(e) => setRenameTo(e.target.value)}
+                    placeholder="例如 feature/login"
+                    disabled={loading}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void handleRenameBranch()
+                    }}
+                  />
+                </div>
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => void handleRenameBranch()}
+                    disabled={loading || !renameFrom.trim() || !renameTo.trim()}
+                  >
+                    重命名
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {onDeleteBranch && (
+              <div className="grid gap-2 rounded-md border border-border p-3">
+                <p className="text-sm font-medium">删除分支</p>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="delete-branch-target">目标分支</Label>
+                  <select
+                    id="delete-branch-target"
+                    value={deleteTarget}
+                    onChange={(e) => setDeleteTarget(e.target.value)}
+                    className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                    disabled={loading || nonCurrentLocalBranches.length === 0}
+                  >
+                    {nonCurrentLocalBranches.map((b) => (
+                      <option key={b.name} value={b.name}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
+                  <Label htmlFor="delete-force" className="cursor-pointer text-sm font-normal">
+                    强制删除（等价于 `git branch -D`）
+                  </Label>
+                  <Switch
+                    id="delete-force"
+                    checked={deleteForce}
+                    onCheckedChange={setDeleteForce}
+                    disabled={loading}
+                  />
+                </div>
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => void handleDeleteBranch()}
+                    disabled={loading || !deleteTarget.trim()}
+                  >
+                    删除分支
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {onMergeBranch && (
+              <div className="grid gap-2 rounded-md border border-border p-3">
+                <p className="text-sm font-medium">合并到当前分支</p>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="merge-branch-source">来源分支</Label>
+                  <select
+                    id="merge-branch-source"
+                    value={mergeSource}
+                    onChange={(e) => setMergeSource(e.target.value)}
+                    className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                    disabled={loading || nonCurrentLocalBranches.length === 0}
+                  >
+                    {nonCurrentLocalBranches.map((b) => (
+                      <option key={b.name} value={b.name}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
+                  <Label htmlFor="merge-ff-only" className="cursor-pointer text-sm font-normal">
+                    仅快进合并（`--ff-only`）
+                  </Label>
+                  <Switch
+                    id="merge-ff-only"
+                    checked={mergeFfOnly}
+                    onCheckedChange={setMergeFfOnly}
+                    disabled={loading}
+                  />
+                </div>
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => void handleMergeBranch()}
+                    disabled={loading || !mergeSource.trim()}
+                  >
+                    合并
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         </DialogContent>
       </Dialog>

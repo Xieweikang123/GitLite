@@ -6,6 +6,8 @@ import {
   FileText,
   Settings,
   FolderOpen,
+  FolderPlus,
+  Download,
   Network,
   Sparkles,
   ChevronDown,
@@ -53,6 +55,12 @@ interface MenuToolbarProps {
   onToggleAutoOpen: (enabled: boolean) => void
   loading: boolean
   repoInfo: any
+  onInitRepository?: (path: string, initialBranch?: string) => Promise<boolean>
+  onCloneRepository?: (
+    remoteUrl: string,
+    destinationPath: string,
+    branch?: string
+  ) => Promise<boolean>
   onOpenProxyConfig?: () => void
   onOpenAiConfig?: () => void
 }
@@ -67,6 +75,8 @@ export function MenuToolbar({
   onToggleAutoOpen,
   loading,
   repoInfo,
+  onInitRepository,
+  onCloneRepository,
   onOpenProxyConfig,
   onOpenAiConfig
 }: MenuToolbarProps) {
@@ -86,6 +96,13 @@ export function MenuToolbar({
   const [editTarget, setEditTarget] = useState<RecentRepo | null>(null)
   const [editName, setEditName] = useState('')
   const [editPath, setEditPath] = useState('')
+  const [initDialogOpen, setInitDialogOpen] = useState(false)
+  const [initRepoPath, setInitRepoPath] = useState('')
+  const [initBranchName, setInitBranchName] = useState('main')
+  const [cloneDialogOpen, setCloneDialogOpen] = useState(false)
+  const [cloneRemoteUrl, setCloneRemoteUrl] = useState('')
+  const [cloneTargetPath, setCloneTargetPath] = useState('')
+  const [cloneBranchName, setCloneBranchName] = useState('')
 
   useEffect(() => {
     if (!contextMenu) return
@@ -169,6 +186,47 @@ export function MenuToolbar({
     if (!name || !path) return
     await onUpdateRecentRepo(editTarget.path, path, name)
     setEditTarget(null)
+  }
+
+  const pickInitFolder = async () => {
+    const { open } = await import('@tauri-apps/api/dialog')
+    const selected = await open({
+      directory: true,
+      title: '选择仓库目录',
+    })
+    if (typeof selected === 'string') {
+      setInitRepoPath(selected)
+    }
+  }
+
+  const pickCloneFolder = async () => {
+    const { open } = await import('@tauri-apps/api/dialog')
+    const selected = await open({
+      directory: true,
+      title: '选择克隆目标目录',
+    })
+    if (typeof selected === 'string') {
+      setCloneTargetPath(selected)
+    }
+  }
+
+  const submitInitRepository = async () => {
+    if (!onInitRepository) return
+    const ok = await onInitRepository(initRepoPath, initBranchName)
+    if (!ok) return
+    setInitDialogOpen(false)
+    setInitRepoPath('')
+    setInitBranchName('main')
+  }
+
+  const submitCloneRepository = async () => {
+    if (!onCloneRepository) return
+    const ok = await onCloneRepository(cloneRemoteUrl, cloneTargetPath, cloneBranchName)
+    if (!ok) return
+    setCloneDialogOpen(false)
+    setCloneRemoteUrl('')
+    setCloneTargetPath('')
+    setCloneBranchName('')
   }
 
   const selectRecentRepo = (path: string) => {
@@ -463,6 +521,34 @@ export function MenuToolbar({
           <FolderOpen className="h-3 w-3" />
         </Button>
 
+        {onInitRepository && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-xs"
+            onClick={() => setInitDialogOpen(true)}
+            disabled={loading}
+            title="初始化新仓库"
+          >
+            <FolderPlus className="h-3 w-3 mr-1" />
+            Init
+          </Button>
+        )}
+
+        {onCloneRepository && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-xs"
+            onClick={() => setCloneDialogOpen(true)}
+            disabled={loading}
+            title="克隆远程仓库"
+          >
+            <Download className="h-3 w-3 mr-1" />
+            Clone
+          </Button>
+        )}
+
         <Button
           variant="ghost"
           size="sm"
@@ -517,6 +603,138 @@ export function MenuToolbar({
           </label>
         </div>
       </div>
+
+      <Dialog open={initDialogOpen} onOpenChange={setInitDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>初始化本地仓库</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3 py-2">
+            <div className="grid gap-1.5">
+              <Label htmlFor="init-repo-path">仓库目录</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="init-repo-path"
+                  value={initRepoPath}
+                  onChange={(e) => setInitRepoPath(e.target.value)}
+                  className="font-mono text-xs"
+                  spellCheck={false}
+                  placeholder="选择一个空目录或现有目录"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => void pickInitFolder()}
+                >
+                  浏览…
+                </Button>
+              </div>
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="init-branch-name">初始分支名（可选）</Label>
+              <Input
+                id="init-branch-name"
+                value={initBranchName}
+                onChange={(e) => setInitBranchName(e.target.value)}
+                placeholder="main"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void submitInitRepository()
+                }}
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setInitDialogOpen(false)}
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => void submitInitRepository()}
+              disabled={loading || !initRepoPath.trim()}
+            >
+              初始化
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={cloneDialogOpen} onOpenChange={setCloneDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>克隆远程仓库</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3 py-2">
+            <div className="grid gap-1.5">
+              <Label htmlFor="clone-remote-url">远程地址</Label>
+              <Input
+                id="clone-remote-url"
+                value={cloneRemoteUrl}
+                onChange={(e) => setCloneRemoteUrl(e.target.value)}
+                placeholder="https://... 或 git@..."
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="clone-target-path">目标目录</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="clone-target-path"
+                  value={cloneTargetPath}
+                  onChange={(e) => setCloneTargetPath(e.target.value)}
+                  className="font-mono text-xs"
+                  spellCheck={false}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => void pickCloneFolder()}
+                >
+                  浏览…
+                </Button>
+              </div>
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="clone-branch-name">指定分支（可选）</Label>
+              <Input
+                id="clone-branch-name"
+                value={cloneBranchName}
+                onChange={(e) => setCloneBranchName(e.target.value)}
+                placeholder="例如 main"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void submitCloneRepository()
+                }}
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setCloneDialogOpen(false)}
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => void submitCloneRepository()}
+              disabled={loading || !cloneRemoteUrl.trim() || !cloneTargetPath.trim()}
+            >
+              克隆
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

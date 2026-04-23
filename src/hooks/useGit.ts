@@ -188,6 +188,76 @@ export function useGit() {
     }
   }, [repoInfo])
 
+  const initRepository = useCallback(
+    async (path: string, initialBranch?: string): Promise<boolean> => {
+      const repoPath = path.trim()
+      if (!repoPath) {
+        setError('仓库路径不能为空')
+        return false
+      }
+      try {
+        setLoading(true)
+        setError(null)
+        await invoke('init_repository', {
+          path: repoPath,
+          initialBranch: initialBranch?.trim() || undefined,
+        })
+        const info: RepoInfo = await invoke('open_repository', {
+          path: repoPath,
+        })
+        setRepoInfo(info)
+        await loadRecentRepos()
+        return true
+      } catch (err) {
+        setError(formatTauriInvokeError(err, '初始化仓库失败'))
+        return false
+      } finally {
+        setLoading(false)
+      }
+    },
+    [loadRecentRepos]
+  )
+
+  const cloneRepository = useCallback(
+    async (
+      remoteUrl: string,
+      destinationPath: string,
+      branch?: string
+    ): Promise<boolean> => {
+      const url = remoteUrl.trim()
+      const path = destinationPath.trim()
+      if (!url) {
+        setError('远程地址不能为空')
+        return false
+      }
+      if (!path) {
+        setError('目标路径不能为空')
+        return false
+      }
+      try {
+        setLoading(true)
+        setError(null)
+        await invoke('clone_repository', {
+          remoteUrl: url,
+          destinationPath: path,
+          branch: branch?.trim() || undefined,
+        })
+        const info: RepoInfo = await invoke('open_repository', {
+          path,
+        })
+        setRepoInfo(info)
+        await loadRecentRepos()
+        return true
+      } catch (err) {
+        setError(formatTauriInvokeError(err, '克隆仓库失败'))
+        return false
+      } finally {
+        setLoading(false)
+      }
+    },
+    [loadRecentRepos]
+  )
+
   const createBranch = useCallback(
     async (
       branchName: string,
@@ -214,6 +284,87 @@ export function useGit() {
         return true
       } catch (err) {
         setError(formatTauriInvokeError(err, '创建分支失败'))
+        return false
+      } finally {
+        setLoading(false)
+      }
+    },
+    [repoInfo]
+  )
+
+  const deleteBranch = useCallback(
+    async (branchName: string, force: boolean = false): Promise<boolean> => {
+      if (!repoInfo) return false
+
+      try {
+        setLoading(true)
+        setError(null)
+        await invoke('delete_branch', {
+          repoPath: repoInfo.path,
+          branchName: branchName.trim(),
+          force,
+        })
+        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
+          path: repoInfo.path,
+        })
+        setRepoInfo(updatedRepoInfo)
+        return true
+      } catch (err) {
+        setError(formatTauriInvokeError(err, '删除分支失败'))
+        return false
+      } finally {
+        setLoading(false)
+      }
+    },
+    [repoInfo]
+  )
+
+  const renameBranch = useCallback(
+    async (oldName: string, newName: string): Promise<boolean> => {
+      if (!repoInfo) return false
+
+      try {
+        setLoading(true)
+        setError(null)
+        await invoke('rename_branch', {
+          repoPath: repoInfo.path,
+          oldName: oldName.trim(),
+          newName: newName.trim(),
+        })
+        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
+          path: repoInfo.path,
+        })
+        setRepoInfo(updatedRepoInfo)
+        return true
+      } catch (err) {
+        setError(formatTauriInvokeError(err, '重命名分支失败'))
+        return false
+      } finally {
+        setLoading(false)
+      }
+    },
+    [repoInfo]
+  )
+
+  const mergeBranch = useCallback(
+    async (sourceBranch: string, ffOnly: boolean = true): Promise<boolean> => {
+      if (!repoInfo) return false
+
+      try {
+        setLoading(true)
+        setError(null)
+        await invoke('merge_branch', {
+          repoPath: repoInfo.path,
+          sourceBranch: sourceBranch.trim(),
+          ffOnly,
+        })
+        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
+          path: repoInfo.path,
+        })
+        setRepoInfo(updatedRepoInfo)
+        return true
+      } catch (err) {
+        setError(formatTauriInvokeError(err, '合并分支失败'))
         return false
       } finally {
         setLoading(false)
@@ -614,10 +765,15 @@ export function useGit() {
     setAutoOpenEnabled,
     openRepository,
     openRepositoryByPath,
+    initRepository,
+    cloneRepository,
     removeRecentRepo,
     updateRecentRepoEntry,
     checkoutBranch,
     createBranch,
+    deleteBranch,
+    renameBranch,
+    mergeBranch,
     resetToCommit,
     getFileDiff,
     getCommitFiles,
