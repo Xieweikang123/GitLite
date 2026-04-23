@@ -8,6 +8,7 @@ import { FileDiffModal } from './FileDiffModal'
 import { Eye, Archive, ArchiveRestore, Trash2, CheckCircle, AlertCircle, Loader2, Sparkles, RotateCcw } from 'lucide-react'
 import { shortenPathMiddle } from '../lib/utils'
 import { formatTauriInvokeError } from '../utils/tauriError'
+import { getClientCalendarOffsetEastMinutes } from '../utils/clientCalendarOffset'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { RemoteSyncBar } from './RemoteSyncBar'
 
@@ -736,7 +737,10 @@ export function WorkspaceStatus({
         ? await gitActions.refreshRepoInfo()
         : await (async () => {
             const { invoke } = await import('@tauri-apps/api/tauri')
-            return invoke('open_repository', { path: repoInfo.path }) as Promise<any>
+            return invoke('open_repository', {
+              path: repoInfo.path,
+              clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
+            }) as Promise<any>
           })()
 
       if (updatedRepoInfo.behind > 0) {
@@ -756,7 +760,10 @@ export function WorkspaceStatus({
           ? await gitActions.refreshRepoInfo()
           : await (async () => {
               const { invoke } = await import('@tauri-apps/api/tauri')
-              return invoke('open_repository', { path: repoInfo.path }) as Promise<any>
+              return invoke('open_repository', {
+                path: repoInfo.path,
+                clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
+              }) as Promise<any>
             })()
       }
 

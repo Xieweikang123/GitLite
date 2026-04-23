@@ -169,14 +169,36 @@ fn diff_commit_to_first_parent<'a>(
         .map_err(|e| anyhow::anyhow!("diff_tree_to_tree: {}", e))
 }
 
-fn commit_author_wall_time(commit: &git2::Commit) -> DateTime<FixedOffset> {
-    let sig = commit.author();
-    let when = sig.when();
-    let off = FixedOffset::east_opt(when.offset_minutes() * 60)
-        .unwrap_or_else(|| FixedOffset::east_opt(0).unwrap());
-    DateTime::<Utc>::from_timestamp(when.seconds(), 0)
-        .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap())
-        .with_timezone(&off)
+/// 将「以东经分钟数」转为 `FixedOffset`（与前端 `-Date.getTimezoneOffset()` 一致），并限制在合理范围。
+fn fixed_offset_from_east_minutes(minutes: i32) -> FixedOffset {
+    let clamped = minutes.clamp(-18 * 60, 18 * 60);
+    let secs = clamped.saturating_mul(60);
+    FixedOffset::east_opt(secs).unwrap_or_else(|| FixedOffset::east_opt(0).unwrap())
+}
+
+/// 提交作者时间戳对应的 UTC 时刻，再换算到指定时区墙上时钟。
+/// `client_offset_east_minutes`：`Some` 时使用界面本机时区（与热力图格子 `yyyy-MM-dd` 一致）；`None` 时使用 Git 作者签名中的时区偏移。
+fn commit_calendar_datetime(
+    commit: &git2::Commit,
+    client_offset_east_minutes: Option<i32>,
+) -> DateTime<FixedOffset> {
+    let when = commit.author().when();
+    let utc = DateTime::<Utc>::from_timestamp(when.seconds(), 0)
+        .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+    match client_offset_east_minutes {
+        Some(m) => utc.with_timezone(&fixed_offset_from_east_minutes(m)),
+        None => {
+            let off = FixedOffset::east_opt(when.offset_minutes() * 60)
+                .unwrap_or_else(|| FixedOffset::east_opt(0).unwrap());
+            utc.with_timezone(&off)
+        }
+    }
+}
+
+fn commit_display_time(commit: &git2::Commit, client_offset_east_minutes: Option<i32>) -> String {
+    commit_calendar_datetime(commit, client_offset_east_minutes)
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string()
 }
 
 fn time_bucket_key(dt: &DateTime<FixedOffset>, granularity: &str) -> String {
@@ -196,6 +218,7 @@ fn walk_scope_time_buckets(
     repo: &Repository,
     scope: CommitLogScope,
     granularity: &str,
+    client_offset_east_minutes: Option<i32>,
 ) -> Result<HashMap<String, u64>> {
     let mut revwalk = repo
         .revwalk()
@@ -217,7 +240,7 @@ fn walk_scope_time_buckets(
         let commit = repo
             .find_commit(oid)
             .map_err(|e| anyhow::anyhow!("Failed to find commit: {}", e))?;
-        let dt = commit_author_wall_time(&commit);
+        let dt = commit_calendar_datetime(&commit, client_offset_east_minutes);
         let key = time_bucket_key(&dt, g);
         *buckets.entry(key).or_insert(0) += 1;
     }
@@ -2240,7 +2263,10 @@ async fn open_external_url(url: String) -> Result<(), String> {
 
 // 打开 Git 仓库
 #[tauri::command]
-async fn open_repository(path: String) -> Result<RepoInfo, String> {
+async fn open_repository(
+    path: String,
+    client_calendar_offset_east_minutes: Option<i32>,
+) -> Result<RepoInfo, String> {
     let path_for_repo = path.clone();
     let repo_info = tokio::task::spawn_blocking(move || {
         let repo = Repository::open(&path_for_repo)
@@ -2253,7 +2279,8 @@ async fn open_repository(path: String) -> Result<RepoInfo, String> {
             }
         }
 
-        get_repository_info(&repo, &path_for_repo).map_err(|e| format!("无法读取仓库信息：{}", e))
+        get_repository_info(&repo, &path_for_repo, client_calendar_offset_east_minutes)
+            .map_err(|e| format!("无法读取仓库信息：{}", e))
     })
     .await
     .map_err(|e| format!("任务已中断: {}", e))??;
@@ -2505,7 +2532,11 @@ async fn set_branch_upstream(
 }
 
 // 获取仓库信息
-fn get_repository_info(repo: &Repository, path: &str) -> Result<RepoInfo> {
+fn get_repository_info(
+    repo: &Repository,
+    path: &str,
+    client_calendar_offset_east_minutes: Option<i32>,
+) -> Result<RepoInfo> {
     // 获取当前分支
     let head = repo.head().map_err(|e| anyhow::anyhow!("Failed to get HEAD: {}", e))?;
     let current_branch = head.shorthand().unwrap_or("detached").to_string();
@@ -2542,7 +2573,7 @@ fn get_repository_info(repo: &Repository, path: &str) -> Result<RepoInfo> {
     }
     
     // 获取提交历史
-    let commits = get_commit_history(repo)?;
+    let commits = get_commit_history(repo, client_calendar_offset_east_minutes)?;
 
     // 计算当前分支与上游的 ahead/behind
     let mut ahead: u32 = 0;
@@ -2561,7 +2592,8 @@ fn get_repository_info(repo: &Repository, path: &str) -> Result<RepoInfo> {
         }
     }
 
-    let incoming_commits = get_incoming_commits(repo, &current_branch, behind);
+    let incoming_commits =
+        get_incoming_commits(repo, &current_branch, behind, client_calendar_offset_east_minutes);
 
     let has_upstream = repo
         .find_branch(&current_branch, git2::BranchType::Local)
@@ -2592,7 +2624,12 @@ fn get_repository_info(repo: &Repository, path: &str) -> Result<RepoInfo> {
 
 /// 列出 `git log HEAD..@{upstream}` 中的提交（需已 fetch，对象在本地远程跟踪分支上）。
 /// 失败或无上游时返回空列表，不阻断打开仓库。
-fn get_incoming_commits(repo: &Repository, current_branch: &str, behind: u32) -> Vec<CommitInfo> {
+fn get_incoming_commits(
+    repo: &Repository,
+    current_branch: &str,
+    behind: u32,
+    client_calendar_offset_east_minutes: Option<i32>,
+) -> Vec<CommitInfo> {
     if behind == 0 {
         return Vec::new();
     }
@@ -2637,10 +2674,7 @@ fn get_incoming_commits(repo: &Repository, current_branch: &str, behind: u32) ->
         };
         let author = commit.author();
         let message = commit.message().unwrap_or("No message").to_string();
-        let date = chrono::DateTime::from_timestamp(commit.time().seconds(), 0)
-            .unwrap_or_default()
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
+        let date = commit_display_time(&commit, client_calendar_offset_east_minutes);
         out.push(CommitInfo {
             id: oid.to_string(),
             short_id: format!("{:.7}", oid),
@@ -2739,6 +2773,7 @@ fn get_commit_history_paginated(
     limit: Option<usize>,
     offset: Option<usize>,
     scope: CommitLogScope,
+    client_calendar_offset_east_minutes: Option<i32>,
 ) -> Result<Vec<CommitInfo>> {
     let mut revwalk = repo.revwalk()
         .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
@@ -2772,10 +2807,7 @@ fn get_commit_history_paginated(
         
         let author = commit.author();
         let message = commit.message().unwrap_or("No message").to_string();
-        let date = chrono::DateTime::from_timestamp(commit.time().seconds(), 0)
-            .unwrap_or_default()
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
+        let date = commit_display_time(&commit, client_calendar_offset_east_minutes);
         
         commits.push(CommitInfo {
             id: oid.to_string(),
@@ -2794,8 +2826,17 @@ fn get_commit_history_paginated(
 }
 
 // 获取提交历史（初始加载，只获取前50个；始终为当前 HEAD，与打开仓库时列表一致）
-fn get_commit_history(repo: &Repository) -> Result<Vec<CommitInfo>> {
-    get_commit_history_paginated(repo, Some(50), Some(0), CommitLogScope::Head)
+fn get_commit_history(
+    repo: &Repository,
+    client_calendar_offset_east_minutes: Option<i32>,
+) -> Result<Vec<CommitInfo>> {
+    get_commit_history_paginated(
+        repo,
+        Some(50),
+        Some(0),
+        CommitLogScope::Head,
+        client_calendar_offset_east_minutes,
+    )
 }
 
 /// 按范围统计可达提交总数（与分页遍历使用相同的 revwalk 起点与排序）。
@@ -2905,13 +2946,14 @@ async fn get_commit_activity_stats(
     scope: Option<String>,
     rev: Option<String>,
     granularity: String,
+    client_calendar_offset_east_minutes: Option<i32>,
 ) -> Result<Vec<TimeBucketStat>, String> {
     let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
     let g = granularity.to_lowercase();
     tokio::task::spawn_blocking(move || {
         let repo =
             Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
-        let map = walk_scope_time_buckets(&repo, s, g.as_str())
+        let map = walk_scope_time_buckets(&repo, s, g.as_str(), client_calendar_offset_east_minutes)
             .map_err(|e| format!("统计时间分布失败: {}", e))?;
         Ok(sorted_time_bucket_vec(map))
     })
@@ -3034,12 +3076,19 @@ async fn get_commits_paginated(
     offset: Option<usize>,
     scope: Option<String>,
     rev: Option<String>,
+    client_calendar_offset_east_minutes: Option<i32>,
 ) -> Result<Vec<CommitInfo>, String> {
     let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
     tokio::task::spawn_blocking(move || {
         let repo = Repository::open(&repo_path)
             .map_err(|e| format!("Failed to open repository: {}", e))?;
-        let commits = get_commit_history_paginated(&repo, limit, offset, s)
+        let commits = get_commit_history_paginated(
+            &repo,
+            limit,
+            offset,
+            s,
+            client_calendar_offset_east_minutes,
+        )
             .map_err(|e| format!("Failed to get commit history: {}", e))?;
         Ok(commits)
     })
@@ -3053,6 +3102,7 @@ fn get_commit_history_search(
     query: &str,
     limit: usize,
     scope: CommitLogScope,
+    client_calendar_offset_east_minutes: Option<i32>,
 ) -> Result<Vec<CommitInfo>> {
     let query_lower = query.to_lowercase();
     if query_lower.trim().is_empty() {
@@ -3078,10 +3128,7 @@ fn get_commit_history_search(
         let message = commit.message().unwrap_or("No message").to_string();
         let first_line = message.lines().next().unwrap_or("").to_string();
         let short_id = format!("{:.7}", oid);
-        let date = chrono::DateTime::from_timestamp(commit.time().seconds(), 0)
-            .unwrap_or_default()
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
+        let date = commit_display_time(&commit, client_calendar_offset_east_minutes);
         let matches = first_line.to_lowercase().contains(&query_lower)
             || author_name.to_lowercase().contains(&query_lower)
             || short_id.to_lowercase().contains(&query_lower)
@@ -3108,6 +3155,7 @@ async fn search_commits(
     limit: Option<usize>,
     scope: Option<String>,
     rev: Option<String>,
+    client_calendar_offset_east_minutes: Option<i32>,
 ) -> Result<Vec<CommitInfo>, String> {
     let limit = limit.unwrap_or(500);
     let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
@@ -3115,7 +3163,13 @@ async fn search_commits(
     tokio::task::spawn_blocking(move || {
         let repo = Repository::open(&repo_path)
             .map_err(|e| format!("Failed to open repository: {}", e))?;
-        let commits = get_commit_history_search(&repo, query.as_str(), limit, s)
+        let commits = get_commit_history_search(
+            &repo,
+            query.as_str(),
+            limit,
+            s,
+            client_calendar_offset_east_minutes,
+        )
             .map_err(|e| format!("Search failed: {}", e))?;
         Ok(commits)
     })
@@ -3123,13 +3177,14 @@ async fn search_commits(
     .map_err(|e| format!("任务已中断: {}", e))?
 }
 
-/// 与 `get_commit_activity_stats` 使用相同的作者时区与分桶键，列出某一桶内的提交（新到旧，最多 limit 条）
+/// 与 `get_commit_activity_stats` 使用相同的日历分桶键（本机时区或作者时区），列出某一桶内的提交（新到旧，最多 limit 条）
 fn get_commits_for_activity_bucket_inner(
     repo: &Repository,
     scope: CommitLogScope,
     granularity: &str,
     bucket_key: &str,
     limit: usize,
+    client_calendar_offset_east_minutes: Option<i32>,
 ) -> Result<Vec<CommitInfo>> {
     let g = if matches!(granularity, "day" | "week" | "month") {
         granularity
@@ -3153,7 +3208,7 @@ fn get_commits_for_activity_bucket_inner(
         let commit = repo
             .find_commit(oid)
             .map_err(|e| anyhow::anyhow!("Failed to find commit: {}", e))?;
-        let dt = commit_author_wall_time(&commit);
+        let dt = commit_calendar_datetime(&commit, client_calendar_offset_east_minutes);
         let key = time_bucket_key(&dt, g);
         if key != bucket_key {
             continue;
@@ -3163,10 +3218,7 @@ fn get_commits_for_activity_bucket_inner(
         let message = commit.message().unwrap_or("No message").to_string();
         let first_line = message.lines().next().unwrap_or("").to_string();
         let short_id = format!("{:.7}", oid);
-        let date = chrono::DateTime::from_timestamp(commit.time().seconds(), 0)
-            .unwrap_or_default()
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
+        let date = commit_display_time(&commit, client_calendar_offset_east_minutes);
         commits.push(CommitInfo {
             id: oid.to_string(),
             short_id,
@@ -3188,6 +3240,7 @@ async fn get_commits_for_activity_bucket(
     granularity: String,
     bucket_key: String,
     limit: Option<usize>,
+    client_calendar_offset_east_minutes: Option<i32>,
 ) -> Result<Vec<CommitInfo>, String> {
     let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
     let lim = limit.unwrap_or(500).max(1).min(2000);
@@ -3199,7 +3252,14 @@ async fn get_commits_for_activity_bucket(
     tokio::task::spawn_blocking(move || {
         let repo = Repository::open(&repo_path)
             .map_err(|e| format!("Failed to open repository: {}", e))?;
-        get_commits_for_activity_bucket_inner(&repo, s, granularity.as_str(), &bucket_key, lim)
+        get_commits_for_activity_bucket_inner(
+            &repo,
+            s,
+            granularity.as_str(),
+            &bucket_key,
+            lim,
+            client_calendar_offset_east_minutes,
+        )
             .map_err(|e| format!("列出分桶提交失败: {}", e))
     })
     .await

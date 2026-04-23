@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { invoke } from '@tauri-apps/api/tauri'
 import {
   addDays,
   addMonths,
@@ -310,6 +311,7 @@ export function AuthorStatsPanel({
   /** 图表点击联动：按分桶列出提交 */
   const [drillOpen, setDrillOpen] = useState(false)
   const [drillTitle, setDrillTitle] = useState('')
+  const [drillBucketKey, setDrillBucketKey] = useState('')
   const [drillCommits, setDrillCommits] = useState<CommitInfo[]>([])
   const [drillLoading, setDrillLoading] = useState(false)
   const [drillError, setDrillError] = useState<string | null>(null)
@@ -385,11 +387,23 @@ export function AuthorStatsPanel({
 
   const openActivityDrill = useCallback(
     async (gran: 'day' | 'week' | 'month', bucketKey: string, title: string) => {
+      const appendStatsJumpLog = (message: string, level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' = 'DEBUG') => {
+        void invoke('append_gitlite_log', {
+          level,
+          message: `[jump][Stats] ${message}`,
+        }).catch(() => {
+          /* ignore */
+        })
+      }
       setDrillOpen(true)
       setDrillTitle(title)
+      setDrillBucketKey(bucketKey)
       setDrillLoading(true)
       setDrillError(null)
       setDrillCommits([])
+      appendStatsJumpLog(
+        `open drill gran=${gran} bucketKey=${bucketKey} scope=${scopeArgs.scope} rev=${scopeArgs.rev ?? 'null'}`
+      )
       try {
         const list = await getCommitsForActivityBucket(
           gran,
@@ -397,8 +411,16 @@ export function AuthorStatsPanel({
           scopeArgs.scope,
           scopeArgs.rev
         )
+        const uniqueDays = Array.from(new Set(list.map((c) => c.date.slice(0, 10)))).join(',')
+        appendStatsJumpLog(
+          `drill loaded gran=${gran} bucketKey=${bucketKey} commits=${list.length} first=${list[0]?.id ?? 'null'} firstDate=${list[0]?.date ?? 'null'} uniqueDays=${uniqueDays || 'none'}`
+        )
         setDrillCommits(list)
       } catch (e) {
+        appendStatsJumpLog(
+          `drill error gran=${gran} bucketKey=${bucketKey} err=${e instanceof Error ? e.message : String(e)}`,
+          'WARN'
+        )
         setDrillError(e instanceof Error ? e.message : String(e))
       } finally {
         setDrillLoading(false)
@@ -670,7 +692,7 @@ export function AuthorStatsPanel({
               </span>
             </summary>
             <p className="mt-1.5 border-l-2 border-primary/25 pl-2.5 text-[11px] leading-relaxed text-muted-foreground">
-              时间线、热力图与日历视图按提交作者时区换算日期。合并提交的 diff 仅相对第一父提交；全量 diff 在大型仓库可能较慢，可稍后重试。
+              时间线、热力图与日历视图按本机时区换算日历日（与热力图格子日期、提交列表中的日期一致）；提交时刻仍来自 Git 作者时间戳。合并提交的 diff 仅相对第一父提交；全量 diff 在大型仓库可能较慢，可稍后重试。
               各 Tab 的统计结果会在内存中按「仓库 + 范围」做缓存，切换仓库再打开同一仓库时可立即复用；若刚有新的提交或需最新数据，请点「刷新」。
             </p>
           </details>
@@ -888,7 +910,7 @@ export function AuthorStatsPanel({
           <DialogHeader className="border-b border-border/60 px-5 py-4 text-left">
             <DialogTitle className="pr-7 text-base leading-snug">{drillTitle}</DialogTitle>
             <p className="mt-1 text-[11px] text-muted-foreground">
-              与上方统计相同的历史范围与作者时区分桶；列表按时间由新到旧。
+              与上方统计相同的历史范围与本机时区分桶；列表按时间由新到旧。
             </p>
           </DialogHeader>
           <div className="max-h-[min(60vh,26rem)] overflow-y-auto px-5 py-3">
@@ -914,6 +936,12 @@ export function AuthorStatsPanel({
                   type="button"
                   className="w-full border-b border-border/50 py-2.5 text-left transition-colors hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring last:border-0"
                   onClick={() => {
+                    void invoke('append_gitlite_log', {
+                      level: 'DEBUG',
+                      message: `[jump][Stats] click commit from drill bucketKey=${drillBucketKey || 'unknown'} commitId=${c.id} short=${c.short_id} date=${c.date} scope=${scopeArgs.scope} rev=${scopeArgs.rev ?? 'null'}`,
+                    }).catch(() => {
+                      /* ignore */
+                    })
                     onJumpToCommit?.({
                       commit: c,
                       scope: scopeArgs.scope,

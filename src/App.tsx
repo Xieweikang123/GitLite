@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react' 
+import React, { useState, useEffect, useLayoutEffect } from 'react' 
 import { useGit } from './hooks/useGit'
 import { useDarkMode } from './hooks/useDarkMode'
 import { useMonacoThemeSync } from './hooks/useMonacoThemeSync'
@@ -106,6 +106,7 @@ function App() {
   const commitListEpochRef = React.useRef(0)
   /** 防止同一时刻并发触发多次 load more（如观察器 + 跳转补载同时触发） */
   const loadMoreInFlightRef = React.useRef(false)
+  /** jump 相关状态给早期 effect 判定使用（通过 layout effect 同步，避免晚一拍） */
   const jumpRequestActiveRef = React.useRef(false)
   const pendingJumpCommitIdRef = React.useRef<string | null>(null)
   const appendJumpLog = React.useCallback(
@@ -318,10 +319,18 @@ function App() {
 
   const handleLoadMore = async () => {
     if (loadMoreInFlightRef.current || loadingMore || !hasMoreCommits || !repoInfo) return
+    const activeJump = jumpRequestActiveRef.current
+    const currentPendingJump = pendingJumpCommitIdRef.current
+    // 跳转定位进行中且目标已就绪后，不再接受额外补载，避免定位后被列表二次变化冲掉
+    if (activeJump && !currentPendingJump) {
+      appendJumpLog(
+        `loadMore blocked during jump-settle scope=${commitLogScope} rev=${commitLogRev ?? 'null'}`
+      )
+      return
+    }
     const reqEpoch = commitListEpochRef.current
     const offset = localCommitsRef.current.length
-    const currentPendingJump = pendingJumpCommitIdRef.current
-    if (jumpRequestActiveRef.current || currentPendingJump) {
+    if (activeJump || currentPendingJump) {
       appendJumpLog(
         `loadMore start epoch=${reqEpoch} offset=${offset} scope=${commitLogScope} rev=${commitLogRev ?? 'null'} pending=${currentPendingJump ?? 'null'}`
       )
@@ -339,38 +348,42 @@ function App() {
       if (reqEpoch !== commitListEpochRef.current) return
       if (newCommits.length === 0) {
         setHasMoreCommits(false)
-        if (jumpRequestActiveRef.current || currentPendingJump) {
+        if (activeJump || currentPendingJump) {
           appendJumpLog(
             `loadMore result empty epoch=${reqEpoch} offset=${offset} => hasMore=false`,
             'WARN'
           )
         }
       } else {
-        let appendedUnique = 0
-        setLocalCommits(prev => {
-          const seen = new Set(prev.map((c) => c.id))
-          const next = [...prev]
-          for (const c of newCommits) {
-            if (seen.has(c.id)) continue
-            seen.add(c.id)
-            next.push(c)
-            appendedUnique += 1
-          }
-          return next
-        })
-        if (jumpRequestActiveRef.current || currentPendingJump) {
+        const currentLocal = localCommitsRef.current
+        const currentSeen = new Set(currentLocal.map((c) => c.id))
+        const uniqueNewCommits = newCommits.filter((c) => !currentSeen.has(c.id))
+        const appendedUnique = uniqueNewCommits.length
+        if (appendedUnique > 0) {
+          setLocalCommits(prev => {
+            const seen = new Set(prev.map((c) => c.id))
+            const next = [...prev]
+            for (const c of uniqueNewCommits) {
+              if (seen.has(c.id)) continue
+              seen.add(c.id)
+              next.push(c)
+            }
+            return next
+          })
+        }
+        if (activeJump || currentPendingJump) {
           appendJumpLog(
-            `loadMore result epoch=${reqEpoch} offset=${offset} fetched=${newCommits.length} appendedUnique=${appendedUnique} localNow=${localCommitsRef.current.length}`
+            `loadMore result epoch=${reqEpoch} offset=${offset} fetched=${newCommits.length} appendedUnique=${appendedUnique} localNow=${currentLocal.length + appendedUnique}`
           )
         }
         if (newCommits.length < 50) {
           setHasMoreCommits(false)
-          if (jumpRequestActiveRef.current || currentPendingJump) {
+          if (activeJump || currentPendingJump) {
             appendJumpLog(
               `loadMore reached tail epoch=${reqEpoch} offset=${offset} fetched=${newCommits.length} => hasMore=false`
             )
           }
-        } else if (appendedUnique === 0 && (jumpRequestActiveRef.current || currentPendingJump)) {
+        } else if (appendedUnique === 0 && (activeJump || currentPendingJump)) {
           appendJumpLog(
             `loadMore duplicate page detected epoch=${reqEpoch} offset=${offset} fetched=50 appendedUnique=0`,
             'WARN'
@@ -664,6 +677,22 @@ function App() {
     }
 
     if (commitLogScope === 'head' && !commitLogRev) {
+      const jumpActive = jumpRequestActiveRef.current || pendingJumpCommitIdRef.current != null
+      if (jumpActive) {
+        appendJumpLog(
+          `skip repoInfo sync during jump local=${localCommitsRef.current.length} repo=${repoInfo.commits.length}`
+        )
+        return
+      }
+      // 分页列表已建立后，不再用 repoInfo 快照覆盖，避免与 loadMore 并发时列表基准跳变
+      const localHeadId = localCommitsRef.current[0]?.id ?? ''
+      const repoHeadId = repoInfo.commits[0]?.id ?? ''
+      const canHydrateFromRepoInfo =
+        localCommitsRef.current.length === 0 ||
+        (localCommitsRef.current.length <= 50 && localHeadId !== repoHeadId)
+      if (!canHydrateFromRepoInfo) {
+        return
+      }
       setLocalCommits(repoInfo.commits)
       setHasMoreCommits(repoInfo.commits.length >= 50)
       return
@@ -676,6 +705,17 @@ function App() {
         try {
           const first = await getCommitsPaginated(50, 0, 'head', commitLogRev)
           if (cancelled) return
+          // 统计跳转等场景下会 loadMore 追加列表；若此时因 headFirstCommitId 等再次触发本 effect，
+          // 勿用「仅首页」覆盖已变长的列表，否则滚动定位会先对后错。
+          const jumpListing =
+            jumpRequestActiveRef.current || pendingJumpCommitIdRef.current != null
+          const curLen = localCommitsRef.current.length
+          if (jumpListing && curLen > first.length) {
+            appendJumpLog(
+              `skip rev-scope list overwrite during jump localLen=${curLen} firstLen=${first.length} rev=${commitLogRev ?? 'null'}`
+            )
+            return
+          }
           setLocalCommits(first)
           setHasMoreCommits(first.length >= 50)
         } catch {
@@ -696,6 +736,15 @@ function App() {
       try {
         const first = await getCommitsPaginated(50, 0, 'all')
         if (cancelled) return
+        const jumpListing =
+          jumpRequestActiveRef.current || pendingJumpCommitIdRef.current != null
+        const curLen = localCommitsRef.current.length
+        if (jumpListing && curLen > first.length) {
+          appendJumpLog(
+            `skip all-scope list overwrite during jump localLen=${curLen} firstLen=${first.length}`
+          )
+          return
+        }
         setLocalCommits(first)
         setHasMoreCommits(first.length >= 50)
       } catch {
@@ -766,7 +815,7 @@ function App() {
 
     jumpToCommitSeqRef.current += 1
     appendJumpLog(
-      `request created seq=${jumpToCommitSeqRef.current} commitId=${commit.id} short=${commit.short_id} scope=${targetScope} rev=${targetRev ?? 'null'}`
+      `request created seq=${jumpToCommitSeqRef.current} commitId=${commit.id} short=${commit.short_id} date=${commit.date} scope=${targetScope} rev=${targetRev ?? 'null'}`
     )
     setJumpToCommitRequest({
       commit,
@@ -780,7 +829,7 @@ function App() {
     localCommitsRef.current = localCommits
   }, [localCommits])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     jumpRequestActiveRef.current = jumpToCommitRequest != null
     pendingJumpCommitIdRef.current = pendingJumpCommitId
   }, [jumpToCommitRequest, pendingJumpCommitId])
@@ -1039,6 +1088,7 @@ function App() {
                 hasOriginRemote={repoInfo.has_origin_remote ?? true}
                 jumpToCommitRequest={jumpToCommitRequest}
                 onJumpToCommitConsumed={handleJumpToCommitConsumed}
+                suspendAutoLoadMore={jumpToCommitRequest != null}
               />
             ) : (
               <div className="text-center py-12 flex-1 flex items-center justify-center">

@@ -17,6 +17,14 @@ import {
   RemoteManagementInfo,
 } from '../types/git'
 import { formatTauriInvokeError } from '../utils/tauriError'
+import { getClientCalendarOffsetEastMinutes } from '../utils/clientCalendarOffset'
+
+async function invokeOpenRepository(path: string): Promise<RepoInfo> {
+  return invoke<RepoInfo>('open_repository', {
+    path,
+    clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
+  })
+}
 
 const AUTO_OPEN_ENABLED_KEY = 'gitlite:autoOpenEnabled'
 
@@ -57,9 +65,7 @@ export function useGit() {
       })
       
       if (selectedPath && typeof selectedPath === 'string') {
-        const info: RepoInfo = await invoke('open_repository', {
-          path: selectedPath,
-        })
+        const info: RepoInfo = await invokeOpenRepository(selectedPath)
         if (myGen !== repoLoadGenRef.current) return
         setRepoInfo(info)
         // 刷新最近仓库列表
@@ -82,9 +88,7 @@ export function useGit() {
       setLoading(true)
       setError(null)
       
-      const info: RepoInfo = await invoke('open_repository', {
-        path,
-      })
+      const info: RepoInfo = await invokeOpenRepository(path)
       if (myGen !== repoLoadGenRef.current) return
       setRepoInfo(info)
       // 刷新最近仓库列表
@@ -113,9 +117,7 @@ export function useGit() {
   const refreshRepoInfo = useCallback(async (): Promise<RepoInfo> => {
     if (!repoInfo) throw new Error('未打开仓库')
     const myGen = ++repoLoadGenRef.current
-    const info: RepoInfo = await invoke('open_repository', {
-      path: repoInfo.path,
-    })
+    const info: RepoInfo = await invokeOpenRepository(repoInfo.path)
     if (myGen !== repoLoadGenRef.current) return info
     setRepoInfo(info)
     await loadRecentRepos()
@@ -178,9 +180,7 @@ export function useGit() {
       })
       
       // 重新获取仓库信息
-      const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
-        path: repoInfo.path,
-      })
+      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
       setRepoInfo(updatedRepoInfo)
     } catch (err) {
       setError(formatTauriInvokeError(err, '切换分支失败'))
@@ -203,9 +203,7 @@ export function useGit() {
           path: repoPath,
           initialBranch: initialBranch?.trim() || undefined,
         })
-        const info: RepoInfo = await invoke('open_repository', {
-          path: repoPath,
-        })
+        const info: RepoInfo = await invokeOpenRepository(repoPath)
         setRepoInfo(info)
         await loadRecentRepos()
         return true
@@ -243,9 +241,7 @@ export function useGit() {
           destinationPath: path,
           branch: branch?.trim() || undefined,
         })
-        const info: RepoInfo = await invoke('open_repository', {
-          path,
-        })
+        const info: RepoInfo = await invokeOpenRepository(path)
         setRepoInfo(info)
         await loadRecentRepos()
         return true
@@ -278,9 +274,7 @@ export function useGit() {
           startPoint: startPoint?.trim() || undefined,
         })
 
-        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
-          path: repoInfo.path,
-        })
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -305,9 +299,7 @@ export function useGit() {
           branchName: branchName.trim(),
           force,
         })
-        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
-          path: repoInfo.path,
-        })
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -332,9 +324,7 @@ export function useGit() {
           oldName: oldName.trim(),
           newName: newName.trim(),
         })
-        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
-          path: repoInfo.path,
-        })
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -359,9 +349,7 @@ export function useGit() {
           sourceBranch: sourceBranch.trim(),
           ffOnly,
         })
-        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
-          path: repoInfo.path,
-        })
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -392,9 +380,7 @@ export function useGit() {
           name: name.trim(),
           url: url.trim(),
         })
-        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
-          path: repoInfo.path,
-        })
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -418,9 +404,7 @@ export function useGit() {
           name: name.trim(),
           url: url.trim(),
         })
-        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
-          path: repoInfo.path,
-        })
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -443,9 +427,7 @@ export function useGit() {
           repoPath: repoInfo.path,
           name: name.trim(),
         })
-        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
-          path: repoInfo.path,
-        })
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -469,9 +451,7 @@ export function useGit() {
           branchName: branchName.trim(),
           upstreamRef: upstreamRef?.trim() || null,
         })
-        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
-          path: repoInfo.path,
-        })
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -498,9 +478,7 @@ export function useGit() {
           mode,
         })
 
-        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
-          path: repoInfo.path,
-        })
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
         setRepoInfo(updatedRepoInfo)
       } catch (err) {
         setError(formatTauriInvokeError(err, '重置失败'))
@@ -523,9 +501,7 @@ export function useGit() {
           repoPath: repoInfo.path,
           commitId,
         })
-        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
-          path: repoInfo.path,
-        })
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -549,9 +525,7 @@ export function useGit() {
           repoPath: repoInfo.path,
           commitId,
         })
-        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
-          path: repoInfo.path,
-        })
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -575,9 +549,7 @@ export function useGit() {
           repoPath: repoInfo.path,
           ontoCommitId,
         })
-        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
-          path: repoInfo.path,
-        })
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -649,6 +621,7 @@ export function useGit() {
           offset,
           scope: scope === 'all' ? 'all' : null,
           rev: r,
+          clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
         })
       } catch (error) {
         console.error('Failed to get paginated commits:', error)
@@ -674,6 +647,7 @@ export function useGit() {
           limit: limit ?? 500,
           scope: scope === 'all' ? 'all' : null,
           rev: r,
+          clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
         })
       } catch (error) {
         console.error('Failed to search commits:', error)
@@ -709,6 +683,7 @@ export function useGit() {
         scope: scope === 'all' ? 'all' : null,
         rev: r,
         granularity,
+        clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
       })
     },
     [repoInfo]
@@ -731,6 +706,7 @@ export function useGit() {
         granularity,
         bucketKey: bucketKey.trim(),
         limit: limit ?? 500,
+        clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
       })
     },
     [repoInfo]
@@ -836,9 +812,7 @@ export function useGit() {
         repoPath: repoInfo.path,
       })
       
-      const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
-        path: repoInfo.path,
-      })
+      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
       setRepoInfo(updatedRepoInfo)
       return outcome
     } catch (err) {
@@ -855,9 +829,7 @@ export function useGit() {
       })
       
       // 获取成功后，重新获取仓库信息以更新状态
-      const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
-        path: repoInfo.path,
-      })
+      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
       setRepoInfo(updatedRepoInfo)
       
       return result
@@ -875,9 +847,7 @@ export function useGit() {
       })
       
       // 获取成功后，重新获取仓库信息以更新状态
-      const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
-        path: repoInfo.path,
-      })
+      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
       setRepoInfo(updatedRepoInfo)
       
       return logs
@@ -895,9 +865,7 @@ export function useGit() {
       })
       
       // 推送成功后，重新获取仓库信息以更新状态
-      const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
-        path: repoInfo.path,
-      })
+      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
       setRepoInfo(updatedRepoInfo)
       
       return logs
@@ -915,9 +883,7 @@ export function useGit() {
       })
       
       // 推送成功后，重新获取仓库信息以更新状态
-      const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
-        path: repoInfo.path,
-      })
+      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
       setRepoInfo(updatedRepoInfo)
       
       return []
@@ -934,9 +900,7 @@ export function useGit() {
         repoPath: repoInfo.path,
       })
       
-      const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
-        path: repoInfo.path,
-      })
+      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
       setRepoInfo(updatedRepoInfo)
       
       return result

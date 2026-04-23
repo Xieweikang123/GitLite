@@ -375,6 +375,8 @@ interface UnifiedCommitViewProps {
   jumpToCommitRequest?: { commit: CommitInfo; seq: number } | null
   /** 外部请求已完成消费（用于上层清理请求，避免重复消费） */
   onJumpToCommitConsumed?: (payload: { seq: number; commitId: string }) => void
+  /** 外部跳转进行中时临时关闭 IO 自动补载，避免定位后被后续列表变化覆盖 */
+  suspendAutoLoadMore?: boolean
 }
 
 export function UnifiedCommitView({
@@ -414,7 +416,8 @@ export function UnifiedCommitView({
   hasUpstream = true,
   hasOriginRemote = true,
   jumpToCommitRequest = null,
-  onJumpToCommitConsumed
+  onJumpToCommitConsumed,
+  suspendAutoLoadMore = false,
 }: UnifiedCommitViewProps) {
   /** 筛选栏输入（待「查询」应用） */
   const [pendingStart, setPendingStart] = useState('')
@@ -501,6 +504,8 @@ export function UnifiedCommitView({
     selectIssued: boolean
     firstScrollDone: boolean
     recalibrated: boolean
+    pendingRecalibration: boolean
+    stableFrames: number
     geometrySigAtLastScroll: string
     lastObservedGeometrySig: string
     postScrollSettled: boolean
@@ -721,6 +726,7 @@ export function UnifiedCommitView({
 
   // 滚动到底部自动加载更多
   useEffect(() => {
+    if (suspendAutoLoadMore) return
     if (!hasMore) return
     const root = commitListScrollRef.current
     const sentinel = loadMoreSentinelRef.current
@@ -736,7 +742,7 @@ export function UnifiedCommitView({
     )
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [hasMore])
+  }, [hasMore, suspendAutoLoadMore])
 
   // 解析提交日期（后端格式 "YYYY-MM-DD HH:mm:ss"）为 Date，取当天 0 点便于比较
   const getCommitDate = useCallback((dateStr: string) => {
@@ -854,13 +860,37 @@ export function UnifiedCommitView({
       if (!root) return false
       const row = root.querySelector<HTMLDivElement>(`[data-commit-id="${commitId}"]`)
       if (!row) return false
-      const align = () => row.scrollIntoView({ block: 'center' })
+      const align = () => {
+        const rootRect = root.getBoundingClientRect()
+        const rowRect = row.getBoundingClientRect()
+        const rowTopInRoot = rowRect.top - rootRect.top + root.scrollTop
+        const targetTop = Math.max(0, rowTopInRoot - (root.clientHeight - rowRect.height) / 2)
+        root.scrollTop = targetTop
+      }
       align()
       window.requestAnimationFrame(align)
       return true
     },
     []
   )
+
+  const getJumpPositionMetrics = useCallback((commitId: string) => {
+    const root = commitListScrollRef.current
+    if (!root) return null
+    const row = root.querySelector<HTMLDivElement>(`[data-commit-id="${commitId}"]`)
+    if (!row) return null
+    const rootRect = root.getBoundingClientRect()
+    const rowRect = row.getBoundingClientRect()
+    const rowTopInRoot = rowRect.top - rootRect.top
+    const rowBottomInRoot = rowRect.bottom - rootRect.top
+    return {
+      rowTopInRoot: Math.round(rowTopInRoot),
+      rowBottomInRoot: Math.round(rowBottomInRoot),
+      rowHeight: Math.round(rowRect.height),
+      rootHeight: Math.round(root.clientHeight),
+      scrollTop: Math.round(root.scrollTop),
+    }
+  }, [])
 
   const branchLabelIdsKey = useMemo(
     () => filteredCommits.map((c) => c.id).join(','),
@@ -947,11 +977,14 @@ export function UnifiedCommitView({
     return () => ro.disconnect()
   }, [filteredCommits, branchLabelIdsKey, branchLabelsByCommit])
 
+  // 提交列表在「前面插入 incoming」「loadMore 追加」或行高变化后，若不重算 scrollTop，会出现先对准再偏掉。
+  // 跳转全程由下方 useLayoutEffect 独占滚动，避免与本 effect 打架。
+  const commitListLayoutSig = `${commits.length}:${incomingCommitCount}:${commitGraphRowHeights.join(',')}`
   useEffect(() => {
     if (!selectedCommit) return
-    if (activeJumpRef.current && !activeJumpRef.current.firstScrollDone) return
+    if (activeJumpRef.current) return
     scrollCommitRowIntoView(selectedCommit.id)
-  }, [selectedCommit, scrollCommitRowIntoView])
+  }, [selectedCommit, scrollCommitRowIntoView, commitListLayoutSig])
 
   /** 与后端总结一致：按日期时间升序（字符串可比） */
   const commitsSortedForCopy = useMemo(() => {
@@ -1309,6 +1342,8 @@ export function UnifiedCommitView({
       selectIssued: false,
       firstScrollDone: false,
       recalibrated: false,
+      pendingRecalibration: false,
+      stableFrames: 0,
       geometrySigAtLastScroll: '',
       lastObservedGeometrySig: '',
       postScrollSettled: false,
@@ -1424,10 +1459,16 @@ export function UnifiedCommitView({
       runtime.firstScrollDone = true
       runtime.geometrySigAtLastScroll = geometrySig
       runtime.lastObservedGeometrySig = geometrySig
+      runtime.pendingRecalibration = false
+      runtime.stableFrames = 0
       runtime.postScrollSettled = false
       jumpWaitLogKeyRef.current = ''
+      const m = getJumpPositionMetrics(targetId)
+      const pos = m
+        ? ` rowTop=${m.rowTopInRoot} rowBottom=${m.rowBottomInRoot} rowH=${m.rowHeight} rootH=${m.rootHeight} scrollTop=${m.scrollTop}`
+        : ' rowMetrics=missing'
       appendJumpLog(
-        `first scroll seq=${runtime.seq} commitId=${targetId} geometrySig=${geometrySig}`
+        `first scroll seq=${runtime.seq} commitId=${targetId} geometrySig=${geometrySig}${pos}`
       )
       window.requestAnimationFrame(() => {
         setJumpLayoutPass((n) => n + 1)
@@ -1435,34 +1476,50 @@ export function UnifiedCommitView({
       return
     }
 
-    if (geometrySig !== runtime.geometrySigAtLastScroll) {
-      if (!runtime.recalibrated) {
-        runtime.recalibrated = true
-        runtime.geometrySigAtLastScroll = geometrySig
-        runtime.lastObservedGeometrySig = geometrySig
-        runtime.postScrollSettled = false
-        scrollCommitRowIntoView(targetId)
-        jumpWaitLogKeyRef.current = ''
-        appendJumpLog(
-          `recalibrate after layout shift seq=${runtime.seq} commitId=${targetId} geometrySig=${geometrySig}`
-        )
-        window.requestAnimationFrame(() => {
-          setJumpLayoutPass((n) => n + 1)
-        })
-      } else {
-        logWait(
-          `wait-post-shift-${runtime.seq}-${targetId}`,
-          `layout shifted again but recalibration already used seq=${runtime.seq} commitId=${targetId} geometrySig=${geometrySig}`
-        )
+    if (geometrySig !== runtime.lastObservedGeometrySig) {
+      runtime.lastObservedGeometrySig = geometrySig
+      runtime.stableFrames = 0
+      if (geometrySig !== runtime.geometrySigAtLastScroll && !runtime.recalibrated) {
+        runtime.pendingRecalibration = true
       }
+      logWait(
+        `wait-post-shift-${runtime.seq}-${targetId}-${geometrySig}`,
+        `wait layout drift settle seq=${runtime.seq} commitId=${targetId} geometrySig=${geometrySig} recalibrated=${runtime.recalibrated ? 1 : 0}`
+      )
+      window.requestAnimationFrame(() => {
+        setJumpLayoutPass((n) => n + 1)
+      })
       return
     }
 
-    if (!runtime.postScrollSettled) {
-      runtime.postScrollSettled = true
+    runtime.stableFrames += 1
+
+    if (runtime.pendingRecalibration && !runtime.recalibrated && runtime.stableFrames >= 2) {
+      runtime.recalibrated = true
+      runtime.pendingRecalibration = false
+      runtime.stableFrames = 0
+      runtime.postScrollSettled = false
+      runtime.geometrySigAtLastScroll = geometrySig
+      runtime.lastObservedGeometrySig = geometrySig
+      scrollCommitRowIntoView(targetId)
+      jumpWaitLogKeyRef.current = ''
+      const m = getJumpPositionMetrics(targetId)
+      const pos = m
+        ? ` rowTop=${m.rowTopInRoot} rowBottom=${m.rowBottomInRoot} rowH=${m.rowHeight} rootH=${m.rootHeight} scrollTop=${m.scrollTop}`
+        : ' rowMetrics=missing'
+      appendJumpLog(
+        `recalibrate after settle seq=${runtime.seq} commitId=${targetId} geometrySig=${geometrySig}${pos}`
+      )
+      window.requestAnimationFrame(() => {
+        setJumpLayoutPass((n) => n + 1)
+      })
+      return
+    }
+
+    if (runtime.stableFrames < 2) {
       logWait(
-        `wait-post-settle-${runtime.seq}-${targetId}-${geometrySig}`,
-        `wait post-scroll settle seq=${runtime.seq} commitId=${targetId} geometrySig=${geometrySig}`
+        `wait-post-settle-${runtime.seq}-${targetId}-${geometrySig}-${runtime.stableFrames}`,
+        `wait post-scroll settle seq=${runtime.seq} commitId=${targetId} geometrySig=${geometrySig} stableFrames=${runtime.stableFrames}`
       )
       window.requestAnimationFrame(() => {
         setJumpLayoutPass((n) => n + 1)
@@ -1473,8 +1530,12 @@ export function UnifiedCommitView({
     consumedJumpSeqRef.current = runtime.seq
     activeJumpRef.current = null
     jumpWaitLogKeyRef.current = ''
+    const m = getJumpPositionMetrics(targetId)
+    const pos = m
+      ? ` rowTop=${m.rowTopInRoot} rowBottom=${m.rowBottomInRoot} rowH=${m.rowHeight} rootH=${m.rootHeight} scrollTop=${m.scrollTop}`
+      : ' rowMetrics=missing'
     appendJumpLog(
-      `consumed seq=${runtime.seq} commitId=${targetId} geometrySig=${geometrySig}`
+      `consumed seq=${runtime.seq} commitId=${targetId} geometrySig=${geometrySig}${pos}`
     )
     onJumpToCommitConsumed?.({ seq: runtime.seq, commitId: targetId })
   }, [
@@ -1493,6 +1554,7 @@ export function UnifiedCommitView({
     rightPanelCollapsed,
     jumpLayoutPass,
     scrollCommitRowIntoView,
+    getJumpPositionMetrics,
     appendJumpLog,
   ])
 
