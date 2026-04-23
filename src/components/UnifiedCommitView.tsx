@@ -361,6 +361,12 @@ interface UnifiedCommitViewProps {
   onResetToCommit?: (commitId: string, mode: GitResetMode) => Promise<void>
   /** 从指定提交创建分支（可选检出） */
   onCreateBranch?: (branchName: string, checkout: boolean, startPoint?: string) => Promise<boolean>
+  /** 在当前分支应用指定提交（git cherry-pick） */
+  onCherryPickCommit?: (commitId: string) => Promise<boolean>
+  /** 反做指定提交（git revert） */
+  onRevertCommit?: (commitId: string) => Promise<boolean>
+  /** 将当前分支 rebase 到指定提交（git rebase <onto>） */
+  onRebaseToCommit?: (ontoCommitId: string) => Promise<boolean>
   /** 列表加载、搜索失败时的提示 */
   listError?: string | null
   hasUpstream?: boolean
@@ -397,6 +403,9 @@ export function UnifiedCommitView({
   headShortId,
   onResetToCommit,
   onCreateBranch,
+  onCherryPickCommit,
+  onRevertCommit,
+  onRebaseToCommit,
   listError,
   hasUpstream = true,
   hasOriginRemote = true
@@ -436,6 +445,18 @@ export function UnifiedCommitView({
   const [createBranchCheckout, setCreateBranchCheckout] = useState(true)
   const [createBranchSubmitting, setCreateBranchSubmitting] = useState(false)
   const [createBranchDialogError, setCreateBranchDialogError] = useState<string | null>(null)
+  const [cherryPickDialogOpen, setCherryPickDialogOpen] = useState(false)
+  const [cherryPickTargetCommit, setCherryPickTargetCommit] = useState<CommitInfo | null>(null)
+  const [cherryPickSubmitting, setCherryPickSubmitting] = useState(false)
+  const [cherryPickDialogError, setCherryPickDialogError] = useState<string | null>(null)
+  const [revertDialogOpen, setRevertDialogOpen] = useState(false)
+  const [revertTargetCommit, setRevertTargetCommit] = useState<CommitInfo | null>(null)
+  const [revertSubmitting, setRevertSubmitting] = useState(false)
+  const [revertDialogError, setRevertDialogError] = useState<string | null>(null)
+  const [rebaseDialogOpen, setRebaseDialogOpen] = useState(false)
+  const [rebaseTargetCommit, setRebaseTargetCommit] = useState<CommitInfo | null>(null)
+  const [rebaseSubmitting, setRebaseSubmitting] = useState(false)
+  const [rebaseDialogError, setRebaseDialogError] = useState<string | null>(null)
   const [commitContextMenu, setCommitContextMenu] = useState<{
     x: number
     y: number
@@ -1066,6 +1087,24 @@ export function UnifiedCommitView({
     setCreateBranchDialogOpen(true)
   }, [])
 
+  const openCherryPickDialogForCommit = useCallback((commit: CommitInfo) => {
+    setCherryPickTargetCommit(commit)
+    setCherryPickDialogError(null)
+    setCherryPickDialogOpen(true)
+  }, [])
+
+  const openRevertDialogForCommit = useCallback((commit: CommitInfo) => {
+    setRevertTargetCommit(commit)
+    setRevertDialogError(null)
+    setRevertDialogOpen(true)
+  }, [])
+
+  const openRebaseDialogForCommit = useCallback((commit: CommitInfo) => {
+    setRebaseTargetCommit(commit)
+    setRebaseDialogError(null)
+    setRebaseDialogOpen(true)
+  }, [])
+
   const handleConfirmCreateBranch = useCallback(async () => {
     if (!onCreateBranch || !createBranchTargetCommit) return
     const name = newBranchName.trim()
@@ -1106,6 +1145,66 @@ export function UnifiedCommitView({
       setResetSubmitting(false)
     }
   }, [onResetToCommit, resetTargetCommit, resetMode])
+
+  const handleConfirmCherryPick = useCallback(async () => {
+    if (!onCherryPickCommit || !cherryPickTargetCommit) return
+    setCherryPickDialogError(null)
+    setCherryPickSubmitting(true)
+    try {
+      const ok = await onCherryPickCommit(cherryPickTargetCommit.id)
+      if (!ok) return
+      setCherryPickDialogOpen(false)
+      setCherryPickTargetCommit(null)
+      setSelectedCommit(null)
+      setCommitFiles([])
+      setSelectedFile(null)
+      setDiff('')
+    } catch (e) {
+      setCherryPickDialogError(formatTauriInvokeError(e, 'Cherry-pick 失败'))
+    } finally {
+      setCherryPickSubmitting(false)
+    }
+  }, [onCherryPickCommit, cherryPickTargetCommit])
+
+  const handleConfirmRevert = useCallback(async () => {
+    if (!onRevertCommit || !revertTargetCommit) return
+    setRevertDialogError(null)
+    setRevertSubmitting(true)
+    try {
+      const ok = await onRevertCommit(revertTargetCommit.id)
+      if (!ok) return
+      setRevertDialogOpen(false)
+      setRevertTargetCommit(null)
+      setSelectedCommit(null)
+      setCommitFiles([])
+      setSelectedFile(null)
+      setDiff('')
+    } catch (e) {
+      setRevertDialogError(formatTauriInvokeError(e, 'Revert 失败'))
+    } finally {
+      setRevertSubmitting(false)
+    }
+  }, [onRevertCommit, revertTargetCommit])
+
+  const handleConfirmRebase = useCallback(async () => {
+    if (!onRebaseToCommit || !rebaseTargetCommit) return
+    setRebaseDialogError(null)
+    setRebaseSubmitting(true)
+    try {
+      const ok = await onRebaseToCommit(rebaseTargetCommit.id)
+      if (!ok) return
+      setRebaseDialogOpen(false)
+      setRebaseTargetCommit(null)
+      setSelectedCommit(null)
+      setCommitFiles([])
+      setSelectedFile(null)
+      setDiff('')
+    } catch (e) {
+      setRebaseDialogError(formatTauriInvokeError(e, 'Rebase 失败'))
+    } finally {
+      setRebaseSubmitting(false)
+    }
+  }, [onRebaseToCommit, rebaseTargetCommit])
 
   // 处理提交选择 - 使用 useCallback 优化
   const handleCommitSelect = useCallback(async (commit: CommitInfo) => {
@@ -1299,6 +1398,18 @@ export function UnifiedCommitView({
       prevProps.isSelected === nextProps.isSelected
     )
   })
+
+  const commitContextMenuItemCount = [
+    onCreateBranch,
+    onResetToCommit,
+    onCherryPickCommit,
+    onRevertCommit,
+    onRebaseToCommit,
+  ].filter(Boolean).length
+  const commitContextMenuViewportMargin = Math.max(
+    56,
+    commitContextMenuItemCount * 48 + 20
+  )
 
   return (
     <div
@@ -1710,7 +1821,15 @@ export function UnifiedCommitView({
                   )}
                   onClick={() => handleCommitSelect(commit)}
                   onContextMenu={(e) => {
-                    if (!onResetToCommit && !onCreateBranch) return
+                    if (
+                      !onResetToCommit &&
+                      !onCreateBranch &&
+                      !onCherryPickCommit &&
+                      !onRevertCommit &&
+                      !onRebaseToCommit
+                    ) {
+                      return
+                    }
                     e.preventDefault()
                     e.stopPropagation()
                     setCommitContextMenu({ x: e.clientX, y: e.clientY, commit })
@@ -1881,7 +2000,7 @@ export function UnifiedCommitView({
               <GitCompare className="h-14 w-14 shrink-0 opacity-40" />
               <p className="text-sm font-medium text-foreground">选择提交查看变更</p>
                 <p className="max-w-sm text-xs leading-relaxed opacity-80">
-                  在左侧提交记录中点击任意一条，右侧将显示该提交的说明与文件列表。可拖动中间竖条调整列表宽度。在提交项上右键可选择「从此提交创建分支」或「重置到此提交」。
+                  在左侧提交记录中点击任意一条，右侧将显示该提交的说明与文件列表。可拖动中间竖条调整列表宽度。在提交项上右键可执行历史操作（分支、重置、cherry-pick、revert、rebase）。
                 </p>
               </CardContent>
             </Card>
@@ -2080,7 +2199,7 @@ export function UnifiedCommitView({
               left: Math.min(Math.max(6, commitContextMenu.x), window.innerWidth - 220),
               top: Math.min(
                 Math.max(6, commitContextMenu.y),
-                window.innerHeight - (onCreateBranch && onResetToCommit ? 104 : 56)
+                window.innerHeight - commitContextMenuViewportMargin
               ),
             }}
           >
@@ -2117,6 +2236,54 @@ export function UnifiedCommitView({
               >
                 <RotateCcw className="h-3.5 w-3.5 shrink-0" />
                 重置到此提交
+              </button>
+            )}
+            {onCherryPickCommit && (
+              <button
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={syncBusy || isCommitCheckedOut(commitContextMenu.commit)}
+                title="将该提交应用到当前分支（git cherry-pick）"
+                onClick={() => {
+                  openCherryPickDialogForCommit(commitContextMenu.commit)
+                  setCommitContextMenu(null)
+                }}
+              >
+                <Copy className="h-3.5 w-3.5 shrink-0" />
+                Cherry-pick 此提交
+              </button>
+            )}
+            {onRevertCommit && (
+              <button
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={syncBusy || isCommitCheckedOut(commitContextMenu.commit)}
+                title="生成一个反做该提交的新提交（git revert）"
+                onClick={() => {
+                  openRevertDialogForCommit(commitContextMenu.commit)
+                  setCommitContextMenu(null)
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5 shrink-0" />
+                Revert 此提交
+              </button>
+            )}
+            {onRebaseToCommit && (
+              <button
+                type="button"
+                role="menuitem"
+                className="flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={syncBusy || isCommitCheckedOut(commitContextMenu.commit)}
+                title="将当前分支 rebase 到该提交（git rebase <commit>）"
+                onClick={() => {
+                  openRebaseDialogForCommit(commitContextMenu.commit)
+                  setCommitContextMenu(null)
+                }}
+              >
+                <GitCompare className="h-3.5 w-3.5 shrink-0" />
+                Rebase 到此提交
               </button>
             )}
           </div>,
@@ -2487,6 +2654,184 @@ export function UnifiedCommitView({
                     </span>
                   ) : (
                     '创建分支'
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={cherryPickDialogOpen}
+        onOpenChange={(open) => {
+          setCherryPickDialogOpen(open)
+          if (!open) {
+            setCherryPickDialogError(null)
+            setCherryPickTargetCommit(null)
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Cherry-pick 提交</DialogTitle>
+          </DialogHeader>
+          {cherryPickTargetCommit && (
+            <div className="space-y-4 text-sm">
+              <div className="rounded-md border border-border bg-muted/30 px-3 py-2">
+                <p className="font-mono text-xs text-muted-foreground">{cherryPickTargetCommit.short_id}</p>
+                <p className="mt-1 line-clamp-2 text-foreground" title={cherryPickTargetCommit.message}>
+                  {cherryPickTargetCommit.message.split('\n')[0]}
+                </p>
+              </div>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                将把该提交应用到当前分支并生成新提交。若发生冲突，需要先解决冲突后再继续或中止。
+              </p>
+              {cherryPickDialogError && (
+                <p className="whitespace-pre-wrap text-xs text-destructive">{cherryPickDialogError}</p>
+              )}
+              <div className="flex justify-end gap-2 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCherryPickDialogOpen(false)}
+                  disabled={cherryPickSubmitting}
+                >
+                  取消
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void handleConfirmCherryPick()}
+                  disabled={cherryPickSubmitting}
+                >
+                  {cherryPickSubmitting ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      执行中…
+                    </span>
+                  ) : (
+                    '确认 Cherry-pick'
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={revertDialogOpen}
+        onOpenChange={(open) => {
+          setRevertDialogOpen(open)
+          if (!open) {
+            setRevertDialogError(null)
+            setRevertTargetCommit(null)
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Revert 提交</DialogTitle>
+          </DialogHeader>
+          {revertTargetCommit && (
+            <div className="space-y-4 text-sm">
+              <div className="rounded-md border border-border bg-muted/30 px-3 py-2">
+                <p className="font-mono text-xs text-muted-foreground">{revertTargetCommit.short_id}</p>
+                <p className="mt-1 line-clamp-2 text-foreground" title={revertTargetCommit.message}>
+                  {revertTargetCommit.message.split('\n')[0]}
+                </p>
+              </div>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                将创建一个“反向提交”来撤销该提交的改动，不会改写已有历史。
+              </p>
+              {revertDialogError && (
+                <p className="whitespace-pre-wrap text-xs text-destructive">{revertDialogError}</p>
+              )}
+              <div className="flex justify-end gap-2 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setRevertDialogOpen(false)}
+                  disabled={revertSubmitting}
+                >
+                  取消
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void handleConfirmRevert()}
+                  disabled={revertSubmitting}
+                >
+                  {revertSubmitting ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      执行中…
+                    </span>
+                  ) : (
+                    '确认 Revert'
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={rebaseDialogOpen}
+        onOpenChange={(open) => {
+          setRebaseDialogOpen(open)
+          if (!open) {
+            setRebaseDialogError(null)
+            setRebaseTargetCommit(null)
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Rebase 到此提交</DialogTitle>
+          </DialogHeader>
+          {rebaseTargetCommit && (
+            <div className="space-y-4 text-sm">
+              <div className="rounded-md border border-border bg-muted/30 px-3 py-2">
+                <p className="font-mono text-xs text-muted-foreground">{rebaseTargetCommit.short_id}</p>
+                <p className="mt-1 line-clamp-2 text-foreground" title={rebaseTargetCommit.message}>
+                  {rebaseTargetCommit.message.split('\n')[0]}
+                </p>
+              </div>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                等价于 <span className="font-mono">git rebase &lt;commit&gt;</span>。会改写当前分支历史，推送前请确认团队协作策略。
+              </p>
+              {rebaseDialogError && (
+                <p className="whitespace-pre-wrap text-xs text-destructive">{rebaseDialogError}</p>
+              )}
+              <div className="flex justify-end gap-2 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setRebaseDialogOpen(false)}
+                  disabled={rebaseSubmitting}
+                >
+                  取消
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="destructive"
+                  onClick={() => void handleConfirmRebase()}
+                  disabled={rebaseSubmitting}
+                >
+                  {rebaseSubmitting ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      执行中…
+                    </span>
+                  ) : (
+                    '确认 Rebase'
                   )}
                 </Button>
               </div>

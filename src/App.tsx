@@ -41,6 +41,9 @@ function App() {
     renameBranch,
     mergeBranch,
     resetToCommit,
+    cherryPickCommit,
+    revertCommit,
+    rebaseToCommit,
     getCommitFiles, 
     getCommitsPaginated,
     searchCommits,
@@ -216,6 +219,42 @@ function App() {
 
   const handleMergeBranch = async (sourceBranch: string, ffOnly: boolean) => {
     const ok = await mergeBranch(sourceBranch, ffOnly)
+    if (!ok) return false
+    setSelectedCommit(null)
+    setCommitFiles([])
+    setSelectedFile(null)
+    setIncomingCommits([])
+    setLocalCommits([])
+    setHasMoreCommits(true)
+    return true
+  }
+
+  const handleCherryPickCommit = async (commitId: string) => {
+    const ok = await cherryPickCommit(commitId)
+    if (!ok) return false
+    setSelectedCommit(null)
+    setCommitFiles([])
+    setSelectedFile(null)
+    setIncomingCommits([])
+    setLocalCommits([])
+    setHasMoreCommits(true)
+    return true
+  }
+
+  const handleRevertCommit = async (commitId: string) => {
+    const ok = await revertCommit(commitId)
+    if (!ok) return false
+    setSelectedCommit(null)
+    setCommitFiles([])
+    setSelectedFile(null)
+    setIncomingCommits([])
+    setLocalCommits([])
+    setHasMoreCommits(true)
+    return true
+  }
+
+  const handleRebaseToCommit = async (ontoCommitId: string) => {
+    const ok = await rebaseToCommit(ontoCommitId)
     if (!ok) return false
     setSelectedCommit(null)
     setCommitFiles([])
@@ -788,6 +827,9 @@ function App() {
                 headShortId={repoInfo.head_short_id ?? undefined}
                 onResetToCommit={resetToCommit}
                 onCreateBranch={handleCreateBranch}
+                onCherryPickCommit={handleCherryPickCommit}
+                onRevertCommit={handleRevertCommit}
+                onRebaseToCommit={handleRebaseToCommit}
                 listError={commitListError}
                 hasUpstream={repoInfo.has_upstream ?? true}
                 hasOriginRemote={repoInfo.has_origin_remote ?? true}

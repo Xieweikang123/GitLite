@@ -3419,6 +3419,99 @@ async fn reset_to_commit(repo_path: String, commit_id: String, mode: String) -> 
     Ok(format!("已执行「{}」重置，当前指向 {}", mode_cn, short))
 }
 
+/// 在当前分支应用指定提交（等价于 `git cherry-pick <commit>`）。
+#[tauri::command]
+async fn cherry_pick_commit(repo_path: String, commit_id: String) -> Result<String, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
+    history_op_preflight(&repo)?;
+
+    let id = commit_id.trim();
+    if id.is_empty() {
+        return Err("提交 ID 不能为空".to_string());
+    }
+    let _ = Oid::from_str(id).map_err(|e| format!("无效的提交 ID: {}", e))?;
+
+    let out = run_git_in_repo(&repo_path, &["cherry-pick", id])
+        .map_err(|e| format!("无法执行 git cherry-pick: {}", e))?;
+    if !out.status.success() {
+        let detail = git_output_detail(&out);
+        let repo_after =
+            Repository::open(&repo_path).map_err(|e| format!("操作失败后无法重新打开仓库: {}", e))?;
+        if repo_after.state() != RepositoryState::Clean {
+            return Err(format!(
+                "Cherry-pick 失败并进入进行中状态（{:?}）。请先解决冲突后继续，或用命令行 `git cherry-pick --abort` 终止。详情：{}",
+                repo_after.state(),
+                detail
+            ));
+        }
+        return Err(format!("Cherry-pick 失败: {}", detail));
+    }
+
+    Ok(format!("已应用提交 {}", &id[..id.len().min(7)]))
+}
+
+/// 反做指定提交（等价于 `git revert --no-edit <commit>`）。
+#[tauri::command]
+async fn revert_commit(repo_path: String, commit_id: String) -> Result<String, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
+    history_op_preflight(&repo)?;
+
+    let id = commit_id.trim();
+    if id.is_empty() {
+        return Err("提交 ID 不能为空".to_string());
+    }
+    let _ = Oid::from_str(id).map_err(|e| format!("无效的提交 ID: {}", e))?;
+
+    let out = run_git_in_repo(&repo_path, &["revert", "--no-edit", id])
+        .map_err(|e| format!("无法执行 git revert: {}", e))?;
+    if !out.status.success() {
+        let detail = git_output_detail(&out);
+        let repo_after =
+            Repository::open(&repo_path).map_err(|e| format!("操作失败后无法重新打开仓库: {}", e))?;
+        if repo_after.state() != RepositoryState::Clean {
+            return Err(format!(
+                "Revert 失败并进入进行中状态（{:?}）。请先解决冲突后继续，或用命令行 `git revert --abort` 终止。详情：{}",
+                repo_after.state(),
+                detail
+            ));
+        }
+        return Err(format!("Revert 失败: {}", detail));
+    }
+
+    Ok(format!("已反做提交 {}", &id[..id.len().min(7)]))
+}
+
+/// 将当前分支 rebase 到指定提交（等价于 `git rebase <onto>`）。
+#[tauri::command]
+async fn rebase_to_commit(repo_path: String, onto_commit_id: String) -> Result<String, String> {
+    let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
+    history_op_preflight(&repo)?;
+
+    let onto = onto_commit_id.trim();
+    if onto.is_empty() {
+        return Err("目标提交 ID 不能为空".to_string());
+    }
+    let _ = Oid::from_str(onto).map_err(|e| format!("无效的提交 ID: {}", e))?;
+
+    let out =
+        run_git_in_repo(&repo_path, &["rebase", onto]).map_err(|e| format!("无法执行 git rebase: {}", e))?;
+    if !out.status.success() {
+        let detail = git_output_detail(&out);
+        let repo_after =
+            Repository::open(&repo_path).map_err(|e| format!("操作失败后无法重新打开仓库: {}", e))?;
+        if repo_after.state() != RepositoryState::Clean {
+            return Err(format!(
+                "Rebase 失败并进入进行中状态（{:?}）。请先解决冲突后继续，或用命令行 `git rebase --abort` 终止。详情：{}",
+                repo_after.state(),
+                detail
+            ));
+        }
+        return Err(format!("Rebase 失败: {}", detail));
+    }
+
+    Ok(format!("已将当前分支 rebase 到 {}", &onto[..onto.len().min(7)]))
+}
+
 // 获取提交的文件列表
 #[tauri::command]
 async fn get_commit_files(repo_path: String, commit_id: String) -> Result<Vec<FileChange>, String> {
@@ -4176,6 +4269,20 @@ fn pull_preflight(repo: &Repository) -> Result<(), String> {
             s
         )),
     }
+}
+
+fn history_op_preflight(repo: &Repository) -> Result<(), String> {
+    pull_preflight(repo)?;
+    let ws = collect_workspace_status(repo)?;
+    if !ws.staged_files.is_empty()
+        || !ws.unstaged_files.is_empty()
+        || !ws.conflicted_files.is_empty()
+    {
+        return Err(
+            "工作区存在未提交修改或冲突，请先提交/暂存/清理后再执行历史操作。".to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn tauri_pull_log_line(
@@ -5565,6 +5672,9 @@ fn main() {
             rename_branch,
             merge_branch,
             reset_to_commit,
+            cherry_pick_commit,
+            revert_commit,
+            rebase_to_commit,
             get_file_diff,
             get_commit_files,
             get_single_file_diff,

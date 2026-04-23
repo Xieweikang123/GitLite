@@ -401,6 +401,84 @@ export function useGit() {
     [repoInfo]
   )
 
+  const cherryPickCommit = useCallback(
+    async (commitId: string): Promise<boolean> => {
+      if (!repoInfo) return false
+
+      try {
+        setLoading(true)
+        setError(null)
+        await invoke('cherry_pick_commit', {
+          repoPath: repoInfo.path,
+          commitId,
+        })
+        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
+          path: repoInfo.path,
+        })
+        setRepoInfo(updatedRepoInfo)
+        return true
+      } catch (err) {
+        setError(formatTauriInvokeError(err, 'Cherry-pick 失败'))
+        return false
+      } finally {
+        setLoading(false)
+      }
+    },
+    [repoInfo]
+  )
+
+  const revertCommit = useCallback(
+    async (commitId: string): Promise<boolean> => {
+      if (!repoInfo) return false
+
+      try {
+        setLoading(true)
+        setError(null)
+        await invoke('revert_commit', {
+          repoPath: repoInfo.path,
+          commitId,
+        })
+        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
+          path: repoInfo.path,
+        })
+        setRepoInfo(updatedRepoInfo)
+        return true
+      } catch (err) {
+        setError(formatTauriInvokeError(err, 'Revert 失败'))
+        return false
+      } finally {
+        setLoading(false)
+      }
+    },
+    [repoInfo]
+  )
+
+  const rebaseToCommit = useCallback(
+    async (ontoCommitId: string): Promise<boolean> => {
+      if (!repoInfo) return false
+
+      try {
+        setLoading(true)
+        setError(null)
+        await invoke('rebase_to_commit', {
+          repoPath: repoInfo.path,
+          ontoCommitId,
+        })
+        const updatedRepoInfo: RepoInfo = await invoke('open_repository', {
+          path: repoInfo.path,
+        })
+        setRepoInfo(updatedRepoInfo)
+        return true
+      } catch (err) {
+        setError(formatTauriInvokeError(err, 'Rebase 失败'))
+        return false
+      } finally {
+        setLoading(false)
+      }
+    },
+    [repoInfo]
+  )
+
   const getCommitFiles = useCallback(async (commitId: string): Promise<FileChange[]> => {
     if (!repoInfo) throw new Error('No repository open')
     
@@ -775,6 +853,9 @@ export function useGit() {
     renameBranch,
     mergeBranch,
     resetToCommit,
+    cherryPickCommit,
+    revertCommit,
+    rebaseToCommit,
     getFileDiff,
     getCommitFiles,
     getSingleFileDiff,
