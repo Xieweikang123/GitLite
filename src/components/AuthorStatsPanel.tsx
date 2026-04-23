@@ -244,6 +244,8 @@ function cacheKeyFileTerritory(
 interface AuthorStatsPanelProps {
   repoPath: string | undefined
   branchNames: string[]
+  initialReportTab?: ReportTab
+  onReportTabChange?: (tab: ReportTab) => void
   getAuthorCommitStats: (
     scope: 'head' | 'all',
     rev?: string | null
@@ -269,20 +271,28 @@ interface AuthorStatsPanelProps {
     scope: 'head' | 'all',
     rev?: string | null
   ) => Promise<CommitInfo[]>
+  onJumpToCommit?: (payload: {
+    commit: CommitInfo
+    scope: 'head' | 'all'
+    rev: string | null
+  }) => void
 }
 
 export function AuthorStatsPanel({
   repoPath,
   branchNames,
+  initialReportTab = 'authors',
+  onReportTabChange,
   getAuthorCommitStats,
   getCommitActivityStats,
   getCommitsForActivityBucket,
   getDiffAggregateStats,
   getFileTerritoryStats,
+  onJumpToCommit,
 }: AuthorStatsPanelProps) {
   const [statsScope, setStatsScope] = useState<'head' | 'all'>('head')
   const [statsRev, setStatsRev] = useState<string | null>(null)
-  const [reportTab, setReportTab] = useState<ReportTab>('authors')
+  const [reportTab, setReportTab] = useState<ReportTab>(initialReportTab)
   const [timeGran, setTimeGran] = useState<TimeGranularity>('day')
   const [calendarGranularity, setCalendarGranularity] = useState<CalendarGranularity>('day')
   /** 日历 Tab 当前展示的月份（自然月首日） */
@@ -319,6 +329,10 @@ export function AuthorStatsPanel({
     setCalendarMonth(startOfMonth(new Date()))
     setDrillOpen(false)
   }, [repoPath])
+
+  useEffect(() => {
+    setReportTab(initialReportTab)
+  }, [initialReportTab])
 
   useEffect(() => {
     if (reportTab !== 'lines' && reportTab !== 'paths' && reportTab !== 'territory') {
@@ -760,7 +774,10 @@ export function AuthorStatsPanel({
                     ? 'bg-primary/12 text-primary shadow-sm ring-1 ring-primary/25'
                     : 'text-muted-foreground hover:bg-muted/80 hover:text-foreground'
                 )}
-                onClick={() => setReportTab(id)}
+                onClick={() => {
+                  setReportTab(id)
+                  onReportTabChange?.(id)
+                }}
               >
                 <Icon className="h-3 w-3 shrink-0 opacity-90 sm:h-3.5 sm:w-3.5" aria-hidden />
                 {label}
@@ -892,9 +909,18 @@ export function AuthorStatsPanel({
             {!drillLoading &&
               !drillError &&
               drillCommits.map((c) => (
-                <div
+                <button
                   key={c.id}
-                  className="border-b border-border/50 py-2.5 last:border-0"
+                  type="button"
+                  className="w-full border-b border-border/50 py-2.5 text-left transition-colors hover:bg-muted/35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring last:border-0"
+                  onClick={() => {
+                    onJumpToCommit?.({
+                      commit: c,
+                      scope: scopeArgs.scope,
+                      rev: scopeArgs.rev,
+                    })
+                    setDrillOpen(false)
+                  }}
                 >
                   <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                     <span className="font-mono text-[11px] font-semibold text-primary">{c.short_id}</span>
@@ -906,7 +932,7 @@ export function AuthorStatsPanel({
                     <span>{c.author}</span>
                     <span className="tabular-nums">{c.date}</span>
                   </div>
-                </div>
+                </button>
               ))}
           </div>
         </DialogContent>

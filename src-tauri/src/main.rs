@@ -2127,6 +2127,15 @@ async fn get_log_file_path() -> Result<String, String> {
     Ok(log_file.to_string_lossy().to_string())
 }
 
+// 前端可用：追加一条调试日志到 gitlite.log
+#[tauri::command]
+async fn append_gitlite_log(level: String, message: String) -> Result<(), String> {
+    let lv = level.trim();
+    let normalized = if lv.is_empty() { "INFO" } else { lv };
+    log_message(normalized, &message);
+    Ok(())
+}
+
 // 打开日志目录（跨平台）
 #[tauri::command]
 async fn open_log_dir() -> Result<(), String> {
@@ -5877,6 +5886,7 @@ fn main() {
             pull_changes_with_logs,
             git_diagnostics,
             get_log_file_path,
+            append_gitlite_log,
             open_log_dir,
             open_folder,
             open_external_url,

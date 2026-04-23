@@ -77,6 +77,7 @@ function App() {
   /** 待拉取区间（远端领先于 HEAD 的提交），与本地分页列表分开，便于 load more 的 offset 仍指向 HEAD 历史 */
   const [incomingCommits, setIncomingCommits] = useState<CommitInfo[]>([])
   const [localCommits, setLocalCommits] = useState<CommitInfo[]>([])
+  const localCommitsRef = React.useRef<CommitInfo[]>([])
   const [loadingMore, setLoadingMore] = useState(false)
   const [hasMoreCommits, setHasMoreCommits] = useState(true)
   const [searchResults, setSearchResults] = useState<CommitInfo[] | null>(null)
@@ -101,6 +102,23 @@ function App() {
   const commitFilesReqRef = React.useRef(0)
   /** 提交页：搜索 / 加载更多失败时的可读提示 */
   const [commitListError, setCommitListError] = useState<string | null>(null)
+  /** 提交列表数据代次：切换范围/仓库或手动重置列表时递增，用于丢弃过期异步结果 */
+  const commitListEpochRef = React.useRef(0)
+  /** 防止同一时刻并发触发多次 load more（如观察器 + 跳转补载同时触发） */
+  const loadMoreInFlightRef = React.useRef(false)
+  const jumpRequestActiveRef = React.useRef(false)
+  const pendingJumpCommitIdRef = React.useRef<string | null>(null)
+  const appendJumpLog = React.useCallback(
+    (message: string, level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' = 'DEBUG') => {
+      void invoke('append_gitlite_log', {
+        level,
+        message: `[jump][App] ${message}`,
+      }).catch(() => {
+        /* 忽略日志写入失败，避免影响主流程 */
+      })
+    },
+    []
+  )
 
   const handleCommitSelect = async (commit: CommitInfo) => {
     setSelectedCommit(commit)
@@ -299,29 +317,71 @@ function App() {
   }
 
   const handleLoadMore = async () => {
-    if (loadingMore || !hasMoreCommits || !repoInfo) return
-    
+    if (loadMoreInFlightRef.current || loadingMore || !hasMoreCommits || !repoInfo) return
+    const reqEpoch = commitListEpochRef.current
+    const offset = localCommitsRef.current.length
+    const currentPendingJump = pendingJumpCommitIdRef.current
+    if (jumpRequestActiveRef.current || currentPendingJump) {
+      appendJumpLog(
+        `loadMore start epoch=${reqEpoch} offset=${offset} scope=${commitLogScope} rev=${commitLogRev ?? 'null'} pending=${currentPendingJump ?? 'null'}`
+      )
+    }
+    loadMoreInFlightRef.current = true
     setLoadingMore(true)
     setCommitListError(null)
     try {
       const newCommits = await getCommitsPaginated(
         50,
-        localCommits.length,
+        offset,
         commitLogScope === 'all' ? 'all' : 'head',
         commitLogScope === 'head' ? commitLogRev : null
       )
+      if (reqEpoch !== commitListEpochRef.current) return
       if (newCommits.length === 0) {
         setHasMoreCommits(false)
+        if (jumpRequestActiveRef.current || currentPendingJump) {
+          appendJumpLog(
+            `loadMore result empty epoch=${reqEpoch} offset=${offset} => hasMore=false`,
+            'WARN'
+          )
+        }
       } else {
-        setLocalCommits(prev => [...prev, ...newCommits])
+        let appendedUnique = 0
+        setLocalCommits(prev => {
+          const seen = new Set(prev.map((c) => c.id))
+          const next = [...prev]
+          for (const c of newCommits) {
+            if (seen.has(c.id)) continue
+            seen.add(c.id)
+            next.push(c)
+            appendedUnique += 1
+          }
+          return next
+        })
+        if (jumpRequestActiveRef.current || currentPendingJump) {
+          appendJumpLog(
+            `loadMore result epoch=${reqEpoch} offset=${offset} fetched=${newCommits.length} appendedUnique=${appendedUnique} localNow=${localCommitsRef.current.length}`
+          )
+        }
         if (newCommits.length < 50) {
           setHasMoreCommits(false)
+          if (jumpRequestActiveRef.current || currentPendingJump) {
+            appendJumpLog(
+              `loadMore reached tail epoch=${reqEpoch} offset=${offset} fetched=${newCommits.length} => hasMore=false`
+            )
+          }
+        } else if (appendedUnique === 0 && (jumpRequestActiveRef.current || currentPendingJump)) {
+          appendJumpLog(
+            `loadMore duplicate page detected epoch=${reqEpoch} offset=${offset} fetched=50 appendedUnique=0`,
+            'WARN'
+          )
         }
       }
     } catch (error) {
       console.error('Failed to load more commits:', error)
       setCommitListError(formatTauriInvokeError(error, '加载更多提交失败'))
     } finally {
+      loadMoreInFlightRef.current = false
       setLoadingMore(false)
     }
   }
@@ -580,6 +640,7 @@ function App() {
 
   // 当仓库路径、提交范围或 HEAD 首条变化时同步列表；换仓库时先回到「当前分支」
   React.useEffect(() => {
+    commitListEpochRef.current += 1
     const path = repoInfo?.path ?? null
     const pathChanged = path != null && path !== prevRepoPathRef.current
 
@@ -656,9 +717,141 @@ function App() {
       ? localCommits
       : [...incomingCommits, ...localCommits])
 
+  const mergedCommitsForViewDeduped = React.useMemo(() => {
+    if (mergedCommitsForView.length <= 1) return mergedCommitsForView
+    const seen = new Set<string>()
+    const out: CommitInfo[] = []
+    for (const c of mergedCommitsForView) {
+      if (seen.has(c.id)) continue
+      seen.add(c.id)
+      out.push(c)
+    }
+    return out
+  }, [mergedCommitsForView])
+
+  const jumpToCommitSeqRef = React.useRef(0)
+  const [jumpToCommitRequest, setJumpToCommitRequest] = useState<{
+    commit: CommitInfo
+    seq: number
+  } | null>(null)
+  const [pendingJumpCommitId, setPendingJumpCommitId] = useState<string | null>(null)
+
   const [activeTab, setActiveTab] = useState<
     'workspace' | 'commits' | 'files' | 'stats'
   >('workspace')
+  const [statsReportTab, setStatsReportTab] = useState<
+    'authors' | 'timeline' | 'heatmap' | 'calendar' | 'lines' | 'paths' | 'territory'
+  >('authors')
+
+  const handleStatsCommitJump = ({
+    commit,
+    scope,
+    rev,
+  }: {
+    commit: CommitInfo
+    scope: 'head' | 'all'
+    rev: string | null
+  }) => {
+    const targetScope: 'head' | 'all' = scope
+    const targetRev: string | null = targetScope === 'head' ? rev : null
+
+    commitListEpochRef.current += 1
+    setSearchResults(null)
+    setCommitLogScope(targetScope)
+    setCommitLogRev(targetRev)
+    // 切换范围后先重置分页状态，避免沿用旧 hasMore 导致提前终止定位
+    setIncomingCommits([])
+    setLocalCommits([])
+    setHasMoreCommits(true)
+
+    jumpToCommitSeqRef.current += 1
+    appendJumpLog(
+      `request created seq=${jumpToCommitSeqRef.current} commitId=${commit.id} short=${commit.short_id} scope=${targetScope} rev=${targetRev ?? 'null'}`
+    )
+    setJumpToCommitRequest({
+      commit,
+      seq: jumpToCommitSeqRef.current,
+    })
+    setPendingJumpCommitId(commit.id)
+    setActiveTab('commits')
+  }
+
+  useEffect(() => {
+    localCommitsRef.current = localCommits
+  }, [localCommits])
+
+  useEffect(() => {
+    jumpRequestActiveRef.current = jumpToCommitRequest != null
+    pendingJumpCommitIdRef.current = pendingJumpCommitId
+  }, [jumpToCommitRequest, pendingJumpCommitId])
+
+  const handleJumpToCommitConsumed = React.useCallback(
+    ({ seq, commitId }: { seq: number; commitId: string }) => {
+      appendJumpLog(`request consumed callback seq=${seq} commitId=${commitId}`)
+      setJumpToCommitRequest((prev) => {
+        if (!prev || prev.seq !== seq) return prev
+        return null
+      })
+      setPendingJumpCommitId((prev) => (prev === commitId ? null : prev))
+    },
+    [appendJumpLog]
+  )
+
+  useEffect(() => {
+    if (!pendingJumpCommitId) return
+    const loaded = (commitLogScope === 'all' || commitLogRev
+      ? localCommits
+      : [...incomingCommits, ...localCommits]
+    )
+    const existsInLoaded = loaded.some((c) => c.id === pendingJumpCommitId)
+    appendJumpLog(
+      `pending-check commitId=${pendingJumpCommitId} existsInLoaded=${existsInLoaded} loaded=${loaded.length} local=${localCommits.length} incoming=${incomingCommits.length} hasMore=${hasMoreCommits} loadingMore=${loadingMore} scope=${commitLogScope} rev=${commitLogRev ?? 'null'}`
+    )
+    if (existsInLoaded) {
+      appendJumpLog(`pending-resolved commitId=${pendingJumpCommitId} already-loaded=true`)
+      setPendingJumpCommitId(null)
+      return
+    }
+    if (!repoInfo) {
+      appendJumpLog(`pending-wait repoInfo missing commitId=${pendingJumpCommitId}`)
+      return
+    }
+    // all/rev 模式首批 50 条由同步 effect 拉取；首批未到前不触发补载，避免 offset=0 并发请求
+    const waitingInitialPage =
+      (commitLogScope === 'all' || !!commitLogRev) && localCommits.length === 0
+    if (waitingInitialPage) {
+      appendJumpLog(`pending-wait initial-page commitId=${pendingJumpCommitId}`)
+      return
+    }
+    if (!hasMoreCommits) {
+      const hasAnyLoaded = localCommits.length > 0 || incomingCommits.length > 0
+      if (hasAnyLoaded) {
+        appendJumpLog(
+          `pending-stop hasMore=false commitId=${pendingJumpCommitId} loaded=${loaded.length}`,
+          'WARN'
+        )
+        setPendingJumpCommitId(null)
+      }
+      return
+    }
+    if (loadingMore) {
+      appendJumpLog(`pending-wait loadingMore=true commitId=${pendingJumpCommitId}`)
+      return
+    }
+    appendJumpLog(`pending-trigger loadMore commitId=${pendingJumpCommitId}`)
+    void handleLoadMore()
+  }, [
+    pendingJumpCommitId,
+    commitLogScope,
+    commitLogRev,
+    incomingCommits,
+    localCommits,
+    hasMoreCommits,
+    loadingMore,
+    repoInfo,
+    handleLoadMore,
+    appendJumpLog,
+  ])
 
   return (
     <div className="h-screen bg-background flex flex-col">
@@ -787,18 +980,21 @@ function App() {
             <AuthorStatsPanel
               repoPath={repoInfo?.path}
               branchNames={repoInfo?.branches.map((b) => b.name) ?? []}
+              initialReportTab={statsReportTab}
+              onReportTabChange={setStatsReportTab}
               getAuthorCommitStats={getAuthorCommitStats}
               getCommitActivityStats={getCommitActivityStats}
               getCommitsForActivityBucket={getCommitsForActivityBucket}
               getDiffAggregateStats={getDiffAggregateStats}
               getFileTerritoryStats={getFileTerritoryStats}
+              onJumpToCommit={handleStatsCommitJump}
             />
           </div>
         ) : (
           <div className="flex min-h-0 flex-1 flex-col px-2 sm:px-4">
             {repoInfo ? (
               <UnifiedCommitView
-                commits={mergedCommitsForView}
+                commits={mergedCommitsForViewDeduped}
                 onLoadMore={handleLoadMore}
                 hasMore={!searchResults && hasMoreCommits}
                 loading={loadingMore}
@@ -841,6 +1037,8 @@ function App() {
                 listError={commitListError}
                 hasUpstream={repoInfo.has_upstream ?? true}
                 hasOriginRemote={repoInfo.has_origin_remote ?? true}
+                jumpToCommitRequest={jumpToCommitRequest}
+                onJumpToCommitConsumed={handleJumpToCommitConsumed}
               />
             ) : (
               <div className="text-center py-12 flex-1 flex items-center justify-center">

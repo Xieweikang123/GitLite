@@ -371,6 +371,10 @@ interface UnifiedCommitViewProps {
   listError?: string | null
   hasUpstream?: boolean
   hasOriginRemote?: boolean
+  /** 外部请求：切换到提交页后选中某条提交（例如统计报表联动） */
+  jumpToCommitRequest?: { commit: CommitInfo; seq: number } | null
+  /** 外部请求已完成消费（用于上层清理请求，避免重复消费） */
+  onJumpToCommitConsumed?: (payload: { seq: number; commitId: string }) => void
 }
 
 export function UnifiedCommitView({
@@ -408,7 +412,9 @@ export function UnifiedCommitView({
   onRebaseToCommit,
   listError,
   hasUpstream = true,
-  hasOriginRemote = true
+  hasOriginRemote = true,
+  jumpToCommitRequest = null,
+  onJumpToCommitConsumed
 }: UnifiedCommitViewProps) {
   /** 筛选栏输入（待「查询」应用） */
   const [pendingStart, setPendingStart] = useState('')
@@ -486,6 +492,34 @@ export function UnifiedCommitView({
     })
   }, [])
   const [selectedCommit, setSelectedCommit] = useState<CommitInfo | null>(null)
+  const selectedCommitRef = useRef<CommitInfo | null>(null)
+  selectedCommitRef.current = selectedCommit
+  type JumpRuntimeState = {
+    seq: number
+    targetId: string
+    filtersCleared: boolean
+    selectIssued: boolean
+    firstScrollDone: boolean
+    recalibrated: boolean
+    geometrySigAtLastScroll: string
+    lastObservedGeometrySig: string
+    postScrollSettled: boolean
+  }
+  const activeJumpRef = useRef<JumpRuntimeState | null>(null)
+  const consumedJumpSeqRef = useRef<number>(0)
+  const [jumpLayoutPass, setJumpLayoutPass] = useState(0)
+  const jumpWaitLogKeyRef = useRef<string>('')
+  const appendJumpLog = useCallback(
+    (message: string, level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' = 'DEBUG') => {
+      void invoke('append_gitlite_log', {
+        level,
+        message: `[jump][UnifiedCommitView] ${message}`,
+      }).catch(() => {
+        /* 忽略日志写入失败 */
+      })
+    },
+    []
+  )
   const [commitFiles, setCommitFiles] = useState<FileChange[]>([])
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [diff, setDiff] = useState<string>('')
@@ -814,6 +848,20 @@ export function UnifiedCommitView({
     isSearchMode,
   ])
 
+  const scrollCommitRowIntoView = useCallback(
+    (commitId: string) => {
+      const root = commitListScrollRef.current
+      if (!root) return false
+      const row = root.querySelector<HTMLDivElement>(`[data-commit-id="${commitId}"]`)
+      if (!row) return false
+      const align = () => row.scrollIntoView({ block: 'center' })
+      align()
+      window.requestAnimationFrame(align)
+      return true
+    },
+    []
+  )
+
   const branchLabelIdsKey = useMemo(
     () => filteredCommits.map((c) => c.id).join(','),
     [filteredCommits]
@@ -898,6 +946,12 @@ export function UnifiedCommitView({
     }
     return () => ro.disconnect()
   }, [filteredCommits, branchLabelIdsKey, branchLabelsByCommit])
+
+  useEffect(() => {
+    if (!selectedCommit) return
+    if (activeJumpRef.current && !activeJumpRef.current.firstScrollDone) return
+    scrollCommitRowIntoView(selectedCommit.id)
+  }, [selectedCommit, scrollCommitRowIntoView])
 
   /** 与后端总结一致：按日期时间升序（字符串可比） */
   const commitsSortedForCopy = useMemo(() => {
@@ -1209,7 +1263,7 @@ export function UnifiedCommitView({
   // 处理提交选择 - 使用 useCallback 优化
   const handleCommitSelect = useCallback(async (commit: CommitInfo) => {
     // 如果已经是当前选中的提交，直接返回
-    if (selectedCommit?.id === commit.id) return
+    if (selectedCommitRef.current?.id === commit.id) return
     
     setSelectedCommit(commit)
     setSelectedFile(null)
@@ -1224,7 +1278,223 @@ export function UnifiedCommitView({
     } finally {
       setLoadingFiles(false)
     }
-  }, [selectedCommit, onGetCommitFiles])
+  }, [onGetCommitFiles])
+
+  const filteredCommitIdsKey = useMemo(
+    () => filteredCommits.map((c) => c.id).join(','),
+    [filteredCommits]
+  )
+  const commitRowHeightsKey = useMemo(
+    () => commitGraphRowHeights.join(','),
+    [commitGraphRowHeights]
+  )
+
+  useEffect(() => {
+    if (!jumpToCommitRequest) {
+      const prev = activeJumpRef.current
+      if (prev) {
+        appendJumpLog(`request cleared before consume seq=${prev.seq} commitId=${prev.targetId}`, 'WARN')
+      }
+      activeJumpRef.current = null
+      jumpWaitLogKeyRef.current = ''
+      return
+    }
+    if (jumpToCommitRequest.seq <= consumedJumpSeqRef.current) return
+    const cur = activeJumpRef.current
+    if (cur?.seq === jumpToCommitRequest.seq) return
+    activeJumpRef.current = {
+      seq: jumpToCommitRequest.seq,
+      targetId: jumpToCommitRequest.commit.id,
+      filtersCleared: false,
+      selectIssued: false,
+      firstScrollDone: false,
+      recalibrated: false,
+      geometrySigAtLastScroll: '',
+      lastObservedGeometrySig: '',
+      postScrollSettled: false,
+    }
+    jumpWaitLogKeyRef.current = ''
+    appendJumpLog(
+      `request received seq=${jumpToCommitRequest.seq} commitId=${jumpToCommitRequest.commit.id} filteredLen=${filteredCommits.length} commitsLen=${commits.length}`
+    )
+  }, [jumpToCommitRequest, appendJumpLog, filteredCommits.length, commits.length])
+
+  useLayoutEffect(() => {
+    const logWait = (key: string, message: string) => {
+      if (jumpWaitLogKeyRef.current === key) return
+      jumpWaitLogKeyRef.current = key
+      appendJumpLog(message)
+    }
+    const runtime = activeJumpRef.current
+    if (!runtime) return
+    if (jumpToCommitRequest?.seq !== runtime.seq) return
+    const targetId = runtime.targetId
+    const targetInCommits = commits.some((c) => c.id === targetId)
+    if (!targetInCommits) {
+      logWait(
+        `wait-commits-${runtime.seq}-${targetId}`,
+        `wait target in commits seq=${runtime.seq} commitId=${targetId} commitsLen=${commits.length}`
+      )
+      return
+    }
+
+    const targetInFiltered = filteredCommits.some((c) => c.id === targetId)
+    if (!targetInFiltered) {
+      if (!runtime.filtersCleared) {
+        runtime.filtersCleared = true
+        appendJumpLog(
+          `clear filters for target visibility seq=${runtime.seq} commitId=${targetId}`
+        )
+        setPendingStart('')
+        setPendingEnd('')
+        setPendingSearch('')
+        setAppliedStart('')
+        setAppliedEnd('')
+        setAppliedSearch('')
+        onClearSearchMode?.()
+      }
+      logWait(
+        `wait-filtered-${runtime.seq}-${targetId}`,
+        `wait target in filtered seq=${runtime.seq} commitId=${targetId} filteredLen=${filteredCommits.length}`
+      )
+      return
+    }
+
+    if (selectedCommitRef.current?.id !== targetId) {
+      if (runtime.selectIssued) return
+      runtime.selectIssued = true
+      appendJumpLog(
+        `select target commit seq=${runtime.seq} commitId=${targetId} currentSelected=${selectedCommitRef.current?.id ?? 'null'}`
+      )
+      const targetCommit =
+        filteredCommits.find((c) => c.id === targetId) ?? jumpToCommitRequest.commit
+      void handleCommitSelect(targetCommit)
+      return
+    }
+
+    const root = commitListScrollRef.current
+    if (!root) {
+      logWait(
+        `wait-root-${runtime.seq}-${targetId}`,
+        `wait commit list root seq=${runtime.seq} commitId=${targetId}`
+      )
+      return
+    }
+    const row = root.querySelector<HTMLDivElement>(`[data-commit-id="${targetId}"]`)
+    if (!row) {
+      logWait(
+        `wait-row-${runtime.seq}-${targetId}`,
+        `wait row mount seq=${runtime.seq} commitId=${targetId} filteredLen=${filteredCommits.length}`
+      )
+      return
+    }
+
+    const geometrySig = [
+      filteredCommitIdsKey,
+      commitRowHeightsKey,
+      row.offsetTop,
+      row.offsetHeight,
+      root.clientHeight,
+      panes.list,
+      panes.file,
+      diffPanelCollapsed ? 1 : 0,
+      rightPanelCollapsed ? 1 : 0,
+    ].join('|')
+
+    if (!runtime.firstScrollDone) {
+      if (commitGraphRowHeights.length !== filteredCommits.length) {
+        logWait(
+          `wait-heights-${runtime.seq}-${targetId}-${commitGraphRowHeights.length}-${filteredCommits.length}`,
+          `wait row heights ready seq=${runtime.seq} commitId=${targetId} heights=${commitGraphRowHeights.length} filtered=${filteredCommits.length}`
+        )
+        return
+      }
+      if (runtime.lastObservedGeometrySig !== geometrySig) {
+        runtime.lastObservedGeometrySig = geometrySig
+        logWait(
+          `wait-geometry-${runtime.seq}-${targetId}-${geometrySig}`,
+          `wait geometry settle seq=${runtime.seq} commitId=${targetId} geometrySig=${geometrySig}`
+        )
+        window.requestAnimationFrame(() => {
+          setJumpLayoutPass((n) => n + 1)
+        })
+        return
+      }
+      scrollCommitRowIntoView(targetId)
+      runtime.firstScrollDone = true
+      runtime.geometrySigAtLastScroll = geometrySig
+      runtime.lastObservedGeometrySig = geometrySig
+      runtime.postScrollSettled = false
+      jumpWaitLogKeyRef.current = ''
+      appendJumpLog(
+        `first scroll seq=${runtime.seq} commitId=${targetId} geometrySig=${geometrySig}`
+      )
+      window.requestAnimationFrame(() => {
+        setJumpLayoutPass((n) => n + 1)
+      })
+      return
+    }
+
+    if (geometrySig !== runtime.geometrySigAtLastScroll) {
+      if (!runtime.recalibrated) {
+        runtime.recalibrated = true
+        runtime.geometrySigAtLastScroll = geometrySig
+        runtime.lastObservedGeometrySig = geometrySig
+        runtime.postScrollSettled = false
+        scrollCommitRowIntoView(targetId)
+        jumpWaitLogKeyRef.current = ''
+        appendJumpLog(
+          `recalibrate after layout shift seq=${runtime.seq} commitId=${targetId} geometrySig=${geometrySig}`
+        )
+        window.requestAnimationFrame(() => {
+          setJumpLayoutPass((n) => n + 1)
+        })
+      } else {
+        logWait(
+          `wait-post-shift-${runtime.seq}-${targetId}`,
+          `layout shifted again but recalibration already used seq=${runtime.seq} commitId=${targetId} geometrySig=${geometrySig}`
+        )
+      }
+      return
+    }
+
+    if (!runtime.postScrollSettled) {
+      runtime.postScrollSettled = true
+      logWait(
+        `wait-post-settle-${runtime.seq}-${targetId}-${geometrySig}`,
+        `wait post-scroll settle seq=${runtime.seq} commitId=${targetId} geometrySig=${geometrySig}`
+      )
+      window.requestAnimationFrame(() => {
+        setJumpLayoutPass((n) => n + 1)
+      })
+      return
+    }
+
+    consumedJumpSeqRef.current = runtime.seq
+    activeJumpRef.current = null
+    jumpWaitLogKeyRef.current = ''
+    appendJumpLog(
+      `consumed seq=${runtime.seq} commitId=${targetId} geometrySig=${geometrySig}`
+    )
+    onJumpToCommitConsumed?.({ seq: runtime.seq, commitId: targetId })
+  }, [
+    jumpToCommitRequest,
+    commits,
+    filteredCommits,
+    filteredCommitIdsKey,
+    commitRowHeightsKey,
+    commitGraphRowHeights.length,
+    handleCommitSelect,
+    onClearSearchMode,
+    onJumpToCommitConsumed,
+    panes.list,
+    panes.file,
+    diffPanelCollapsed,
+    rightPanelCollapsed,
+    jumpLayoutPass,
+    scrollCommitRowIntoView,
+    appendJumpLog,
+  ])
 
   // 处理文件选择 - 优化版本，立即显示加载状态
   const handleFileSelect = useCallback(async (filePath: string) => {
@@ -1806,6 +2076,7 @@ export function UnifiedCommitView({
                 return (
                 <div
                   key={commit.id}
+                  data-commit-id={commit.id}
                   ref={(el) => {
                     commitRowElsRef.current[i] = el
                   }}
