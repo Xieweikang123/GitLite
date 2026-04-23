@@ -64,6 +64,8 @@ export function WorkspaceStatus({
   const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatusData | null>(null)
   const [commitMessage, setCommitMessage] = useState('')
   const [loading, setLoading] = useState(false)
+  /** 提交并同步/推送的独立加载态，避免被其他通用 loading（如状态刷新）中途覆盖 */
+  const [syncLoading, setSyncLoading] = useState(false)
   /** 取消暂存进行中：IPC + 拉状态可能较慢；记录 path 以便在行内按钮上显示加载 */
   const [unstagingLoading, setUnstagingLoading] = useState(false)
   const [unstagingTargetPath, setUnstagingTargetPath] = useState<string | null>(null)
@@ -650,21 +652,30 @@ export function WorkspaceStatus({
 
     try {
       setLoading(true)
+      setSyncLoading(true)
       setError(null)
+      setSyncInfo(null)
+      setSyncStep('正在推送本地提交…')
 
-      if (gitActions) {
-        await gitActions.pushChanges()
+      if (onPushChanges) {
+        await Promise.resolve(onPushChanges())
       } else {
-        const { invoke } = await import('@tauri-apps/api/tauri')
-        await invoke('push_changes', {
-          repoPath: repoInfo.path,
-        })
+        if (gitActions) {
+          await gitActions.pushChanges()
+        } else {
+          const { invoke } = await import('@tauri-apps/api/tauri')
+          await invoke('push_changes', {
+            repoPath: repoInfo.path,
+          })
+        }
       }
 
       await syncParentRepo()
     } catch (err) {
       setError(err instanceof Error ? err.message : '推送失败')
     } finally {
+      setSyncStep(null)
+      setSyncLoading(false)
       setLoading(false)
     }
   }
@@ -679,13 +690,16 @@ export function WorkspaceStatus({
 
     try {
       setLoading(true)
+      setSyncLoading(true)
       setError(null)
       setSyncInfo(null)
+      setSyncStep('正在准备同步…')
 
       if (workspaceStatus?.staged_files?.length) {
         if (!commitMessage.trim()) {
           setError('请先输入提交说明')
           setLoading(false)
+          setSyncLoading(false)
           setSyncStep(null)
           return
         }
@@ -703,7 +717,7 @@ export function WorkspaceStatus({
 
         didCommit = true
         setCommitMessage('')
-        await fetchWorkspaceStatus()
+        await fetchWorkspaceStatus({ silent: true })
         await syncParentRepo()
       }
 
@@ -737,7 +751,7 @@ export function WorkspaceStatus({
         }
         didPull = true
         await syncParentRepo()
-        await fetchWorkspaceStatus()
+        await fetchWorkspaceStatus({ silent: true })
         updatedRepoInfo = gitActions
           ? await gitActions.refreshRepoInfo()
           : await (async () => {
@@ -760,7 +774,7 @@ export function WorkspaceStatus({
       }
 
       setSyncStep('正在刷新状态…')
-      await fetchWorkspaceStatus()
+      await fetchWorkspaceStatus({ silent: true })
       await syncParentRepo()
       if (didCommit || didPull || didPush) {
         const steps = [
@@ -786,6 +800,7 @@ export function WorkspaceStatus({
       }
     } finally {
       setSyncStep(null)
+      setSyncLoading(false)
       setLoading(false)
     }
   }
@@ -867,6 +882,8 @@ export function WorkspaceStatus({
     workspaceStatus.untracked_files.length > 0 ||
     (workspaceStatus.conflicted_files?.length ?? 0) > 0
   )
+  const hasStagedFiles = (workspaceStatus?.staged_files?.length ?? 0) > 0
+  const hasSyncDelta = !!repoInfo && ((repoInfo.ahead ?? 0) > 0 || (repoInfo.behind ?? 0) > 0)
 
   /** 与下列表一致：不含仅表示未跟踪目录的 `path/` 占位项 */
   const untrackedDisplayCount = workspaceStatus
@@ -921,37 +938,39 @@ export function WorkspaceStatus({
         </div>
       )}
 
-      {(unstagingLoading || stagingLoading) && (
-        <div
-          className="sticky top-2 z-20 flex items-center gap-2 p-3 rounded-lg border border-border bg-muted/95 backdrop-blur-sm shadow-sm text-sm text-muted-foreground"
-          role="status"
-          aria-live="polite"
-        >
-          <Loader2 className="h-4 w-4 animate-spin shrink-0 text-foreground/70" />
-          <span>
-            {unstagingLoading
-              ? unstagingTargetPath
-                ? `正在取消暂存：${shortenPathMiddle(unstagingTargetPath, 48)}`
-                : '正在取消全部暂存…'
-              : stagingTargetPath
-                ? `正在暂存：${shortenPathMiddle(stagingTargetPath, 48)}`
-                : stagingBulkType === 'untracked'
-                  ? '正在暂存全部未跟踪文件…'
-                  : '正在暂存全部未暂存文件…'}
-          </span>
-        </div>
-      )}
+      <div className={(unstagingLoading || stagingLoading || syncLoading) ? 'min-h-[3.25rem]' : ''}>
+        {(unstagingLoading || stagingLoading) && (
+          <div
+            className="sticky top-2 z-20 flex items-center gap-2 p-3 rounded-lg border border-border bg-muted/95 backdrop-blur-sm shadow-sm text-sm text-muted-foreground"
+            role="status"
+            aria-live="polite"
+          >
+            <Loader2 className="h-4 w-4 animate-spin shrink-0 text-foreground/70" />
+            <span>
+              {unstagingLoading
+                ? unstagingTargetPath
+                  ? `正在取消暂存：${shortenPathMiddle(unstagingTargetPath, 48)}`
+                  : '正在取消全部暂存…'
+                : stagingTargetPath
+                  ? `正在暂存：${shortenPathMiddle(stagingTargetPath, 48)}`
+                  : stagingBulkType === 'untracked'
+                    ? '正在暂存全部未跟踪文件…'
+                    : '正在暂存全部未暂存文件…'}
+            </span>
+          </div>
+        )}
 
-      {loading && syncStep && !unstagingLoading && !stagingLoading && (
-        <div
-          className="sticky top-2 z-20 flex items-center gap-2 rounded-lg border border-border bg-muted/95 p-3 text-sm text-muted-foreground shadow-sm backdrop-blur-sm"
-          role="status"
-          aria-live="polite"
-        >
-          <Loader2 className="h-4 w-4 animate-spin shrink-0 text-foreground/70" />
-          <span>{syncStep}</span>
-        </div>
-      )}
+        {syncLoading && syncStep && !unstagingLoading && !stagingLoading && (
+          <div
+            className="sticky top-2 z-20 flex items-center gap-2 rounded-lg border border-border bg-muted/95 p-3 text-sm text-muted-foreground shadow-sm backdrop-blur-sm"
+            role="status"
+            aria-live="polite"
+          >
+            <Loader2 className="h-4 w-4 animate-spin shrink-0 text-foreground/70" />
+            <span>{syncStep}</span>
+          </div>
+        )}
+      </div>
 
       {/* 远程同步区域 */}
       {repoInfo && (
@@ -1046,25 +1065,43 @@ export function WorkspaceStatus({
               提交
             </Button>
             <Button 
-              onClick={commitAndSync}
+              onClick={() => void commitAndSync()}
               disabled={
                 loading ||
+                syncLoading ||
                 stagingLoading ||
                 unstagingLoading ||
-                ((workspaceStatus?.staged_files?.length ?? 0) > 0 && !commitMessage.trim()) ||
-                ((workspaceStatus?.staged_files?.length ?? 0) === 0 && (!repoInfo || (repoInfo.ahead <= 0 && repoInfo.behind <= 0)))
+                !repoInfo ||
+                (hasStagedFiles ? !commitMessage.trim() : !hasSyncDelta)
               }
               variant="default"
+              aria-busy={syncLoading && !!syncStep}
+              className="min-w-[7.5rem]"
             >
-              {loading && syncStep ? '同步中…' : '提交并同步'}
+              {syncLoading && syncStep ? (
+                <>
+                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                  同步中…
+                </>
+              ) : (
+                '提交并同步'
+              )}
             </Button>
             <div className="relative">
               <Button 
                 variant="outline"
-                onClick={onPushChanges || (() => void handlePushFromCard())}
+                onClick={() => void handlePushFromCard()}
                 disabled={loading || !repoInfo || repoInfo.ahead <= 0}
+                aria-busy={syncLoading && !!syncStep && syncStep.includes('推送')}
               >
-                推送
+                {syncLoading && syncStep && syncStep.includes('推送') ? (
+                  <>
+                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    推送中…
+                  </>
+                ) : (
+                  '推送'
+                )}
               </Button>
               {repoInfo && repoInfo.ahead > 0 && (
                 <span className="absolute -top-2 -right-2 bg-blue-600 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center font-medium">

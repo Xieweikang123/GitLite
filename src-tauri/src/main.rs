@@ -737,13 +737,35 @@ fn normalize_llm_commit_message(raw: &str) -> Result<String, String> {
         }
     }
 
-    let line = s
+    let mut lines = s
         .lines()
         .map(str::trim)
-        .find(|line| !line.is_empty())
-        .ok_or_else(|| "模型返回了内容，但没有可用的首行文本".to_string())?;
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            line.trim_start_matches("- ")
+                .trim_start_matches("* ")
+                .trim_start_matches("1. ")
+                .trim_start_matches("2. ")
+                .trim_start_matches("3. ")
+                .trim()
+        })
+        .filter(|line| !line.is_empty());
 
-    let msg = line.trim_matches('"').trim_matches('\'').trim();
+    let first = lines
+        .next()
+        .ok_or_else(|| "模型返回了内容，但没有可用的首行文本".to_string())?;
+    let second = lines.next();
+    let first_msg = first.trim_matches('"').trim_matches('\'').trim();
+    let msg = if first_msg.chars().count() < 16 {
+        if let Some(s2) = second {
+            format!("{}；{}", first_msg, s2.trim_matches('"').trim_matches('\'').trim())
+        } else {
+            first_msg.to_string()
+        }
+    } else {
+        first_msg.to_string()
+    };
+
     if msg.is_empty() {
         return Err("模型返回的首行内容在清理引号后变为空".to_string());
     }
@@ -752,12 +774,15 @@ fn normalize_llm_commit_message(raw: &str) -> Result<String, String> {
         return Err("模型返回了 JSON/数组格式，但这里需要纯文本提交说明".to_string());
     }
 
-    Ok(msg.to_string())
+    let capped: String = msg.chars().take(120).collect();
+    Ok(capped.trim().to_string())
 }
 
-/// AI 未给出可用提交说明时的兜底文案：尽量基于 diff 中的文件信息生成简短首行。
+/// AI 未给出可用提交说明时的兜底文案：尽量基于 diff 生成更完整的单行说明。
 fn fallback_commit_message_from_diff(diff_text: &str) -> String {
     let mut files: HashSet<String> = HashSet::new();
+    let mut added = 0usize;
+    let mut deleted = 0usize;
     for line in diff_text.lines() {
         if let Some(rest) = line.strip_prefix("diff --git a/") {
             if let Some((left, _)) = rest.split_once(" b/") {
@@ -767,19 +792,42 @@ fn fallback_commit_message_from_diff(diff_text: &str) -> String {
                 }
             }
         }
+        if line.starts_with('+') && !line.starts_with("+++") {
+            added += 1;
+        } else if line.starts_with('-') && !line.starts_with("---") {
+            deleted += 1;
+        }
     }
 
     let file_count = files.len();
     if file_count == 0 {
-        return "更新代码".to_string();
+        return "完善代码实现并同步调整细节".to_string();
     }
     if file_count == 1 {
         if let Some(path) = files.iter().next() {
             let short = path.rsplit('/').next().unwrap_or(path.as_str());
-            return format!("更新 {}", short);
+            if added + deleted > 0 {
+                return format!(
+                    "完善 {} 相关实现，新增 {} 行并调整 {} 行",
+                    short, added, deleted
+                );
+            }
+            return format!("完善 {} 相关实现并同步细节调整", short);
         }
     }
-    format!("更新 {} 个文件", file_count)
+    let mut samples: Vec<&str> = files
+        .iter()
+        .map(|p| p.rsplit('/').next().unwrap_or(p.as_str()))
+        .collect();
+    samples.sort_unstable();
+    let focus = samples.into_iter().take(3).collect::<Vec<_>>().join("、");
+    if added + deleted > 0 {
+        return format!(
+            "完善多处改动（{} 个文件），新增 {} 行、调整 {} 行，涉及 {}",
+            file_count, added, deleted, focus
+        );
+    }
+    format!("完善多处改动（{} 个文件），重点涉及 {}", file_count, focus)
 }
 
 /// OpenAI 兼容 chat/completions，返回 assistant 文本（单条）。
@@ -1224,7 +1272,7 @@ fn stream_openai_chat_sse(
     Ok(())
 }
 
-/// 根据暂存区 diff 调用已配置的模型生成一行中文提交说明。
+/// 根据暂存区 diff 调用已配置模型生成较完整的单行中文提交说明。
 #[tauri::command]
 async fn generate_commit_message_ai(repo_path: String) -> Result<String, String> {
     let config = get_ai_config().await?;
@@ -1247,9 +1295,9 @@ async fn generate_commit_message_ai(repo_path: String) -> Result<String, String>
         staged_diff
     };
 
-    let system = "你是 Git 提交信息助手。只根据用户给出的暂存区 diff 写一条简洁的提交说明。\
-要求：单行或极短首行；使用中文；动词开头；不要引号、不要 Markdown、不要解释；不要输出思考过程。\
-若信息有限，也必须给出一条最可能的提交说明。";
+    let system = "你是 Git 提交信息助手。只根据用户给出的暂存区 diff 写一条中文提交说明。\
+要求：必须单行；建议 20-60 个中文字符；内容包含“做了什么 + 影响范围/对象”；优先具体表达，不要泛化成“更新代码/修复问题”。\
+不要引号、不要 Markdown、不要解释、不要输出思考过程。若信息有限，也要给出最可能且尽量具体的一条说明。";
     let user = format!("以下为 git diff --cached：\n\n{}", diff_for_prompt);
 
     let messages = vec![
