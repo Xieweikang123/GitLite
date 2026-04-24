@@ -502,6 +502,8 @@ export function UnifiedCommitView({
   const [selectedCommit, setSelectedCommit] = useState<CommitInfo | null>(null)
   const selectedCommitRef = useRef<CommitInfo | null>(null)
   selectedCommitRef.current = selectedCommit
+  /** 为 false 时跳过「选中后把行滚到视口中央」；手动点列表行时关闭，跳转/布局变化后仍可对齐 */
+  const scrollSelectedCommitAfterLayoutRef = useRef(true)
   type JumpRuntimeState = {
     seq: number
     targetId: string
@@ -782,6 +784,23 @@ export function UnifiedCommitView({
     return [...branchNames].sort((a, b) => a.localeCompare(b))
   }, [branchNames, currentBranch])
 
+  /** 与「当前检出」本地分支对应的 ref；分离 HEAD 时为 null（不显示分支历史下拉） */
+  const checkoutHeadRef = useMemo(() => {
+    const cur = currentBranch?.trim()
+    if (!cur || cur === 'detached') return null
+    if (!branchNamesSorted.includes(cur)) return null
+    return `refs/heads/${cur}`
+  }, [currentBranch, branchNamesSorted])
+
+  /** 无 commitLogRev 时下列表展示为当前检出分支，语义仍为 HEAD（含上游待拉取合并展示） */
+  const commitLogBranchSelectValue = useMemo(() => {
+    const rev = commitLogRev?.trim()
+    if (rev) return rev
+    if (checkoutHeadRef) return checkoutHeadRef
+    const first = branchNamesSorted[0]
+    return first ? `refs/heads/${first}` : ''
+  }, [commitLogRev, checkoutHeadRef, branchNamesSorted])
+
   const hasActiveFilters = useMemo(
     () =>
       !!(
@@ -988,11 +1007,20 @@ export function UnifiedCommitView({
     const m = new Map<string, readonly string[]>()
     for (const c of filteredCommits) {
       const labels = branchLabelsByCommit.get(c.id)
-      if (!labels?.length) continue
+      if (labels === undefined) continue
       m.set(c.id, labels.map((b) => b.name))
     }
     return m
   }, [filteredCommits, branchLabelsByCommit])
+
+  /**
+   * 分支竖轨模式须「当前列表每一行都已写入标签结果」（含空数组），否则 frozen 列 +
+   * 残缺行映射会让 buildBranchColumnRails 只在少数行上命中，出现「多条竖线挤在最底一行」的假图。
+   */
+  const graphBranchModeReady =
+    filteredCommits.length > 0 &&
+    branchLabelsCompleteForVisibleCommits &&
+    branchNamesByCommitIdForGraph.size === filteredCommits.length
 
   /**
    * 当前列表内出现过的分支名 → 列顺序（未做「竖线筛选」下的稳定重排）。
@@ -1132,6 +1160,10 @@ export function UnifiedCommitView({
   useEffect(() => {
     if (!selectedCommit) return
     if (activeJumpRef.current) return
+    if (!scrollSelectedCommitAfterLayoutRef.current) {
+      scrollSelectedCommitAfterLayoutRef.current = true
+      return
+    }
     scrollCommitRowIntoView(selectedCommit.id)
   }, [selectedCommit, scrollCommitRowIntoView, commitListLayoutSig])
 
@@ -1443,10 +1475,13 @@ export function UnifiedCommitView({
   }, [onRebaseToCommit, rebaseTargetCommit])
 
   // 处理提交选择 - 使用 useCallback 优化
-  const handleCommitSelect = useCallback(async (commit: CommitInfo) => {
+  const handleCommitSelect = useCallback(
+    async (commit: CommitInfo, options?: { scrollIntoView?: boolean }) => {
     // 如果已经是当前选中的提交，直接返回
     if (selectedCommitRef.current?.id === commit.id) return
-    
+
+    scrollSelectedCommitAfterLayoutRef.current = options?.scrollIntoView !== false
+
     setSelectedCommit(commit)
     setSelectedFile(null)
     setDiff('')
@@ -1460,7 +1495,8 @@ export function UnifiedCommitView({
     } finally {
       setLoadingFiles(false)
     }
-  }, [onGetCommitFiles])
+  },
+  [onGetCommitFiles])
 
   const filteredCommitIdsKey = useMemo(
     () => filteredCommits.map((c) => c.id).join(','),
@@ -1948,18 +1984,22 @@ export function UnifiedCommitView({
                 )}
                 {commitLogScope === 'head' &&
                   onCommitLogRevChange &&
-                  branchNamesSorted.length > 0 && (
+                  branchNamesSorted.length > 0 &&
+                  checkoutHeadRef != null && (
                     <select
                       className="h-6 max-w-[11rem] shrink rounded-md border border-input bg-background px-1.5 text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      value={commitLogRev ?? ''}
+                      value={commitLogBranchSelectValue}
                       onChange={(e) => {
-                        const v = e.target.value
-                        onCommitLogRevChange(v === '' ? null : v)
+                        const v = e.target.value.trim()
+                        if (checkoutHeadRef && v === checkoutHeadRef) {
+                          onCommitLogRevChange(null)
+                        } else {
+                          onCommitLogRevChange(v || null)
+                        }
                       }}
-                      title="查看任意本地分支的提交历史（无需切换检出）"
+                      title="查看任意本地分支的提交历史（无需切换检出）；选当前检出分支等价于跟随 HEAD"
                       aria-label="选择要查看的历史分支"
                     >
-                      <option value="">当前检出</option>
                       {branchNamesSorted.map((name) => (
                         <option key={name} value={`refs/heads/${name}`}>
                           {name}
@@ -2288,10 +2328,12 @@ export function UnifiedCommitView({
                   commits={filteredCommits}
                   branchColorKeyByCommitId={graphBranchColorByCommit}
                   branchRailColumns={
-                    branchRailColumns.length > 0 ? branchRailColumns : undefined
+                    graphBranchModeReady && branchRailColumns.length > 0
+                      ? branchRailColumns
+                      : undefined
                   }
                   branchNamesByCommitId={
-                    branchNamesByCommitIdForGraph.size > 0
+                    graphBranchModeReady && branchNamesByCommitIdForGraph.size > 0
                       ? branchNamesByCommitIdForGraph
                       : undefined
                   }
@@ -2365,7 +2407,7 @@ export function UnifiedCommitView({
                       'bg-emerald-500/[0.11] ring-1 ring-inset ring-emerald-500/25 dark:bg-emerald-500/[0.13]',
                     !isRowSelected && 'hover:bg-muted/35 dark:hover:bg-muted/15'
                   )}
-                  onClick={() => handleCommitSelect(commit)}
+                  onClick={() => handleCommitSelect(commit, { scrollIntoView: false })}
                   onContextMenu={(e) => {
                     if (
                       !onResetToCommit &&
