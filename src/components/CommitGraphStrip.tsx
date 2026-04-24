@@ -9,6 +9,8 @@ export const ROW_H = 46
 
 /** 竖轨 / 水平接驳描边宽度（类 SourceTree 的「轨道感」） */
 const RAIL_STROKE_PX = 2.35
+/** 分支「接出」折线略细，避免与竖轨抢视觉 */
+const FORK_STROKE_PX = 1.85
 
 type VerticalRailSpan = { lane: number; y0: number; y1: number; pi: number }
 type HorizontalRailSpan = { y: number; x0: number; x1: number; pi: number }
@@ -230,6 +232,85 @@ function primaryBranchColumnIndex(
   return 0
 }
 
+type BranchForkPath = {
+  key: string
+  d: string
+  pi: number
+  branchName: string
+}
+
+/**
+ * 方案 B：子提交带分支 B，且按 parent_ids 顺序第一个「在本列表内且标签不含 B」的父提交存在时，
+ * 从父的主列画 L 形折线接到 B 列子提交中心，表示本页内可见的「接出」关系。
+ */
+function buildBranchForkPaths(
+  commits: CommitInfo[],
+  heights: number[],
+  branchRailColumns: readonly string[],
+  branchNamesByCommitId: ReadonlyMap<string, readonly string[]>,
+  branchColorKeyByCommitId: Map<string, string> | undefined
+): BranchForkPath[] {
+  const n = commits.length
+  const idToRow = new Map(commits.map((c, idx) => [c.id, idx]))
+  const out: BranchForkPath[] = []
+  let seq = 0
+
+  for (let i = 0; i < n; i++) {
+    const child = commits[i]!
+    const childNames = branchNamesByCommitId.get(child.id)
+    if (!childNames?.length) continue
+    const pids = child.parent_ids
+    if (!Array.isArray(pids) || pids.length === 0) continue
+
+    const branchesOnChild = [...new Set(childNames)].filter((b) => branchRailColumns.includes(b))
+    for (const b of branchesOnChild) {
+      const colB = branchRailColumns.indexOf(b)
+      if (colB < 0) continue
+
+      let parentRow = -1
+      for (const pid of pids) {
+        const pr = idToRow.get(pid)
+        if (pr === undefined) continue
+        const parentNames = branchNamesByCommitId.get(pid)
+        if (parentNames?.includes(b)) continue
+        parentRow = pr
+        break
+      }
+      if (parentRow < 0) continue
+
+      const parent = commits[parentRow]!
+      const xP = laneCenterX(
+        primaryBranchColumnIndex(
+          parent,
+          branchRailColumns,
+          branchColorKeyByCommitId,
+          branchNamesByCommitId
+        )
+      )
+      const yP = cumulativeCenterY(heights, parentRow)
+      const xB = laneCenterX(colB)
+      const yB = cumulativeCenterY(heights, i)
+
+      if (Math.abs(xP - xB) < 0.75 && Math.abs(yP - yB) < 0.75) continue
+
+      const midY = (yP + yB) / 2
+      const d =
+        Math.abs(xP - xB) < 0.5
+          ? `M ${xP} ${yP} L ${xP} ${yB}`
+          : `M ${xP} ${yP} L ${xP} ${midY} L ${xB} ${midY} L ${xB} ${yB}`
+
+      const pi = hashBranchNameToPaletteIndex(b, PALETTE_LEN)
+      out.push({
+        key: `fork-${i}-${b}-${seq++}`,
+        d,
+        pi,
+        branchName: b,
+      })
+    }
+  }
+  return out
+}
+
 /** 提交列表左侧：分支模式为「每分支一竖轨」；否则为 DAG 竖轨 + 水平接驳 + 节点 */
 export function CommitGraphStrip({
   commits,
@@ -273,6 +354,17 @@ export function CommitGraphStrip({
     return buildBranchColumnRails(branchRailColumns, commits, heights, branchNamesByCommitId)
   }, [branchMode, branchRailColumns, branchNamesByCommitId, commits, heights])
 
+  const branchForkPaths = useMemo(() => {
+    if (!branchMode || !branchRailColumns || !branchNamesByCommitId) return []
+    return buildBranchForkPaths(
+      commits,
+      heights,
+      branchRailColumns,
+      branchNamesByCommitId,
+      branchColorKeyByCommitId
+    )
+  }, [branchMode, branchRailColumns, branchNamesByCommitId, commits, heights, branchColorKeyByCommitId])
+
   const railClickable = Boolean(branchMode && onGraphBranchRailClick)
   /** 正在按分支筛选：弱化其它竖轨，突出当前分支列 */
   const branchRailFilterActive = Boolean(branchMode && selectedGraphBranchRail)
@@ -291,6 +383,27 @@ export function CommitGraphStrip({
         className={cn(!railClickable && 'pointer-events-none')}
       >
         <g className={cn('commit-graph-rails', railClickable && 'pointer-events-none')}>
+          {branchMode &&
+            branchForkPaths.map((fp) => {
+              const pal = paletteAt(fp.pi)
+              const selected = selectedGraphBranchRail === fp.branchName
+              return (
+                <path
+                  key={fp.key}
+                  d={fp.d}
+                  fill="none"
+                  className={cn(
+                    pal.stroke,
+                    branchRailFilterActive &&
+                      (selected ? 'opacity-100' : 'opacity-[0.32] dark:opacity-[0.38]')
+                  )}
+                  strokeWidth={FORK_STROKE_PX}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  vectorEffect="non-scaling-stroke"
+                />
+              )
+            })}
           {branchMode
             ? branchRails.map((v, idx) => {
                 const pal = paletteAt(v.pi)
