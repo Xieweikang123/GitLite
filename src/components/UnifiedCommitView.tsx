@@ -2118,8 +2118,8 @@ export function UnifiedCommitView({
                       · 仅看分支{' '}
                       <button
                         type="button"
-                        className="font-mono text-[10px] text-foreground underline decoration-dotted underline-offset-2 hover:text-primary"
-                        title="清除分支筛选"
+                        className="inline-block max-w-[min(11rem,40vw)] truncate align-bottom font-mono text-[10px] text-foreground underline decoration-dotted underline-offset-2 hover:text-primary"
+                        title={`${graphRailBranchFilter}\n点击清除分支筛选`}
                         onClick={() => setGraphRailBranchFilter(null)}
                       >
                         {formatBranchLabelShort(graphRailBranchFilter)}
@@ -2161,8 +2161,8 @@ export function UnifiedCommitView({
                       · 仅看分支{' '}
                       <button
                         type="button"
-                        className="font-mono text-[10px] text-foreground underline decoration-dotted underline-offset-2 hover:text-primary"
-                        title="清除分支筛选"
+                        className="inline-block max-w-[min(11rem,40vw)] truncate align-bottom font-mono text-[10px] text-foreground underline decoration-dotted underline-offset-2 hover:text-primary"
+                        title={`${graphRailBranchFilter}\n点击清除分支筛选`}
                         onClick={() => setGraphRailBranchFilter(null)}
                       >
                         {formatBranchLabelShort(graphRailBranchFilter)}
@@ -2376,15 +2376,32 @@ export function UnifiedCommitView({
                             <Badge
                               key={`${b.name}-${b.is_remote ? 'r' : 'l'}`}
                               variant="outline"
+                              role="button"
+                              tabIndex={0}
                               className={cn(
-                                'h-4 max-w-[9rem] shrink-0 border-border/50 bg-background/40 px-1 py-0 text-[9px] font-medium leading-none',
-                                branchBadgeClassName(b.name)
+                                'h-4 min-w-0 max-w-[11rem] shrink-0 justify-center border-border/50 bg-background/40 px-1 py-0 text-[9px] font-medium leading-none',
+                                'cursor-pointer select-none hover:bg-muted/50',
+                                branchBadgeClassName(b.name),
+                                /* Badge 默认带 ring-offset-2，叠 inset ring 易发白；焦点与选中均取消 offset */
+                                'focus:outline-none focus:ring-1 focus:ring-offset-0 focus-visible:ring-offset-0',
+                                'focus:ring-emerald-600/40 dark:focus:ring-emerald-400/35',
+                                graphRailBranchFilter === b.name &&
+                                  'shadow-[inset_0_0_0_1px] shadow-emerald-700/45 dark:shadow-emerald-400/40'
                               )}
-                              title={
-                                b.is_remote ? `远程分支：${b.name}` : `本地分支：${b.name}`
-                              }
+                              title={`${b.is_remote ? '远程分支' : '本地分支'}：${b.name}\n点击：仅看此分支（与左侧竖线相同；再点此徽章或竖线可清除）`}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                onGraphBranchRailClick(b.name)
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                  onGraphBranchRailClick(b.name)
+                                }
+                              }}
                             >
-                              {formatBranchLabelShort(b.name)}
+                              <span className="min-w-0 truncate">{formatBranchLabelShort(b.name)}</span>
                             </Badge>
                           ))}
                           {moreBranchCount > 0 && (
