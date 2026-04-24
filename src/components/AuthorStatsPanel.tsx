@@ -19,6 +19,7 @@ import {
   Calendar,
   CalendarDays,
   ArrowUpDown,
+  GitBranch,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -38,6 +39,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { cn } from '../lib/utils'
 import type {
   AuthorCommitStat,
+  BranchActivityLifecycleReport,
+  BranchActivityLifecycleStat,
   AuthorLineStat,
   CommitInfo,
   DiffAggregateStats,
@@ -46,11 +49,12 @@ import type {
   TimeBucketStat,
 } from '../types/git'
 
-type ReportTab = 'authors' | 'timeline' | 'heatmap' | 'calendar' | 'lines' | 'paths' | 'territory'
+type ReportTab = 'authors' | 'timeline' | 'heatmap' | 'calendar' | 'lines' | 'paths' | 'territory' | 'branches'
 type TimeGranularity = 'day' | 'week' | 'month'
 type CalendarGranularity = 'day' | 'month' | 'year'
 
 const REPORT_TABS: { id: ReportTab; label: string; Icon: React.ComponentType<{ className?: string }> }[] = [
+  { id: 'branches', label: '分支', Icon: GitBranch },
   { id: 'authors', label: '作者', Icon: Users },
   { id: 'timeline', label: '时间趋势', Icon: BarChart3 },
   { id: 'heatmap', label: '贡献热力', Icon: Flame },
@@ -214,6 +218,7 @@ const statsResultCache = {
   calendar: new Map<string, TimeBucketStat[]>(),
   diff: new Map<string, DiffAggregateStats>(),
   territory: new Map<string, FileTerritoryStat[]>(),
+  branches: new Map<string, BranchActivityLifecycleReport>(),
 }
 
 function cacheKeyScope(repo: string, scope: 'head' | 'all', rev: string | null | undefined) {
@@ -242,6 +247,10 @@ function cacheKeyFileTerritory(
   return `${repo}|${scope}|${rev ?? ''}|fileTerritory|l${limit}`
 }
 
+function cacheKeyBranchStats(repo: string, baseBranch: string | null | undefined) {
+  return `${repo}|branchStats|${baseBranch ?? ''}`
+}
+
 interface AuthorStatsPanelProps {
   repoPath: string | undefined
   branchNames: string[]
@@ -266,6 +275,9 @@ interface AuthorStatsPanelProps {
     rev?: string | null,
     fileLimit?: number
   ) => Promise<FileTerritoryStat[]>
+  getBranchActivityLifecycleStats: (
+    baseBranch?: string | null
+  ) => Promise<BranchActivityLifecycleReport>
   getCommitsForActivityBucket: (
     granularity: 'day' | 'week' | 'month',
     bucketKey: string,
@@ -289,6 +301,7 @@ export function AuthorStatsPanel({
   getCommitsForActivityBucket,
   getDiffAggregateStats,
   getFileTerritoryStats,
+  getBranchActivityLifecycleStats,
   onJumpToCommit,
 }: AuthorStatsPanelProps) {
   const [statsScope, setStatsScope] = useState<'head' | 'all'>('head')
@@ -305,6 +318,8 @@ export function AuthorStatsPanel({
   const [calendarRows, setCalendarRows] = useState<TimeBucketStat[]>([])
   const [diffAgg, setDiffAgg] = useState<DiffAggregateStats | null>(null)
   const [territoryRows, setTerritoryRows] = useState<FileTerritoryStat[]>([])
+  const [branchReport, setBranchReport] = useState<BranchActivityLifecycleReport | null>(null)
+  const [baseBranch, setBaseBranch] = useState<string | null>(null)
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -329,6 +344,8 @@ export function AuthorStatsPanel({
     setCalendarGranularity('day')
     setCalendarRows([])
     setCalendarMonth(startOfMonth(new Date()))
+    setBranchReport(null)
+    setBaseBranch(null)
     setDrillOpen(false)
   }, [repoPath])
 
@@ -376,6 +393,14 @@ export function AuthorStatsPanel({
     () => [...branchNames].sort((a, b) => a.localeCompare(b)),
     [branchNames]
   )
+
+  useEffect(() => {
+    if (branchNamesSorted.length === 0) {
+      setBaseBranch(null)
+      return
+    }
+    setBaseBranch((prev) => (prev && branchNamesSorted.includes(prev) ? prev : branchNamesSorted[0]))
+  }, [branchNamesSorted])
 
   const scopeArgs = useMemo(
     () => ({
@@ -488,6 +513,14 @@ export function AuthorStatsPanel({
             setError(null)
             return
           }
+        } else if (reportTab === 'branches') {
+          const k = cacheKeyBranchStats(repoPath, baseBranch)
+          const hit = statsResultCache.branches.get(k)
+          if (hit) {
+            setBranchReport(hit)
+            setError(null)
+            return
+          }
         } else if (reportTab === 'lines' || reportTab === 'paths') {
           const kDiff = cacheKeyDiff(repoPath, scope, rev, DIFF_AGGREGATE_PATH_LIMIT)
           const hit = statsResultCache.diff.get(kDiff)
@@ -537,6 +570,12 @@ export function AuthorStatsPanel({
           const k = cacheKeyFileTerritory(repoPath, scope, rev, TERRITORY_FILE_LIMIT)
           statsResultCache.territory.set(k, data)
           setTerritoryRows(data)
+        } else if (reportTab === 'branches') {
+          setBranchReport(null)
+          const data = await getBranchActivityLifecycleStats(baseBranch)
+          const k = cacheKeyBranchStats(repoPath, baseBranch)
+          statsResultCache.branches.set(k, data)
+          setBranchReport(data)
         } else if (reportTab === 'lines' || reportTab === 'paths') {
           setDiffAgg(null)
           diffDataRef.current = null
@@ -554,6 +593,7 @@ export function AuthorStatsPanel({
         setHeatmapDays([])
         setCalendarRows([])
         setTerritoryRows([])
+        setBranchReport(null)
         setDiffAgg(null)
         diffDataRef.current = null
         diffCacheKeyRef.current = ''
@@ -577,6 +617,8 @@ export function AuthorStatsPanel({
       getCommitActivityStats,
       getDiffAggregateStats,
       getFileTerritoryStats,
+      getBranchActivityLifecycleStats,
+      baseBranch,
     ]
   )
 
@@ -698,55 +740,80 @@ export function AuthorStatsPanel({
           </details>
 
           <div className="flex flex-col gap-1.5 sm:flex-row sm:flex-wrap sm:items-center">
-            <div
-              className="inline-flex h-8 shrink-0 rounded-md border border-input bg-background p-0.5 shadow-sm"
-              role="group"
-              aria-label="统计范围"
-            >
-              <button
-                type="button"
-                className={cn(
-                  'rounded px-2.5 py-0.5 text-[11px] font-medium transition-all sm:text-xs',
-                  statsScope === 'head'
-                    ? 'bg-primary/10 text-primary shadow-sm'
-                    : 'text-muted-foreground hover:text-foreground'
-                )}
-                onClick={() => setStatsScope('head')}
-              >
-                当前分支
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  'rounded px-2.5 py-0.5 text-[11px] font-medium transition-all sm:text-xs',
-                  statsScope === 'all'
-                    ? 'bg-primary/10 text-primary shadow-sm'
-                    : 'text-muted-foreground hover:text-foreground'
-                )}
-                onClick={() => {
-                  setStatsScope('all')
-                  setStatsRev(null)
-                }}
-              >
-                全部分支
-              </button>
-            </div>
+            {reportTab !== 'branches' && (
+              <>
+                <div
+                  className="inline-flex h-8 shrink-0 rounded-md border border-input bg-background p-0.5 shadow-sm"
+                  role="group"
+                  aria-label="统计范围"
+                >
+                  <button
+                    type="button"
+                    className={cn(
+                      'rounded px-2.5 py-0.5 text-[11px] font-medium transition-all sm:text-xs',
+                      statsScope === 'head'
+                        ? 'bg-primary/10 text-primary shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground'
+                    )}
+                    onClick={() => setStatsScope('head')}
+                  >
+                    当前分支
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      'rounded px-2.5 py-0.5 text-[11px] font-medium transition-all sm:text-xs',
+                      statsScope === 'all'
+                        ? 'bg-primary/10 text-primary shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground'
+                    )}
+                    onClick={() => {
+                      setStatsScope('all')
+                      setStatsRev(null)
+                    }}
+                  >
+                    全部分支
+                  </button>
+                </div>
 
-            {statsScope === 'head' && branchNamesSorted.length > 0 && (
+                {statsScope === 'head' && branchNamesSorted.length > 0 && (
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="hidden text-[11px] text-muted-foreground sm:inline sm:text-xs">分支</span>
+                    <select
+                      className="h-8 max-w-[min(100%,16rem)] flex-1 rounded-md border border-input bg-background px-2 text-[11px] shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:text-xs"
+                      value={statsRev ?? ''}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        setStatsRev(v === '' ? null : v)
+                      }}
+                      aria-label="选择分支历史"
+                    >
+                      <option value="">当前检出（HEAD）</option>
+                      {branchNamesSorted.map((name) => (
+                        <option key={name} value={`refs/heads/${name}`}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </>
+            )}
+
+            {reportTab === 'branches' && (
               <div className="flex min-w-0 items-center gap-1.5">
-                <span className="hidden text-[11px] text-muted-foreground sm:inline sm:text-xs">分支</span>
+                <span className="hidden text-[11px] text-muted-foreground sm:inline sm:text-xs">基准分支</span>
                 <select
                   className="h-8 max-w-[min(100%,16rem)] flex-1 rounded-md border border-input bg-background px-2 text-[11px] shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:text-xs"
-                  value={statsRev ?? ''}
+                  value={baseBranch ?? ''}
                   onChange={(e) => {
-                    const v = e.target.value
-                    setStatsRev(v === '' ? null : v)
+                    const v = e.target.value.trim()
+                    setBaseBranch(v || null)
                   }}
-                  aria-label="选择分支历史"
+                  aria-label="选择基准分支"
                 >
-                  <option value="">当前检出（HEAD）</option>
                   {branchNamesSorted.map((name) => (
-                    <option key={name} value={`refs/heads/${name}`}>
+                    <option key={name} value={name}>
                       {name}
                     </option>
                   ))}
@@ -892,6 +959,10 @@ export function AuthorStatsPanel({
 
           {reportTab === 'territory' && (
             <TerritorySection loading={loading} rows={territoryRows} diffProgress={diffProgress} />
+          )}
+
+          {reportTab === 'branches' && (
+            <BranchActivityLifecycleSection loading={loading} report={branchReport} />
           )}
 
           {(reportTab === 'lines' || reportTab === 'paths') && (
@@ -1875,6 +1946,94 @@ function CalendarSection({
           </div>
           <span className="text-[9px] text-zinc-400 dark:text-zinc-600">按次数分档，非相对排名</span>
         </div>
+      </div>
+    </div>
+  )
+}
+
+function BranchActivityLifecycleSection({
+  loading,
+  report,
+}: {
+  loading: boolean
+  report: BranchActivityLifecycleReport | null
+}) {
+  const rows = report?.rows ?? []
+  const baseBranch = report?.base_branch ?? ''
+  if (!loading && rows.length === 0) {
+    return (
+      <div className="flex min-h-[12rem] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-muted/20 py-12 text-center">
+        <GitBranch className="h-8 w-8 text-muted-foreground/50" aria-hidden />
+        <p className="text-sm text-muted-foreground">暂无可统计的本地分支</p>
+      </div>
+    )
+  }
+
+  const trendText = (row: BranchActivityLifecycleStat) => {
+    const delta = row.recent_7d_commits - row.previous_7d_commits
+    if (delta > 0) return `+${delta}`
+    if (delta < 0) return `${delta}`
+    return '0'
+  }
+
+  return (
+    <div className="space-y-3">
+      {baseBranch ? (
+        <p className="text-[12px] leading-relaxed text-muted-foreground">
+          分支活跃度与生命周期按本地分支统计，默认与基准分支 <span className="font-mono">{baseBranch}</span>{' '}
+          对比：提交数为“相对基准分支尚未包含”的提交数；生命周期中的创建时间为首个未被基准包含的提交时间（近似值）。
+        </p>
+      ) : null}
+      <div className="overflow-x-auto rounded-lg border border-border/60">
+        <table className="w-full min-w-[56rem] border-collapse text-left text-[13px]">
+          <thead>
+            <tr className="border-b border-border/60 bg-muted/20 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              <th className="px-3 py-2.5">分支</th>
+              <th className="px-3 py-2.5 text-right tabular-nums">提交数</th>
+              <th className="px-3 py-2.5 text-right tabular-nums">作者数</th>
+              <th className="px-3 py-2.5 text-right tabular-nums">近7天</th>
+              <th className="px-3 py-2.5 text-right tabular-nums">前7天</th>
+              <th className="px-3 py-2.5 text-right tabular-nums">趋势</th>
+              <th className="px-3 py-2.5">最近活跃</th>
+              <th className="px-3 py-2.5">创建时间</th>
+              <th className="px-3 py-2.5 text-right tabular-nums">存活天数</th>
+              <th className="px-3 py-2.5 text-right tabular-nums">闲置天数</th>
+              <th className="px-3 py-2.5">合并状态</th>
+              <th className="px-3 py-2.5 text-right tabular-nums">首提到合并(天)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.branch} className="border-b border-border/40 last:border-0 hover:bg-muted/30">
+                <td className="px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[12px] text-foreground">{r.branch}</span>
+                    {r.is_current ? (
+                      <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                        当前
+                      </span>
+                    ) : null}
+                  </div>
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-foreground">{r.unique_commit_count}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{r.active_author_count}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{r.recent_7d_commits}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{r.previous_7d_commits}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-foreground">{trendText(r)}</td>
+                <td className="px-3 py-2 text-[12px] text-muted-foreground">{r.last_active_at ?? '—'}</td>
+                <td className="px-3 py-2 text-[12px] text-muted-foreground">{r.branch_created_at ?? '—'}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{r.alive_days ?? '—'}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{r.inactive_days ?? '—'}</td>
+                <td className="px-3 py-2 text-[12px] text-muted-foreground">
+                  {r.is_merged_into_base ? `已合并${r.merged_at ? ` · ${r.merged_at}` : ''}` : '未合并'}
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                  {r.first_commit_to_merge_days ?? '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   )

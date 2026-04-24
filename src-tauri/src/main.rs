@@ -139,6 +139,32 @@ pub struct FileTerritoryStat {
     pub primary_share: f64,
 }
 
+/// 分支维度统计（活跃度 + 生命周期），默认以某个基准分支为参照。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BranchActivityLifecycleStat {
+    pub branch: String,
+    pub is_current: bool,
+    /// 相对基准分支尚未包含的提交数（基准分支自身为其全部历史提交数）
+    pub unique_commit_count: u64,
+    pub active_author_count: u64,
+    pub recent_7d_commits: u64,
+    pub previous_7d_commits: u64,
+    pub last_active_at: Option<String>,
+    pub first_commit_at: Option<String>,
+    pub branch_created_at: Option<String>,
+    pub alive_days: Option<u64>,
+    pub inactive_days: Option<u64>,
+    pub is_merged_into_base: bool,
+    pub merged_at: Option<String>,
+    pub first_commit_to_merge_days: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BranchActivityLifecycleReport {
+    pub base_branch: String,
+    pub rows: Vec<BranchActivityLifecycleStat>,
+}
+
 /// Git 空树对象 id（用于根提交的 diff 一侧）
 const GIT_EMPTY_TREE_OID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
@@ -2767,6 +2793,241 @@ fn revwalk_push_scope(
     Ok(())
 }
 
+#[derive(Clone)]
+struct LocalBranchTip {
+    name: String,
+    oid: Oid,
+    is_current: bool,
+}
+
+fn collect_local_branch_tips(repo: &Repository) -> Result<Vec<LocalBranchTip>> {
+    let current_branch = repo
+        .head()
+        .ok()
+        .and_then(|h| h.shorthand().map(|s| s.to_string()))
+        .unwrap_or_default();
+    let mut out: Vec<LocalBranchTip> = Vec::new();
+    let iter = repo
+        .branches(Some(git2::BranchType::Local))
+        .map_err(|e| anyhow::anyhow!("Failed to get local branches: {}", e))?;
+    for branch_result in iter {
+        let (branch, _) = branch_result
+            .map_err(|e| anyhow::anyhow!("Failed to iterate local branch: {}", e))?;
+        let name = branch
+            .name()
+            .map_err(|e| anyhow::anyhow!("Failed to read branch name: {}", e))?
+            .unwrap_or("unknown")
+            .to_string();
+        let Some(oid) = branch.get().target() else {
+            continue;
+        };
+        out.push(LocalBranchTip {
+            is_current: name == current_branch,
+            name,
+            oid,
+        });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+fn choose_base_branch(branches: &[LocalBranchTip], preferred: Option<&str>) -> Option<String> {
+    let p = preferred.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(name) = p {
+        if branches.iter().any(|b| b.name == name) {
+            return Some(name.to_string());
+        }
+    }
+    for name in ["main", "master", "develop"] {
+        if branches.iter().any(|b| b.name == name) {
+            return Some(name.to_string());
+        }
+    }
+    if let Some(cur) = branches.iter().find(|b| b.is_current) {
+        return Some(cur.name.clone());
+    }
+    branches.first().map(|b| b.name.clone())
+}
+
+fn display_time_from_unix_ts(secs: i64, client_calendar_offset_east_minutes: Option<i32>) -> String {
+    let utc = DateTime::<Utc>::from_timestamp(secs, 0)
+        .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+    match client_calendar_offset_east_minutes {
+        Some(m) => utc
+            .with_timezone(&fixed_offset_from_east_minutes(m))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string(),
+        None => utc.format("%Y-%m-%d %H:%M:%S").to_string(),
+    }
+}
+
+fn days_since(now_secs: i64, then_secs: i64) -> Option<u64> {
+    if now_secs < then_secs {
+        return Some(0);
+    }
+    Some(((now_secs - then_secs) / 86_400) as u64)
+}
+
+fn days_between(start_secs: i64, end_secs: i64) -> Option<u64> {
+    if end_secs < start_secs {
+        return Some(0);
+    }
+    Some(((end_secs - start_secs) / 86_400) as u64)
+}
+
+/// 在 base 分支第一父链上定位「首次包含 branch_tip 的提交时间」；可用于近似“合并时间”。
+fn first_contains_branch_time_on_base(repo: &Repository, base_tip: Oid, branch_tip: Oid) -> Option<i64> {
+    if !repo.graph_descendant_of(base_tip, branch_tip).ok()? {
+        return None;
+    }
+    let mut cursor = repo.find_commit(base_tip).ok()?;
+    let mut merge_ts: Option<i64> = None;
+    loop {
+        let contains = repo
+            .graph_descendant_of(cursor.id(), branch_tip)
+            .unwrap_or(false);
+        if !contains {
+            break;
+        }
+        merge_ts = Some(cursor.time().seconds());
+        if cursor.parent_count() == 0 {
+            break;
+        }
+        cursor = cursor.parent(0).ok()?;
+    }
+    merge_ts
+}
+
+fn branch_activity_lifecycle_stats(
+    repo: &Repository,
+    preferred_base_branch: Option<&str>,
+    client_calendar_offset_east_minutes: Option<i32>,
+) -> Result<BranchActivityLifecycleReport> {
+    let branches = collect_local_branch_tips(repo)?;
+    if branches.is_empty() {
+        return Ok(BranchActivityLifecycleReport {
+            base_branch: String::new(),
+            rows: Vec::new(),
+        });
+    }
+    let base_branch = choose_base_branch(&branches, preferred_base_branch)
+        .unwrap_or_else(|| branches[0].name.clone());
+    let base_tip = branches
+        .iter()
+        .find(|b| b.name == base_branch)
+        .map(|b| b.oid)
+        .unwrap_or(branches[0].oid);
+
+    let now_secs = Utc::now().timestamp();
+    let recent_cutoff = now_secs - 7 * 86_400;
+    let previous_cutoff = now_secs - 14 * 86_400;
+
+    let mut rows: Vec<BranchActivityLifecycleStat> = Vec::new();
+
+    for branch in branches {
+        let mut revwalk = repo
+            .revwalk()
+            .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
+        revwalk
+            .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
+            .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
+        revwalk
+            .push(branch.oid)
+            .map_err(|e| anyhow::anyhow!("Failed to push branch tip: {}", e))?;
+        if branch.name != base_branch {
+            let _ = revwalk.hide(base_tip);
+        }
+
+        let mut unique_commit_count: u64 = 0;
+        let mut recent_7d_commits: u64 = 0;
+        let mut previous_7d_commits: u64 = 0;
+        let mut first_commit_ts: Option<i64> = None;
+        let mut last_active_ts: Option<i64> = None;
+        let mut authors: HashSet<String> = HashSet::new();
+
+        for oid_result in revwalk {
+            let oid = match oid_result {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let commit = match repo.find_commit(oid) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            unique_commit_count += 1;
+            let author = commit.author();
+            let name = author.name().unwrap_or("Unknown").to_string();
+            let email = author.email().unwrap_or("").trim().to_lowercase();
+            let author_key = if email.is_empty() {
+                format!("n:{}", name)
+            } else {
+                format!("e:{}", email)
+            };
+            authors.insert(author_key);
+
+            let ts = commit.time().seconds();
+            first_commit_ts = Some(first_commit_ts.map_or(ts, |v| v.min(ts)));
+            last_active_ts = Some(last_active_ts.map_or(ts, |v| v.max(ts)));
+            if ts >= recent_cutoff {
+                recent_7d_commits += 1;
+            } else if ts >= previous_cutoff {
+                previous_7d_commits += 1;
+            }
+        }
+
+        // 若相对基准无“新增提交”，回退到分支 tip 时间，便于展示生命周期/闲置天数。
+        let tip_ts = repo
+            .find_commit(branch.oid)
+            .ok()
+            .map(|c| c.time().seconds());
+        let branch_created_ts = first_commit_ts.or(tip_ts);
+        let last_active_fallback_ts = last_active_ts.or(tip_ts);
+
+        let is_merged_into_base = branch.name != base_branch
+            && repo
+                .graph_descendant_of(base_tip, branch.oid)
+                .unwrap_or(false);
+        let merged_ts = if is_merged_into_base {
+            first_contains_branch_time_on_base(repo, base_tip, branch.oid)
+        } else {
+            None
+        };
+        let first_commit_to_merge_days = match (first_commit_ts, merged_ts) {
+            (Some(first), Some(merged)) => days_between(first, merged),
+            _ => None,
+        };
+
+        rows.push(BranchActivityLifecycleStat {
+            branch: branch.name,
+            is_current: branch.is_current,
+            unique_commit_count,
+            active_author_count: authors.len() as u64,
+            recent_7d_commits,
+            previous_7d_commits,
+            last_active_at: last_active_fallback_ts
+                .map(|s| display_time_from_unix_ts(s, client_calendar_offset_east_minutes)),
+            first_commit_at: first_commit_ts
+                .map(|s| display_time_from_unix_ts(s, client_calendar_offset_east_minutes)),
+            branch_created_at: branch_created_ts
+                .map(|s| display_time_from_unix_ts(s, client_calendar_offset_east_minutes)),
+            alive_days: branch_created_ts.and_then(|s| days_since(now_secs, s).map(|d| d + 1)),
+            inactive_days: last_active_fallback_ts.and_then(|s| days_since(now_secs, s)),
+            is_merged_into_base,
+            merged_at: merged_ts.map(|s| display_time_from_unix_ts(s, client_calendar_offset_east_minutes)),
+            first_commit_to_merge_days,
+        });
+    }
+
+    rows.sort_by(|a, b| {
+        b.unique_commit_count
+            .cmp(&a.unique_commit_count)
+            .then_with(|| b.recent_7d_commits.cmp(&a.recent_7d_commits))
+            .then_with(|| a.branch.cmp(&b.branch))
+    });
+
+    Ok(BranchActivityLifecycleReport { base_branch, rows })
+}
+
 // 获取分页提交历史
 fn get_commit_history_paginated(
     repo: &Repository,
@@ -3045,6 +3306,30 @@ async fn get_file_territory_stats(
             );
         })
         .map_err(|e| format!("统计文件维护者失败: {}", e))
+    })
+    .await
+    .map_err(|e| format!("任务已中断: {}", e))?
+}
+
+#[tauri::command]
+async fn get_branch_activity_lifecycle_stats(
+    repo_path: String,
+    base_branch: Option<String>,
+    client_calendar_offset_east_minutes: Option<i32>,
+) -> Result<BranchActivityLifecycleReport, String> {
+    let base = base_branch
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    tokio::task::spawn_blocking(move || {
+        let repo =
+            Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+        branch_activity_lifecycle_stats(
+            &repo,
+            base.as_deref(),
+            client_calendar_offset_east_minutes,
+        )
+        .map_err(|e| format!("统计分支活跃度与生命周期失败: {}", e))
     })
     .await
     .map_err(|e| format!("任务已中断: {}", e))?
@@ -5907,6 +6192,7 @@ fn main() {
             get_commit_activity_stats,
             get_diff_aggregate_stats,
             get_file_territory_stats,
+            get_branch_activity_lifecycle_stats,
             search_commits,
             get_commits_for_activity_bucket,
             get_head_file_paths,

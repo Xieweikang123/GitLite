@@ -68,6 +68,7 @@ function App() {
     getCommitsForActivityBucket,
     getDiffAggregateStats,
     getFileTerritoryStats,
+    getBranchActivityLifecycleStats,
   } = useGit()
   
   const { isDark, toggleDarkMode } = useDarkMode()
@@ -789,7 +790,7 @@ function App() {
     'workspace' | 'commits' | 'files' | 'stats'
   >('workspace')
   const [statsReportTab, setStatsReportTab] = useState<
-    'authors' | 'timeline' | 'heatmap' | 'calendar' | 'lines' | 'paths' | 'territory'
+    'authors' | 'timeline' | 'heatmap' | 'calendar' | 'lines' | 'paths' | 'territory' | 'branches'
   >('authors')
 
   const handleStatsCommitJump = ({
@@ -1036,6 +1037,7 @@ function App() {
               getCommitsForActivityBucket={getCommitsForActivityBucket}
               getDiffAggregateStats={getDiffAggregateStats}
               getFileTerritoryStats={getFileTerritoryStats}
+              getBranchActivityLifecycleStats={getBranchActivityLifecycleStats}
               onJumpToCommit={handleStatsCommitJump}
             />
           </div>

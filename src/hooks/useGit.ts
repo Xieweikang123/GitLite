@@ -14,6 +14,7 @@ import {
   TimeBucketStat,
   DiffAggregateStats,
   FileTerritoryStat,
+  BranchActivityLifecycleReport,
   RemoteManagementInfo,
 } from '../types/git'
 import { formatTauriInvokeError } from '../utils/tauriError'
@@ -740,6 +741,19 @@ export function useGit() {
     [repoInfo]
   )
 
+  const getBranchActivityLifecycleStats = useCallback(
+    async (baseBranch?: string | null) => {
+      if (!repoInfo) throw new Error('No repository selected')
+      const b = baseBranch?.trim() || null
+      return await invoke<BranchActivityLifecycleReport>('get_branch_activity_lifecycle_stats', {
+        repoPath: repoInfo.path,
+        baseBranch: b,
+        clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
+      })
+    },
+    [repoInfo]
+  )
+
   const getWorkspaceStatus = useCallback(async (): Promise<WorkspaceStatus> => {
     if (!repoInfo) throw new Error('No repository open')
     
@@ -946,6 +960,7 @@ export function useGit() {
     getCommitsForActivityBucket,
     getDiffAggregateStats,
     getFileTerritoryStats,
+    getBranchActivityLifecycleStats,
     getWorkspaceStatus,
     stageFile,
     unstageFile,

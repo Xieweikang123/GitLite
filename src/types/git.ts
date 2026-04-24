@@ -43,6 +43,29 @@ export interface FileTerritoryStat {
   primary_share: number
 }
 
+/** 分支维度：活跃度 + 生命周期（以 base 分支为参照） */
+export interface BranchActivityLifecycleStat {
+  branch: string
+  is_current: boolean
+  unique_commit_count: number
+  active_author_count: number
+  recent_7d_commits: number
+  previous_7d_commits: number
+  last_active_at?: string | null
+  first_commit_at?: string | null
+  branch_created_at?: string | null
+  alive_days?: number | null
+  inactive_days?: number | null
+  is_merged_into_base: boolean
+  merged_at?: string | null
+  first_commit_to_merge_days?: number | null
+}
+
+export interface BranchActivityLifecycleReport {
+  base_branch: string
+  rows: BranchActivityLifecycleStat[]
+}
+
 export interface CommitInfo {
   id: string
   message: string
