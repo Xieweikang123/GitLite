@@ -923,6 +923,12 @@ export function UnifiedCommitView({
     [filteredCommits]
   )
 
+  /** 当前列表每一行是否都已拿到分支标签（避免列表变长后整图竖线先按残缺数据重排再等请求） */
+  const branchLabelsCompleteForVisibleCommits = useMemo(() => {
+    if (filteredCommits.length === 0) return true
+    return filteredCommits.every((c) => branchLabelsByCommit.has(c.id))
+  }, [filteredCommits, branchLabelsByCommit])
+
   // 每个提交在哪些远程跟踪分支历史上（与后端一致，不重复列本地分支）
   useEffect(() => {
     if (!repoPath || filteredCommits.length === 0) {
@@ -930,6 +936,7 @@ export function UnifiedCommitView({
       return
     }
     const commitIds = filteredCommits.map((c) => c.id)
+    const idSet = new Set(commitIds)
     let cancelled = false
     invoke<CommitBranchLabels[]>('get_commits_branch_labels', {
       repoPath,
@@ -937,11 +944,18 @@ export function UnifiedCommitView({
     })
       .then((rows) => {
         if (cancelled) return
-        const m = new Map<string, BranchOnCommit[]>()
-        for (const row of rows) {
-          m.set(row.commit_id, row.branches)
-        }
-        setBranchLabelsByCommit(m)
+        setBranchLabelsByCommit((prev) => {
+          const next = new Map(prev)
+          for (const row of rows) {
+            if (idSet.has(row.commit_id)) {
+              next.set(row.commit_id, row.branches)
+            }
+          }
+          for (const key of [...next.keys()]) {
+            if (!idSet.has(key)) next.delete(key)
+          }
+          return next
+        })
       })
       .catch(() => {
         if (!cancelled) setBranchLabelsByCommit(new Map())
@@ -980,8 +994,11 @@ export function UnifiedCommitView({
     return m
   }, [filteredCommits, branchLabelsByCommit])
 
-  /** 当前列表内出现过的分支名 → 列顺序（当前分支优先，其次本地名，再远程） */
-  const branchRailColumns = useMemo(() => {
+  /**
+   * 当前列表内出现过的分支名 → 列顺序（未做「竖线筛选」下的稳定重排）。
+   * 主序：竖线在列表中的「跨度」倒序；同跨度再按当前分支 / 本地 / 远程，最后按名字。
+   */
+  const branchRailColumnsBase = useMemo(() => {
     const set = new Set<string>()
     for (const c of filteredCommits) {
       const labels = branchLabelsByCommit.get(c.id)
@@ -997,7 +1014,24 @@ export function UnifiedCommitView({
       if (!n.includes('/')) return 1
       return 2
     }
+
+    const railSpanRows = (branchName: string): number => {
+      let minI = -1
+      let maxI = -1
+      for (let i = 0; i < filteredCommits.length; i++) {
+        const labels = branchLabelsByCommit.get(filteredCommits[i]!.id)
+        if (!labels?.some((x) => x.name === branchName)) continue
+        if (minI < 0) minI = i
+        maxI = i
+      }
+      if (minI < 0) return 0
+      return maxI - minI
+    }
+
     names.sort((a, b) => {
+      const sa = railSpanRows(a)
+      const sb = railSpanRows(b)
+      if (sa !== sb) return sb - sa
       const ra = rank(a)
       const rb = rank(b)
       if (ra !== rb) return ra - rb
@@ -1005,6 +1039,58 @@ export function UnifiedCommitView({
     })
     return names.slice(0, MAX_BRANCH_RAIL_COLS)
   }, [filteredCommits, branchLabelsByCommit, currentBranch])
+
+  /** 未开启「竖线筛选」时的列顺序快照，用于开启筛选后保持左右列不重排（仅隐藏无提交的分支列） */
+  const branchRailOrderBeforeGraphFilterRef = useRef<string[]>([])
+
+  useLayoutEffect(() => {
+    if (
+      !graphRailBranchFilter &&
+      branchRailColumnsBase.length > 0 &&
+      branchLabelsCompleteForVisibleCommits
+    ) {
+      branchRailOrderBeforeGraphFilterRef.current = [...branchRailColumnsBase]
+    }
+  }, [graphRailBranchFilter, branchRailColumnsBase, branchLabelsCompleteForVisibleCommits])
+
+  const branchRailColumns = useMemo(() => {
+    if (graphRailBranchFilter) {
+      const frozen = branchRailOrderBeforeGraphFilterRef.current
+      if (!frozen.length) {
+        return branchRailColumnsBase
+      }
+      const inView = new Set(branchRailColumnsBase)
+      const ordered: string[] = []
+      for (const n of frozen) {
+        if (inView.has(n)) ordered.push(n)
+      }
+      for (const n of branchRailColumnsBase) {
+        if (!ordered.includes(n)) ordered.push(n)
+      }
+      return ordered.slice(0, MAX_BRANCH_RAIL_COLS)
+    }
+    if (
+      !branchLabelsCompleteForVisibleCommits &&
+      branchRailOrderBeforeGraphFilterRef.current.length > 0
+    ) {
+      const base = branchRailColumnsBase
+      const frozen = branchRailOrderBeforeGraphFilterRef.current
+      const inBase = new Set(base)
+      const ordered: string[] = []
+      for (const n of frozen) {
+        if (inBase.has(n)) ordered.push(n)
+      }
+      for (const n of base) {
+        if (!ordered.includes(n)) ordered.push(n)
+      }
+      return ordered.slice(0, MAX_BRANCH_RAIL_COLS)
+    }
+    return branchRailColumnsBase
+  }, [
+    graphRailBranchFilter,
+    branchRailColumnsBase,
+    branchLabelsCompleteForVisibleCommits,
+  ])
 
   useLayoutEffect(() => {
     const n = filteredCommits.length
