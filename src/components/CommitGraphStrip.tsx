@@ -50,6 +50,18 @@ function cumulativeCenterY(heights: number[], row: number): number {
   return top + (heights[row] ?? ROW_H) / 2
 }
 
+/** 行矩形顶边 y（与列表行 div 上沿对齐，避免竖轨用行中心时被看成「错一行」） */
+function cumulativeTopY(heights: number[], row: number): number {
+  let top = 0
+  for (let j = 0; j < row; j++) top += heights[j] ?? ROW_H
+  return top
+}
+
+/** 行矩形底边 y（不含下一行） */
+function cumulativeBottomY(heights: number[], row: number): number {
+  return cumulativeTopY(heights, row) + (heights[row] ?? ROW_H)
+}
+
 function totalSvgHeight(heights: number[]): number {
   if (heights.length === 0) return 0
   return heights.reduce((a, b) => a + b, 0)
@@ -201,10 +213,9 @@ function buildBranchColumnRails(
       maxRow = i
     }
     if (minRow < 0 || maxRow < 0) continue
-    const ya = cumulativeCenterY(heights, minRow)
-    const yb = cumulativeCenterY(heights, maxRow)
-    const y0 = Math.min(ya, yb)
-    const y1 = Math.max(ya, yb)
+    // 竖轨贯穿整行高度：起点对齐首条提交行顶，终点对齐末条提交行底（圆点仍在行中心）
+    const y0 = cumulativeTopY(heights, minRow)
+    const y1 = cumulativeBottomY(heights, maxRow)
     if (y1 - y0 < 0.5) continue
     const pi = hashBranchNameToPaletteIndex(name, PALETTE_LEN)
     out.push({ column: col, branchName: name, y0, y1, pi })
