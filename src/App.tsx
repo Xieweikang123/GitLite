@@ -15,6 +15,7 @@ import { LogModal } from './components/LogModal'
 import { ProxyConfigModal } from './components/ProxyConfigModal'
 import { AiConfigModal } from './components/AiConfigModal'
 import { RemoteManageModal } from './components/RemoteManageModal'
+import { ReliabilityPanel } from './components/ReliabilityPanel'
 import { RepoFileTree } from './components/RepoFileTree'
 import { AuthorStatsPanel } from './components/AuthorStatsPanel'
 import { CommitInfo, FileChange } from './types/git'
@@ -99,6 +100,7 @@ function App() {
   const [proxyConfigOpen, setProxyConfigOpen] = useState(false)
   const [aiConfigOpen, setAiConfigOpen] = useState(false)
   const [remoteManageOpen, setRemoteManageOpen] = useState(false)
+  const [reliabilityOpen, setReliabilityOpen] = useState(false)
 
   /** 提交文件列表请求序号：避免快速切换提交时后返回的请求覆盖当前选中 */
   const commitFilesReqRef = React.useRef(0)
@@ -929,6 +931,7 @@ function App() {
         onCloneRepository={handleCloneRepository}
         onOpenProxyConfig={() => setProxyConfigOpen(true)}
         onOpenAiConfig={() => setAiConfigOpen(true)}
+        onOpenReliabilityPanel={() => setReliabilityOpen(true)}
       />
       
       {/* 顶部工具栏 */}
@@ -1126,6 +1129,7 @@ function App() {
         onClose={() => setProxyConfigOpen(false)}
       />
       <AiConfigModal isOpen={aiConfigOpen} onClose={() => setAiConfigOpen(false)} />
+      <ReliabilityPanel isOpen={reliabilityOpen} onClose={() => setReliabilityOpen(false)} repoPath={repoInfo?.path ?? null} />
       <RemoteManageModal
         isOpen={remoteManageOpen}
         onClose={() => setRemoteManageOpen(false)}

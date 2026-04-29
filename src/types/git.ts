@@ -127,6 +127,28 @@ export interface RecentRepo {
   last_opened: string
 }
 
+export interface OperationLogRecord {
+  id: string
+  timestamp: string
+  repo_path: string
+  branch: string
+  operation_type: string
+  is_high_risk: boolean
+  affected_files: number
+  duration_ms: number
+  status: string
+  error_detail?: string | null
+  suggestion?: string | null
+  silent_stash_id?: string | null
+  silent_stash_name?: string | null
+  silent_stash_path?: string | null
+}
+
+export interface AutoSnapshotConfig {
+  enabled: boolean
+  interval_minutes: number
+}
+
 export interface WorkspaceStatus {
   staged_files: FileChange[]
   unstaged_files: FileChange[]

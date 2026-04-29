@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/57031/.claude/plans/**)",
+      "Bash(mkdir -p \"C:/Users/57031/.claude/plans/\")",
+      "Bash(cargo check *)",
+      "Bash(npx tsc *)"
+    ]
+  }
+}

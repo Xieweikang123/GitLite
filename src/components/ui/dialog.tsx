@@ -4,6 +4,10 @@ import { cn } from "../../lib/utils"
 
 /** 支持多个 Dialog 同时打开（如确认框叠在主弹窗上）时成对加解锁 */
 let bodyScrollLockCount = 0
+
+/** ESC 关闭栈：只有栈顶弹窗响应 ESC，避免嵌套弹窗同时关闭 */
+const escapeStack: string[] = []
+let escapeIdCounter = 0
 /** 解锁后用 scrollTo 恢复的纵向滚动位置 */
 let bodyScrollLockSavedY = 0
 /** 加锁前 body 上已有的 style.paddingRight，用于解锁后还原 */
@@ -113,15 +117,21 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(({
 }, ref) => {
   React.useEffect(() => {
     if (!isOpen) return
+    const id = String(++escapeIdCounter)
+    escapeStack.push(id)
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return
       // 弹窗内的自定义 Select 等打开时，先由子层关下拉，勿整窗关闭
       if (document.querySelector("[data-app-interactive-overlay]")) return
+      // 只有栈顶弹窗响应 ESC
+      if (escapeStack[escapeStack.length - 1] !== id) return
       onOpenChange?.(false)
     }
     document.addEventListener("keydown", handleEscape)
     return () => {
       document.removeEventListener("keydown", handleEscape)
+      const idx = escapeStack.lastIndexOf(id)
+      if (idx !== -1) escapeStack.splice(idx, 1)
     }
   }, [isOpen, onOpenChange])
 

@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use std::fs;
 use anyhow::Result;
 use std::io::{BufRead, BufReader, Write};
-use std::sync::{Mutex, Once, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, Once, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 use tauri::{Manager, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem, CustomMenuItem, GlobalWindowEvent};
 
 /// AI 总结排查日志路径：调试构建写入仓库 `logs/ai-summary.log`；发布构建写入本机 `%LOCALAPPDATA%/GitLite/logs/`。可用环境变量 `GITLITE_AI_SUMMARY_LOG` 覆盖为绝对路径。
@@ -758,6 +759,74 @@ pub struct RecentRepo {
     pub path: String,
     pub name: String,
     pub last_opened: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SilentStashBackup {
+    pub id: String,
+    pub name: String,
+    pub repo_path: String,
+    pub branch: String,
+    pub operation_type: String,
+    pub created_at: String,
+    pub tracked_patch_path: String,
+    pub untracked_root: String,
+    pub affected_files: usize,
+    pub tracked_files: Vec<String>,
+    pub untracked_files: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OperationLogRecord {
+    pub id: String,
+    pub timestamp: String,
+    pub repo_path: String,
+    pub branch: String,
+    pub operation_type: String,
+    pub is_high_risk: bool,
+    pub affected_files: usize,
+    pub duration_ms: u128,
+    pub status: String,
+    pub error_detail: Option<String>,
+    pub suggestion: Option<String>,
+    pub silent_stash_id: Option<String>,
+    pub silent_stash_name: Option<String>,
+    pub silent_stash_path: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AutoSnapshotConfig {
+    pub enabled: bool,
+    #[serde(default = "default_snapshot_interval_minutes")]
+    pub interval_minutes: u32,
+}
+
+fn default_snapshot_interval_minutes() -> u32 { 10 }
+
+fn default_auto_snapshot_config() -> AutoSnapshotConfig {
+    AutoSnapshotConfig { enabled: false, interval_minutes: 10 }
+}
+
+pub struct SchedulerState {
+    current_repo: Mutex<Option<String>>,
+    config: Mutex<AutoSnapshotConfig>,
+    scheduler_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    restart_signal: Condvar,
+    stop_flag: AtomicBool,
+    busy: AtomicBool,
+}
+
+impl SchedulerState {
+    fn new() -> Self {
+        SchedulerState {
+            current_repo: Mutex::new(None),
+            config: Mutex::new(default_auto_snapshot_config()),
+            scheduler_thread: Mutex::new(None),
+            restart_signal: Condvar::new(),
+            stop_flag: AtomicBool::new(false),
+            busy: AtomicBool::new(false),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1959,6 +2028,568 @@ fn git_output_detail(output: &std::process::Output) -> String {
         s.push_str(stderr);
     }
     s
+}
+
+fn reliability_dir() -> PathBuf {
+    get_config_dir().join("reliability")
+}
+
+fn operation_log_file() -> PathBuf {
+    reliability_dir().join("operation_logs.json")
+}
+
+fn silent_stashes_dir() -> PathBuf {
+    reliability_dir().join("silent-stashes")
+}
+
+fn auto_snapshot_config_file() -> PathBuf {
+    reliability_dir().join("auto_snapshot_config.json")
+}
+
+fn load_auto_snapshot_config() -> AutoSnapshotConfig {
+    let file = auto_snapshot_config_file();
+    if !file.exists() {
+        return default_auto_snapshot_config();
+    }
+    fs::read_to_string(&file)
+        .ok()
+        .and_then(|s| serde_json::from_str::<AutoSnapshotConfig>(&s).ok())
+        .unwrap_or_else(default_auto_snapshot_config)
+}
+
+fn save_auto_snapshot_config_to_disk(config: &AutoSnapshotConfig) -> Result<(), String> {
+    fs::create_dir_all(reliability_dir()).map_err(|e| format!("创建配置目录失败: {}", e))?;
+    let content =
+        serde_json::to_string_pretty(config).map_err(|e| format!("序列化配置失败: {}", e))?;
+    fs::write(auto_snapshot_config_file(), content).map_err(|e| format!("写入配置失败: {}", e))
+}
+
+fn restart_scheduler(app_handle: tauri::AppHandle) {
+    let state: Arc<SchedulerState> = (*app_handle.state::<Arc<SchedulerState>>()).clone();
+
+    // 通知旧线程停止
+    {
+        state.stop_flag.store(true, Ordering::SeqCst);
+        state.restart_signal.notify_all();
+        let mut running = state.scheduler_thread.lock().unwrap();
+        if let Some(h) = running.take() {
+            let _ = h.join();
+        }
+    }
+    state.stop_flag.store(false, Ordering::SeqCst);
+
+    let config = state.config.lock().unwrap().clone();
+    if !config.enabled {
+        return;
+    }
+
+    let interval_secs = (config.interval_minutes.max(1) as u64) * 60;
+    let state_for_thread = state.clone();
+
+    let handle = std::thread::spawn(move || {
+        loop {
+            // 等待 interval 或被唤醒
+            let guard = state_for_thread.config.lock().unwrap();
+            let _ = state_for_thread
+                .restart_signal
+                .wait_timeout(guard, Duration::from_secs(interval_secs))
+                .unwrap();
+
+            // 检查是否应停止
+            if state_for_thread.stop_flag.load(Ordering::SeqCst) {
+                return;
+            }
+
+            let cfg = state_for_thread.config.lock().unwrap().clone();
+            if !cfg.enabled {
+                return;
+            }
+
+            let repo = state_for_thread.current_repo.lock().unwrap().clone();
+            let Some(repo_path) = repo else {
+                continue;
+            };
+
+            if state_for_thread
+                .busy
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                let started = Instant::now();
+                let result = create_silent_stash_backup(&repo_path, "auto-snapshot");
+                match &result {
+                    Ok(Some(b)) => {
+                        let msg = format!("自动快照: {}", b.name);
+                        record_git_write_operation(
+                            &repo_path,
+                            "auto-snapshot",
+                            false,
+                            started,
+                            &Ok(msg),
+                            Some(b),
+                            Some(b.affected_files),
+                        );
+                    }
+                    Ok(None) => {
+                        // 工作区无变更，不记录日志
+                    }
+                    Err(e) => {
+                        record_git_write_operation(
+                            &repo_path,
+                            "auto-snapshot",
+                            false,
+                            started,
+                            &Err(e.clone()),
+                            None,
+                            None,
+                        );
+                    }
+                }
+                state_for_thread.busy.store(false, Ordering::SeqCst);
+            }
+        }
+    });
+
+    *state.scheduler_thread.lock().unwrap() = Some(handle);
+}
+
+fn safe_filename_piece(input: &str) -> String {
+    let mut out = String::new();
+    for c in input.chars() {
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+            out.push(c);
+        } else {
+            out.push('-');
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        "op".to_string()
+    } else {
+        trimmed.chars().take(48).collect()
+    }
+}
+
+fn current_branch_label(repo: &Repository) -> String {
+    repo.head()
+        .ok()
+        .and_then(|h| h.shorthand().map(|s| s.to_string()))
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "detached".to_string())
+}
+
+fn read_operation_logs_file() -> Vec<OperationLogRecord> {
+    let file = operation_log_file();
+    if !file.exists() {
+        return Vec::new();
+    }
+    fs::read_to_string(&file)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<OperationLogRecord>>(&s).ok())
+        .unwrap_or_default()
+}
+
+fn append_operation_log(record: OperationLogRecord) {
+    let dir = reliability_dir();
+    if let Err(e) = fs::create_dir_all(&dir) {
+        log_message("WARN", &format!("operation log: create dir failed: {}", e));
+        return;
+    }
+    let mut logs = read_operation_logs_file();
+    logs.insert(0, record);
+    const MAX_OPERATION_LOGS: usize = 200;
+    if logs.len() > MAX_OPERATION_LOGS {
+        logs.truncate(MAX_OPERATION_LOGS);
+    }
+    match serde_json::to_string_pretty(&logs) {
+        Ok(content) => {
+            if let Err(e) = fs::write(operation_log_file(), content) {
+                log_message("WARN", &format!("operation log: write failed: {}", e));
+            }
+        }
+        Err(e) => log_message("WARN", &format!("operation log: serialize failed: {}", e)),
+    }
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|e| format!("创建备份目录失败: {}", e))?;
+    for entry in fs::read_dir(src).map_err(|e| format!("读取目录失败: {}", e))? {
+        let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        let ty = entry
+            .file_type()
+            .map_err(|e| format!("读取文件类型失败: {}", e))?;
+        if ty.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else if ty.is_file() {
+            if let Some(parent) = dst_path.parent() {
+                fs::create_dir_all(parent).map_err(|e| format!("创建备份父目录失败: {}", e))?;
+            }
+            fs::copy(&src_path, &dst_path).map_err(|e| format!("复制未跟踪文件失败: {}", e))?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_repo_path_to_backup(repo_path: &str, rel: &str, backup_root: &Path) -> Result<(), String> {
+    let key = normalize_repo_rel_path(rel).trim_end_matches('/').to_string();
+    if key.is_empty() {
+        return Ok(());
+    }
+    let src = Path::new(repo_path).join(&key);
+    if !src.exists() {
+        return Ok(());
+    }
+    let dst = backup_root.join(&key);
+    if src.is_dir() {
+        copy_dir_recursive(&src, &dst)
+    } else {
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("创建备份父目录失败: {}", e))?;
+        }
+        fs::copy(&src, &dst).map_err(|e| format!("复制未跟踪文件失败: {}", e))?;
+        Ok(())
+    }
+}
+
+fn collect_dirty_paths_for_backup(repo: &Repository, ws: &WorkspaceStatus) -> Vec<String> {
+    let mut set = HashSet::new();
+    if let Ok(paths) = paths_dirty_vs_head(repo) {
+        set.extend(paths);
+    }
+    for f in &ws.staged_files {
+        set.insert(f.path.clone());
+    }
+    for f in &ws.unstaged_files {
+        set.insert(f.path.clone());
+    }
+    for f in &ws.conflicted_files {
+        set.insert(f.path.clone());
+    }
+    for f in &ws.untracked_files {
+        set.insert(normalize_repo_rel_path(f));
+    }
+    let mut v: Vec<String> = set.into_iter().filter(|s| !s.is_empty()).collect();
+    v.sort();
+    v
+}
+
+fn read_silent_stash_metadata(id: &str) -> Result<SilentStashBackup, String> {
+    let safe_id = safe_filename_piece(id);
+    let file = silent_stashes_dir().join(safe_id).join("metadata.json");
+    let content = fs::read_to_string(&file).map_err(|e| format!("读取静默贮藏元数据失败: {}", e))?;
+    serde_json::from_str(&content).map_err(|e| format!("解析静默贮藏元数据失败: {}", e))
+}
+
+fn cleanup_old_silent_stashes() {
+    let root = silent_stashes_dir();
+    let Ok(entries) = fs::read_dir(&root) else {
+        return;
+    };
+    let mut dirs: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if !path.is_dir() {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .collect();
+    dirs.sort_by(|a, b| b.0.cmp(&a.0));
+    const MAX_SILENT_STASHES: usize = 30;
+    for (_, path) in dirs.into_iter().skip(MAX_SILENT_STASHES) {
+        let _ = fs::remove_dir_all(path);
+    }
+}
+
+fn create_silent_stash_backup(
+    repo_path: &str,
+    operation_type: &str,
+) -> Result<Option<SilentStashBackup>, String> {
+    let repo = Repository::open(repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
+    let ws = collect_workspace_status(&repo)?;
+    let dirty = !ws.staged_files.is_empty()
+        || !ws.unstaged_files.is_empty()
+        || !ws.untracked_files.is_empty()
+        || !ws.conflicted_files.is_empty();
+    if !dirty {
+        return Ok(None);
+    }
+
+    let affected_files = collect_dirty_paths_for_backup(&repo, &ws);
+    let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f").to_string();
+    let op_piece = safe_filename_piece(operation_type);
+    let id = format!("auto-stash-{}-{}", timestamp, op_piece);
+    let backup_dir = silent_stashes_dir().join(&id);
+    let untracked_root = backup_dir.join("untracked");
+    fs::create_dir_all(&untracked_root).map_err(|e| format!("创建静默贮藏目录失败: {}", e))?;
+
+    let patch_path = backup_dir.join("tracked.patch");
+    let diff_output = run_git_in_repo(repo_path, &["diff", "--binary", "HEAD"])
+        .or_else(|_| run_git_in_repo(repo_path, &["diff", "--binary"]))
+        .map_err(|e| format!("生成静默贮藏 patch 失败: {}", e))?;
+    if diff_output.status.success() {
+        fs::write(&patch_path, &diff_output.stdout)
+            .map_err(|e| format!("写入静默贮藏 patch 失败: {}", e))?;
+    } else {
+        let detail = git_output_detail(&diff_output);
+        fs::write(&patch_path, Vec::<u8>::new())
+            .map_err(|e| format!("写入空 patch 失败: {}", e))?;
+        log_message("WARN", &format!("silent stash: git diff failed: {}", detail));
+    }
+
+    let mut untracked_files = Vec::new();
+    for f in &ws.untracked_files {
+        let key = normalize_repo_rel_path(f);
+        if key.is_empty() {
+            continue;
+        }
+        copy_repo_path_to_backup(repo_path, &key, &untracked_root)?;
+        untracked_files.push(key);
+    }
+    untracked_files.sort();
+    untracked_files.dedup();
+
+    let tracked_files: Vec<String> = affected_files
+        .iter()
+        .filter(|p| !untracked_files.contains(p))
+        .cloned()
+        .collect();
+
+    let backup = SilentStashBackup {
+        id: id.clone(),
+        name: format!("auto-stash-{}-{}", timestamp, op_piece),
+        repo_path: repo_path.to_string(),
+        branch: current_branch_label(&repo),
+        operation_type: operation_type.to_string(),
+        created_at: chrono::Local::now().to_rfc3339(),
+        tracked_patch_path: patch_path.to_string_lossy().to_string(),
+        untracked_root: untracked_root.to_string_lossy().to_string(),
+        affected_files: affected_files.len(),
+        tracked_files,
+        untracked_files,
+    };
+
+    let metadata = serde_json::to_string_pretty(&backup)
+        .map_err(|e| format!("序列化静默贮藏元数据失败: {}", e))?;
+    fs::write(backup_dir.join("metadata.json"), metadata)
+        .map_err(|e| format!("写入静默贮藏元数据失败: {}", e))?;
+    cleanup_old_silent_stashes();
+    log_message(
+        "INFO",
+        &format!(
+            "silent stash: created | repo={} op={} id={} files={}",
+            repo_path, operation_type, backup.id, backup.affected_files
+        ),
+    );
+    Ok(Some(backup))
+}
+
+fn reliability_suggestion(operation_type: &str, err: Option<&str>) -> Option<String> {
+    let e = err.unwrap_or("");
+    if e.contains("conflict") || e.contains("冲突") {
+        return Some("请先查看冲突文件；可在可靠性面板中查看本次操作前的静默贮藏。".to_string());
+    }
+    if e.contains("overwrite") || e.contains("覆盖") || e.contains("未提交") {
+        return Some("本地改动已生成静默贮藏备份；建议查看影响文件后再重试。".to_string());
+    }
+    match operation_type {
+        "checkout" | "switch" => Some("若切换失败，请确认目标分支存在，并检查本地改动是否与目标分支冲突。".to_string()),
+        "pull" | "merge" => Some("若远程合并失败，请先 fetch 查看远端状态，必要时解决冲突后继续。".to_string()),
+        "reset-hard" | "rebase" => Some("历史改写类操作失败后，请检查仓库是否处于进行中状态；必要时使用 Git 命令中止。".to_string()),
+        "discard" => Some("丢弃操作前已创建静默备份，可从可靠性面板查看或恢复。".to_string()),
+        _ => None,
+    }
+}
+
+fn record_git_write_operation(
+    repo_path: &str,
+    operation_type: &str,
+    is_high_risk: bool,
+    started: Instant,
+    result: &Result<String, String>,
+    backup: Option<&SilentStashBackup>,
+    affected_files: Option<usize>,
+) {
+    let branch = Repository::open(repo_path)
+        .ok()
+        .map(|repo| current_branch_label(&repo))
+        .unwrap_or_else(|| "unknown".to_string());
+    let status = if result.is_ok() { "success" } else { "failed" }.to_string();
+    let error_detail = result.as_ref().err().cloned();
+    let suggestion = reliability_suggestion(operation_type, error_detail.as_deref());
+    append_operation_log(OperationLogRecord {
+        id: format!(
+            "{}-{}",
+            chrono::Utc::now().timestamp_millis(),
+            safe_filename_piece(operation_type)
+        ),
+        timestamp: chrono::Local::now().to_rfc3339(),
+        repo_path: repo_path.to_string(),
+        branch,
+        operation_type: operation_type.to_string(),
+        is_high_risk,
+        affected_files: affected_files.or_else(|| backup.map(|b| b.affected_files)).unwrap_or(0),
+        duration_ms: started.elapsed().as_millis(),
+        status,
+        error_detail,
+        suggestion,
+        silent_stash_id: backup.map(|b| b.id.clone()),
+        silent_stash_name: backup.map(|b| b.name.clone()),
+        silent_stash_path: backup.map(|b| {
+            Path::new(&b.tracked_patch_path)
+                .parent()
+                .unwrap_or_else(|| Path::new(""))
+                .to_string_lossy()
+                .to_string()
+        }),
+    });
+}
+
+#[tauri::command]
+async fn get_auto_snapshot_config(
+    state: tauri::State<'_, Arc<SchedulerState>>,
+) -> Result<AutoSnapshotConfig, String> {
+    Ok(state.config.lock().unwrap().clone())
+}
+
+#[tauri::command]
+async fn save_auto_snapshot_config(
+    config: AutoSnapshotConfig,
+    state: tauri::State<'_, Arc<SchedulerState>>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let interval = config.interval_minutes.max(1).min(1440);
+    let normalized = AutoSnapshotConfig {
+        enabled: config.enabled,
+        interval_minutes: interval,
+    };
+    save_auto_snapshot_config_to_disk(&normalized)?;
+    *state.config.lock().unwrap() = normalized;
+    restart_scheduler(app_handle);
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_current_repo_for_snapshot(
+    repo_path: Option<String>,
+    state: tauri::State<'_, Arc<SchedulerState>>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    *state.current_repo.lock().unwrap() = repo_path;
+    restart_scheduler(app_handle);
+    Ok(())
+}
+
+#[tauri::command]
+async fn trigger_auto_snapshot_now(
+    state: tauri::State<'_, Arc<SchedulerState>>,
+) -> Result<String, String> {
+    let scheduler: Arc<SchedulerState> = (*state).clone();
+    let repo = scheduler
+        .current_repo
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("未打开仓库")?;
+    if scheduler
+        .busy
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("定时快照正在进行中".to_string());
+    }
+    let started = Instant::now();
+    let result = create_silent_stash_backup(&repo, "auto-snapshot");
+    scheduler.busy.store(false, Ordering::SeqCst);
+    match result {
+        Ok(Some(b)) => {
+            let msg = format!("已创建快照: {}", b.name);
+            record_git_write_operation(&repo, "auto-snapshot", false, started, &Ok(msg.clone()), Some(&b), Some(b.affected_files));
+            Ok(msg)
+        }
+        Ok(None) => Ok("工作区无变更，跳过".to_string()),
+        Err(e) => {
+            record_git_write_operation(&repo, "auto-snapshot", false, started, &Err(e.clone()), None, None);
+            Err(e)
+        }
+    }
+}
+
+#[tauri::command]
+async fn get_operation_logs(limit: Option<usize>) -> Result<Vec<OperationLogRecord>, String> {
+    let mut logs = read_operation_logs_file();
+    let lim = limit.unwrap_or(100).max(1).min(200);
+    if logs.len() > lim {
+        logs.truncate(lim);
+    }
+    Ok(logs)
+}
+
+#[tauri::command]
+async fn get_silent_stash_diff(stash_id: String) -> Result<String, String> {
+    let backup = read_silent_stash_metadata(&stash_id)?;
+    let mut text = fs::read_to_string(&backup.tracked_patch_path)
+        .unwrap_or_else(|_| String::new());
+    if !backup.untracked_files.is_empty() {
+        text.push_str("\n\n# Untracked files copied in this silent stash:\n");
+        for f in backup.untracked_files {
+            text.push_str("# ");
+            text.push_str(&f);
+            text.push('\n');
+        }
+    }
+    Ok(text)
+}
+
+#[tauri::command]
+async fn restore_silent_stash(stash_id: String) -> Result<String, String> {
+    let started = Instant::now();
+    let backup = read_silent_stash_metadata(&stash_id)?;
+    let mut result: Result<String, String> = Ok(String::new());
+
+    let patch_path = backup.tracked_patch_path.clone();
+    if fs::metadata(&patch_path).map(|m| m.len()).unwrap_or(0) > 0 {
+        let out = run_git_in_repo(&backup.repo_path, &["apply", "--index", &patch_path])
+            .map_err(|e| format!("无法执行 git apply: {}", e));
+        match out {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                result = Err(format!("恢复 tracked patch 失败: {}", git_output_detail(&output)));
+            }
+            Err(e) => result = Err(e),
+        }
+    }
+
+    if result.is_ok() {
+        for rel in &backup.untracked_files {
+            let src = Path::new(&backup.untracked_root).join(rel);
+            let dst = Path::new(&backup.repo_path).join(rel);
+            if src.is_dir() {
+                copy_dir_recursive(&src, &dst)?;
+            } else if src.is_file() {
+                if let Some(parent) = dst.parent() {
+                    fs::create_dir_all(parent).map_err(|e| format!("创建恢复目录失败: {}", e))?;
+                }
+                fs::copy(&src, &dst).map_err(|e| format!("恢复未跟踪文件失败: {}", e))?;
+            }
+        }
+        result = Ok(format!("已恢复静默贮藏 {}", backup.name));
+    }
+
+    record_git_write_operation(
+        &backup.repo_path,
+        "restore-silent-stash",
+        false,
+        started,
+        &result,
+        Some(&backup),
+        Some(backup.affected_files),
+    );
+    result
 }
 
 // 获取代理配置
@@ -3837,6 +4468,8 @@ async fn get_commits_branch_labels(
 // 切换分支
 #[tauri::command]
 async fn checkout_branch(repo_path: String, branch_name: String) -> Result<String, String> {
+    let started = Instant::now();
+    let backup = create_silent_stash_backup(&repo_path, "checkout")?;
     let repo = Repository::open(&repo_path)
         .map_err(|e| format!("无法打开仓库: {}", e))?;
 
@@ -3850,25 +4483,35 @@ async fn checkout_branch(repo_path: String, branch_name: String) -> Result<Strin
             }
         })?;
 
-    if let Err(e) = repo.checkout_tree(&object, None) {
+    let result = if let Err(e) = repo.checkout_tree(&object, None) {
         let msg = e.message();
-        return Err(if msg.contains("overwrite") || msg.contains("would be overwritten") || msg.contains("conflict") {
+        Err(if msg.contains("overwrite") || msg.contains("would be overwritten") || msg.contains("conflict") {
             "有未提交的修改，无法切换分支。请先提交或暂存后再切换。".to_string()
         } else {
             format!("检出失败: {}", msg)
-        });
-    }
-
-    if let Some(reference) = reference {
-        let ref_name = reference.name().unwrap_or("refs/heads/unknown");
-        repo.set_head(ref_name)
-            .map_err(|e| format!("设置当前分支失败: {}", e.message()))?;
+        })
     } else {
-        repo.set_head_detached(object.id())
-            .map_err(|e| format!("设置分离头指针失败: {}", e.message()))?;
-    }
+        if let Some(reference) = reference {
+            let ref_name = reference.name().unwrap_or("refs/heads/unknown");
+            repo.set_head(ref_name)
+                .map_err(|e| format!("设置当前分支失败: {}", e.message()))
+        } else {
+            repo.set_head_detached(object.id())
+                .map_err(|e| format!("设置分离头指针失败: {}", e.message()))
+        }
+        .map(|_| format!("已切换到 {}", branch_name))
+    };
 
-    Ok(format!("已切换到 {}", branch_name))
+    record_git_write_operation(
+        &repo_path,
+        "checkout",
+        true,
+        started,
+        &result,
+        backup.as_ref(),
+        None,
+    );
+    result
 }
 
 /// 从指定提交（默认 HEAD）创建本地分支；`checkout` 为 true 时等价于 `git checkout -b`。
@@ -3994,6 +4637,8 @@ async fn rename_branch(repo_path: String, old_name: String, new_name: String) ->
 /// 将指定分支合并到当前分支（`ff_only=true` 时等价于 `git merge --ff-only`）。
 #[tauri::command]
 async fn merge_branch(repo_path: String, source_branch: String, ff_only: bool) -> Result<String, String> {
+    let started = Instant::now();
+    let backup = create_silent_stash_backup(&repo_path, "merge")?;
     let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
     pull_preflight(&repo)?;
 
@@ -4018,22 +4663,44 @@ async fn merge_branch(repo_path: String, source_branch: String, ff_only: bool) -
     } else {
         vec!["merge", "--no-edit", source]
     };
-    let out = run_git_in_repo(&repo_path, &args).map_err(|e| format!("无法执行 git merge: {}", e))?;
-    if !out.status.success() {
-        let detail = git_output_detail(&out);
-        let repo_after = Repository::open(&repo_path).map_err(|e| format!("合并失败后无法重新打开仓库: {}", e))?;
-        if repo_after.state() == RepositoryState::Merge {
-            return Err(format!("合并产生冲突，请先解决冲突后继续: {}", detail));
+    let result = match run_git_in_repo(&repo_path, &args) {
+        Ok(out) if out.status.success() => Ok(format!("已将 {} 合并到当前分支", source)),
+        Ok(out) => {
+            let detail = git_output_detail(&out);
+            let repo_after = Repository::open(&repo_path).map_err(|e| format!("合并失败后无法重新打开仓库: {}", e));
+            match repo_after {
+                Ok(repo_after) if repo_after.state() == RepositoryState::Merge => {
+                    Err(format!("合并产生冲突，请先解决冲突后继续: {}", detail))
+                }
+                Ok(_) => Err(format!("合并失败: {}", detail)),
+                Err(e) => Err(e),
+            }
         }
-        return Err(format!("合并失败: {}", detail));
-    }
+        Err(e) => Err(format!("无法执行 git merge: {}", e)),
+    };
 
-    Ok(format!("已将 {} 合并到当前分支", source))
+    record_git_write_operation(
+        &repo_path,
+        "merge",
+        true,
+        started,
+        &result,
+        backup.as_ref(),
+        None,
+    );
+    result
 }
 
 /// 将当前分支（或分离 HEAD）重置到指定提交，行为与 `git reset --soft|--mixed|--hard` 一致。
 #[tauri::command]
 async fn reset_to_commit(repo_path: String, commit_id: String, mode: String) -> Result<String, String> {
+    let started = Instant::now();
+    let mode_normalized = mode.trim().to_lowercase();
+    let backup = if mode_normalized == "hard" {
+        create_silent_stash_backup(&repo_path, "reset-hard")?
+    } else {
+        None
+    };
     let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
 
     let oid = Oid::from_str(commit_id.trim()).map_err(|e| format!("无效的提交 ID: {}", e))?;
@@ -4042,7 +4709,7 @@ async fn reset_to_commit(repo_path: String, commit_id: String, mode: String) -> 
         .find_commit(oid)
         .map_err(|e| format!("找不到该提交: {}", e))?;
 
-    let reset_type = match mode.trim().to_lowercase().as_str() {
+    let reset_type = match mode_normalized.as_str() {
         "soft" => git2::ResetType::Soft,
         "mixed" => git2::ResetType::Mixed,
         "hard" => git2::ResetType::Hard,
@@ -4050,7 +4717,7 @@ async fn reset_to_commit(repo_path: String, commit_id: String, mode: String) -> 
     };
 
     let object = commit.as_object();
-    repo.reset(object, reset_type, None).map_err(|e| {
+    let reset_result = repo.reset(object, reset_type, None).map_err(|e| {
         let msg = e.message();
         if msg.contains("overwrite") || msg.contains("conflict") || msg.contains("Failed to") {
             format!(
@@ -4060,7 +4727,7 @@ async fn reset_to_commit(repo_path: String, commit_id: String, mode: String) -> 
         } else {
             format!("重置失败: {}", msg)
         }
-    })?;
+    });
 
     let mode_cn = match reset_type {
         git2::ResetType::Soft => "软",
@@ -4075,7 +4742,17 @@ async fn reset_to_commit(repo_path: String, commit_id: String, mode: String) -> 
         id_disp.to_string()
     };
 
-    Ok(format!("已执行「{}」重置，当前指向 {}", mode_cn, short))
+    let result = reset_result.map(|_| format!("已执行「{}」重置，当前指向 {}", mode_cn, short));
+    record_git_write_operation(
+        &repo_path,
+        if mode_normalized == "hard" { "reset-hard" } else { "reset" },
+        mode_normalized == "hard",
+        started,
+        &result,
+        backup.as_ref(),
+        None,
+    );
+    result
 }
 
 /// 在当前分支应用指定提交（等价于 `git cherry-pick <commit>`）。
@@ -4143,8 +4820,22 @@ async fn revert_commit(repo_path: String, commit_id: String) -> Result<String, S
 /// 将当前分支 rebase 到指定提交（等价于 `git rebase <onto>`）。
 #[tauri::command]
 async fn rebase_to_commit(repo_path: String, onto_commit_id: String) -> Result<String, String> {
+    let started = Instant::now();
+    let backup = create_silent_stash_backup(&repo_path, "rebase")?;
     let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
-    history_op_preflight(&repo)?;
+    if let Err(e) = history_op_preflight(&repo) {
+        let result = Err(e);
+        record_git_write_operation(
+            &repo_path,
+            "rebase",
+            true,
+            started,
+            &result,
+            backup.as_ref(),
+            None,
+        );
+        return result;
+    }
 
     let onto = onto_commit_id.trim();
     if onto.is_empty() {
@@ -4152,23 +4843,33 @@ async fn rebase_to_commit(repo_path: String, onto_commit_id: String) -> Result<S
     }
     let _ = Oid::from_str(onto).map_err(|e| format!("无效的提交 ID: {}", e))?;
 
-    let out =
-        run_git_in_repo(&repo_path, &["rebase", onto]).map_err(|e| format!("无法执行 git rebase: {}", e))?;
-    if !out.status.success() {
-        let detail = git_output_detail(&out);
-        let repo_after =
-            Repository::open(&repo_path).map_err(|e| format!("操作失败后无法重新打开仓库: {}", e))?;
-        if repo_after.state() != RepositoryState::Clean {
-            return Err(format!(
-                "Rebase 失败并进入进行中状态（{:?}）。请先解决冲突后继续，或用命令行 `git rebase --abort` 终止。详情：{}",
-                repo_after.state(),
-                detail
-            ));
+    let result = match run_git_in_repo(&repo_path, &["rebase", onto]) {
+        Ok(out) if out.status.success() => Ok(format!("已将当前分支 rebase 到 {}", &onto[..onto.len().min(7)])),
+        Ok(out) => {
+            let detail = git_output_detail(&out);
+            match Repository::open(&repo_path) {
+                Ok(repo_after) if repo_after.state() != RepositoryState::Clean => Err(format!(
+                    "Rebase 失败并进入进行中状态（{:?}）。请先解决冲突后继续，或用命令行 `git rebase --abort` 终止。详情：{}",
+                    repo_after.state(),
+                    detail
+                )),
+                Ok(_) => Err(format!("Rebase 失败: {}", detail)),
+                Err(e) => Err(format!("操作失败后无法重新打开仓库: {}", e)),
+            }
         }
-        return Err(format!("Rebase 失败: {}", detail));
-    }
+        Err(e) => Err(format!("无法执行 git rebase: {}", e)),
+    };
 
-    Ok(format!("已将当前分支 rebase 到 {}", &onto[..onto.len().min(7)]))
+    record_git_write_operation(
+        &repo_path,
+        "rebase",
+        true,
+        started,
+        &result,
+        backup.as_ref(),
+        None,
+    );
+    result
 }
 
 // 获取提交的文件列表
@@ -4765,6 +5466,7 @@ async fn unstage_file(repo_path: String, file_path: String) -> Result<String, St
 /// 丢弃指定路径的未暂存修改，使工作区与暂存区一致（`git restore --worktree -- <path>`）。
 #[tauri::command]
 async fn discard_unstaged_file(repo_path: String, file_path: String) -> Result<String, String> {
+    let started = Instant::now();
     let file_path = normalize_repo_rel_path(&file_path);
     if file_path.is_empty() {
         return Err("文件路径为空".to_string());
@@ -4777,47 +5479,74 @@ async fn discard_unstaged_file(repo_path: String, file_path: String) -> Result<S
         ),
     );
 
-    let output = run_git_in_repo(&repo_path, &["restore", "--worktree", "--", &file_path]).map_err(
-        |e| format!("无法执行 git restore（请确认已安装 Git 并加入 PATH）: {}", e),
-    )?;
-    if !output.status.success() {
-        let detail = git_output_detail(&output);
-        log_message("ERROR", &format!("discard_unstaged_file: failed | {}", detail));
-        return Err(format!("丢弃未暂存修改失败: {}", detail));
-    }
+    let backup = create_silent_stash_backup(&repo_path, "discard")?;
+    let result = match run_git_in_repo(&repo_path, &["restore", "--worktree", "--", &file_path]) {
+        Ok(output) if output.status.success() => Ok(format!("已丢弃未暂存修改: {}", file_path)),
+        Ok(output) => {
+            let detail = git_output_detail(&output);
+            log_message("ERROR", &format!("discard_unstaged_file: failed | {}", detail));
+            Err(format!("丢弃未暂存修改失败: {}", detail))
+        }
+        Err(e) => Err(format!("无法执行 git restore（请确认已安装 Git 并加入 PATH）: {}", e)),
+    };
 
-    log_message(
-        "INFO",
-        &format!(
-            "discard_unstaged_file: success | path={} file={}",
-            repo_path, file_path
-        ),
+    if result.is_ok() {
+        log_message(
+            "INFO",
+            &format!(
+                "discard_unstaged_file: success | path={} file={}",
+                repo_path, file_path
+            ),
+        );
+    }
+    record_git_write_operation(
+        &repo_path,
+        "discard",
+        true,
+        started,
+        &result,
+        backup.as_ref(),
+        Some(1),
     );
-    Ok(format!("已丢弃未暂存修改: {}", file_path))
+    result
 }
 
 /// 丢弃全部未暂存修改，使工作区与暂存区一致（`git restore --worktree -- .`）。
 #[tauri::command]
 async fn discard_all_unstaged(repo_path: String) -> Result<String, String> {
+    let started = Instant::now();
     log_message(
         "INFO",
         &format!("discard_all_unstaged: attempt | path={}", repo_path),
     );
 
-    let output = run_git_in_repo(&repo_path, &["restore", "--worktree", "--", "."]).map_err(|e| {
-        format!("无法执行 git restore（请确认已安装 Git 并加入 PATH）: {}", e)
-    })?;
-    if !output.status.success() {
-        let detail = git_output_detail(&output);
-        log_message("ERROR", &format!("discard_all_unstaged: failed | {}", detail));
-        return Err(format!("丢弃全部未暂存修改失败: {}", detail));
-    }
+    let backup = create_silent_stash_backup(&repo_path, "discard")?;
+    let result = match run_git_in_repo(&repo_path, &["restore", "--worktree", "--", "."]) {
+        Ok(output) if output.status.success() => Ok("已丢弃全部未暂存修改".to_string()),
+        Ok(output) => {
+            let detail = git_output_detail(&output);
+            log_message("ERROR", &format!("discard_all_unstaged: failed | {}", detail));
+            Err(format!("丢弃全部未暂存修改失败: {}", detail))
+        }
+        Err(e) => Err(format!("无法执行 git restore（请确认已安装 Git 并加入 PATH）: {}", e)),
+    };
 
-    log_message(
-        "INFO",
-        &format!("discard_all_unstaged: success | path={}", repo_path),
+    if result.is_ok() {
+        log_message(
+            "INFO",
+            &format!("discard_all_unstaged: success | path={}", repo_path),
+        );
+    }
+    record_git_write_operation(
+        &repo_path,
+        "discard",
+        true,
+        started,
+        &result,
+        backup.as_ref(),
+        None,
     );
-    Ok("已丢弃全部未暂存修改".to_string())
+    result
 }
 
 /// 与命令行 `git commit` 一致：从仓库/全局配置读取 `user.name` 与 `user.email` 生成签名（不长期借用 `Repository`，便于后续 `stash_save` 等需 `&mut repo` 的场景）。
@@ -5235,7 +5964,23 @@ fn execute_pull(
 // 拉取更改
 #[tauri::command]
 async fn pull_changes(repo_path: String) -> Result<PullOutcome, String> {
-    execute_pull(&repo_path, None)
+    let started = Instant::now();
+    let backup = create_silent_stash_backup(&repo_path, "pull")?;
+    let outcome = execute_pull(&repo_path, None);
+    let log_result: Result<String, String> = outcome
+        .as_ref()
+        .map(|o| o.message.clone())
+        .map_err(|e| e.clone());
+    record_git_write_operation(
+        &repo_path,
+        "pull",
+        true,
+        started,
+        &log_result,
+        backup.as_ref(),
+        None,
+    );
+    outcome
 }
 
 // 获取远程更改（不合并）- 简版（供普通按钮与同步流程调用）
@@ -5874,6 +6619,8 @@ async fn git_diagnostics(repo_path: String) -> Result<Vec<(String, String, Strin
 // 拉取更改 - 带日志流
 #[tauri::command]
 async fn pull_changes_with_logs(repo_path: String) -> Result<PullWithLogsResult, String> {
+    let started = Instant::now();
+    let backup = create_silent_stash_backup(&repo_path, "pull")?;
     let mut logs = Vec::new();
     let ts = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
     logs.push((
@@ -5881,10 +6628,21 @@ async fn pull_changes_with_logs(repo_path: String) -> Result<PullWithLogsResult,
         "INFO".to_string(),
         format!("pull: attempt start | path={}", repo_path),
     ));
-    match execute_pull(&repo_path, Some(&mut logs)) {
-        Ok(outcome) => Ok(PullWithLogsResult { logs, outcome }),
-        Err(e) => Err(e),
-    }
+    let outcome = execute_pull(&repo_path, Some(&mut logs));
+    let log_result: Result<String, String> = outcome
+        .as_ref()
+        .map(|o| o.message.clone())
+        .map_err(|e| e.clone());
+    record_git_write_operation(
+        &repo_path,
+        "pull",
+        true,
+        started,
+        &log_result,
+        backup.as_ref(),
+        None,
+    );
+    outcome.map(|outcome| PullWithLogsResult { logs, outcome })
 }
 
 /// 与 git 侧路径比较（统一为正斜杠，避免 Windows 下 `a\b` 与 `a/b` 不相等导致差异为空）
@@ -6304,7 +7062,22 @@ fn handle_window_event(event: &GlobalWindowEvent) {
 }
 
 fn main() {
+    let scheduler_state = Arc::new(SchedulerState::new());
+    {
+        let cfg = load_auto_snapshot_config();
+        *scheduler_state.config.lock().unwrap() = cfg;
+    }
+
     tauri::Builder::default()
+        .manage(scheduler_state)
+        .setup(|app| {
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(3));
+                restart_scheduler(handle);
+            });
+            Ok(())
+        })
         .system_tray(create_system_tray())
         .on_system_tray_event(handle_system_tray_event)
         .on_window_event(|event| {
@@ -6365,6 +7138,9 @@ fn main() {
             push_changes_with_realtime_logs,
             pull_changes_with_logs,
             git_diagnostics,
+            get_operation_logs,
+            get_silent_stash_diff,
+            restore_silent_stash,
             get_log_file_path,
             append_gitlite_log,
             open_log_dir,
@@ -6386,6 +7162,10 @@ fn main() {
             test_ai_connection,
             generate_commit_message_ai,
             summarize_commits_ai_stream,
+            get_auto_snapshot_config,
+            save_auto_snapshot_config,
+            set_current_repo_for_snapshot,
+            trigger_auto_snapshot_now,
             get_git_config_info
         ])
         .run(tauri::generate_context!())

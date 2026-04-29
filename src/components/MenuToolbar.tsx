@@ -9,6 +9,7 @@ import {
   FolderPlus,
   Download,
   Network,
+  ShieldCheck,
   Sparkles,
   Pencil,
   Search,
@@ -44,6 +45,7 @@ interface MenuToolbarProps {
   ) => Promise<boolean>
   onOpenProxyConfig?: () => void
   onOpenAiConfig?: () => void
+  onOpenReliabilityPanel?: () => void
 }
 
 export function MenuToolbar({
@@ -59,7 +61,8 @@ export function MenuToolbar({
   onInitRepository,
   onCloneRepository,
   onOpenProxyConfig,
-  onOpenAiConfig
+  onOpenAiConfig,
+  onOpenReliabilityPanel
 }: MenuToolbarProps) {
   const [contextMenu, setContextMenu] = useState<{
     x: number
@@ -609,6 +612,18 @@ export function MenuToolbar({
           >
             <Sparkles className="h-3 w-3 mr-1" />
             AI
+          </Button>
+        )}
+
+        {onOpenReliabilityPanel && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onOpenReliabilityPanel}
+            className="h-6 px-2 text-xs"
+          >
+            <ShieldCheck className="h-3 w-3 mr-1" />
+            可靠性
           </Button>
         )}
 

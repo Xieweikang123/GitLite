@@ -169,6 +169,12 @@ export function useGit() {
     }
   }, [recentRepos, repoInfo, openRepositoryByPath, autoOpenEnabled])
 
+  // 通知后端当前仓库路径（用于定时静默贮藏）
+  useEffect(() => {
+    const path = repoInfo?.path ?? null
+    invoke('set_current_repo_for_snapshot', { repoPath: path }).catch(() => {})
+  }, [repoInfo?.path])
+
   const checkoutBranch = useCallback(async (branchName: string) => {
     if (!repoInfo) return
     
