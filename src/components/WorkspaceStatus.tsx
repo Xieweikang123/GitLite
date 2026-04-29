@@ -78,6 +78,7 @@ export function WorkspaceStatus({
   const [error, setError] = useState<string | null>(null)
   const [syncInfo, setSyncInfo] = useState<string | null>(null)
   const [syncStep, setSyncStep] = useState<string | null>(null)
+  const [abortingMerge, setAbortingMerge] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [refreshIntervalSec] = useState(10)
   /** 避免自动刷新与上一次 IPC 重叠（大仓库 get_workspace_status 可能较慢） */
@@ -326,6 +327,23 @@ export function WorkspaceStatus({
     setUntrackedDeleteConfirm({ kind: 'all' })
   }
 
+  const abortMerge = async () => {
+    if (!repoInfo) return
+    if (!window.confirm('放弃合并会丢弃当前冲突状态，工作区改动将丢失。继续？')) return
+    try {
+      setAbortingMerge(true)
+      setError(null)
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      await invoke('abort_merge', { repoPath: repoInfo.path })
+      await fetchWorkspaceStatus()
+      onRefresh?.()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '放弃合并失败')
+    } finally {
+      setAbortingMerge(false)
+    }
+  }
+
   const runUntrackedDeleteConfirm = async () => {
     if (!repoInfo || !untrackedDeleteConfirm) return
     workspaceStatusFetchGenRef.current++
@@ -518,6 +536,51 @@ export function WorkspaceStatus({
       await fetchWorkspaceStatus()
     } catch (err) {
       setError(err instanceof Error ? err.message : '批量添加未跟踪文件失败')
+    } finally {
+      setLoading(false)
+      setStagingLoading(false)
+      setStagingBulkType(null)
+    }
+  }
+
+  // 一键暂存：未暂存 + 未跟踪全部暂存
+  const stageAll = async () => {
+    if (!repoInfo || !workspaceStatus) return
+    const hasUnstaged = workspaceStatus.unstaged_files?.length > 0
+    const hasUntracked = workspaceStatus.untracked_files?.some((f) => !f.endsWith('/'))
+    if (!hasUnstaged && !hasUntracked) return
+
+    try {
+      setLoading(true)
+      setStagingLoading(true)
+      setStagingTargetPath(null)
+      setStagingBulkType('unstaged')
+      setError(null)
+
+      const { invoke } = await import('@tauri-apps/api/tauri')
+
+      if (hasUnstaged) {
+        for (const file of workspaceStatus.unstaged_files) {
+          await invoke('stage_file', {
+            repoPath: repoInfo.path,
+            filePath: normalizeFilePathForGit(file.path),
+          })
+        }
+      }
+
+      if (hasUntracked) {
+        const paths = workspaceStatus.untracked_files.filter((f) => !f.endsWith('/'))
+        for (const file of paths) {
+          await invoke('stage_file', {
+            repoPath: repoInfo.path,
+            filePath: normalizeFilePathForGit(file),
+          })
+        }
+      }
+
+      await fetchWorkspaceStatus()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '一键暂存失败')
     } finally {
       setLoading(false)
       setStagingLoading(false)
@@ -1351,6 +1414,16 @@ export function WorkspaceStatus({
               合并冲突
             </CardTitle>
             <CardDescription>请解决冲突后暂存并提交；查看差异为工作区与索引侧内容（含冲突标记）。</CardDescription>
+            <Button
+              variant="destructive"
+              size="sm"
+              className="mt-2 gap-1"
+              disabled={abortingMerge}
+              onClick={() => void abortMerge()}
+            >
+              {abortingMerge ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+              放弃合并
+            </Button>
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
@@ -1455,6 +1528,33 @@ export function WorkspaceStatus({
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {/* 一键暂存按钮：未暂存 + 未跟踪 */}
+      {workspaceStatus &&
+        ((workspaceStatus.unstaged_files?.length > 0) ||
+          (workspaceStatus.untracked_files?.some((f) => !f.endsWith('/')))) && (
+        <div className="flex justify-end">
+          <Button
+            size="sm"
+            variant="default"
+            onClick={() => void stageAll()}
+            disabled={loading || stagingLoading || unstagingLoading}
+            className="gap-1"
+          >
+            {loading && stagingLoading && stagingBulkType === 'unstaged' ? (
+              <>
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                暂存中…
+              </>
+            ) : (
+              <>
+                <CheckCircle className="h-3.5 w-3.5" />
+                一键全部暂存
+              </>
+            )}
+          </Button>
+        </div>
       )}
 
       {/* 未暂存的文件 */}

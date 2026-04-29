@@ -2156,7 +2156,7 @@ fn restart_scheduler(app_handle: tauri::AppHandle) {
 fn safe_filename_piece(input: &str) -> String {
     let mut out = String::new();
     for c in input.chars() {
-        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
             out.push(c);
         } else {
             out.push('-');
@@ -2553,12 +2553,21 @@ async fn restore_silent_stash(stash_id: String) -> Result<String, String> {
 
     let patch_path = backup.tracked_patch_path.clone();
     if fs::metadata(&patch_path).map(|m| m.len()).unwrap_or(0) > 0 {
-        let out = run_git_in_repo(&backup.repo_path, &["apply", "--index", &patch_path])
+        // 优先用 --3way 三路合并（兼容工作区已有改动），失败则回退 --index
+        let out = run_git_in_repo(&backup.repo_path, &["apply", "--3way", &patch_path])
             .map_err(|e| format!("无法执行 git apply: {}", e));
         match out {
             Ok(output) if output.status.success() => {}
-            Ok(output) => {
-                result = Err(format!("恢复 tracked patch 失败: {}", git_output_detail(&output)));
+            Ok(_) => {
+                let out2 = run_git_in_repo(&backup.repo_path, &["apply", "--index", &patch_path])
+                    .map_err(|e| format!("无法执行 git apply: {}", e));
+                match out2 {
+                    Ok(output) if output.status.success() => {}
+                    Ok(output) => {
+                        result = Err(format!("恢复 tracked patch 失败: {}", git_output_detail(&output)));
+                    }
+                    Err(e) => result = Err(e),
+                }
             }
             Err(e) => result = Err(e),
         }
@@ -4688,6 +4697,39 @@ async fn merge_branch(repo_path: String, source_branch: String, ff_only: bool) -
         backup.as_ref(),
         None,
     );
+    result
+}
+
+/// 中止进行中的合并或清理冲突状态。
+/// 若仓库处于正式 Merge 状态则执行 `git merge --abort`，
+/// 否则若有冲突文件则用 `git reset --hard HEAD` 清理。
+#[tauri::command]
+async fn abort_merge(repo_path: String) -> Result<String, String> {
+    let started = Instant::now();
+    let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
+    let result = if repo.state() == RepositoryState::Merge {
+        run_git_in_repo(&repo_path, &["merge", "--abort"])
+            .map_err(|e| format!("无法执行 git merge --abort: {}", e))
+            .and_then(|output| {
+                if output.status.success() {
+                    Ok("已放弃合并".to_string())
+                } else {
+                    Err(format!("放弃合并失败: {}", git_output_detail(&output)))
+                }
+            })
+    } else {
+        // 非正式合并状态（如 git apply --3way 引发的冲突），用 reset --hard 清理
+        run_git_in_repo(&repo_path, &["reset", "--hard", "HEAD"])
+            .map_err(|e| format!("无法执行 git reset: {}", e))
+            .and_then(|output| {
+                if output.status.success() {
+                    Ok("已清理冲突状态".to_string())
+                } else {
+                    Err(format!("清理冲突失败: {}", git_output_detail(&output)))
+                }
+            })
+    };
+    record_git_write_operation(&repo_path, "merge-abort", false, started, &result, None, None);
     result
 }
 
@@ -7110,6 +7152,7 @@ fn main() {
             delete_branch,
             rename_branch,
             merge_branch,
+            abort_merge,
             reset_to_commit,
             cherry_pick_commit,
             revert_commit,
