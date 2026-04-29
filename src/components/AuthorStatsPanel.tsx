@@ -76,6 +76,34 @@ const REPORT_TABS: { id: ReportTab; label: string; Icon: React.ComponentType<{ c
   { id: 'territory', label: '文件领地', Icon: FolderTree },
 ]
 
+const REPORT_TAB_RECENCY_KEY = 'gitlite:statsReportTabRecency'
+
+function readReportTabRecency(): Partial<Record<ReportTab, number>> {
+  try {
+    const raw = localStorage.getItem(REPORT_TAB_RECENCY_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as Partial<Record<ReportTab, unknown>>
+    const out: Partial<Record<ReportTab, number>> = {}
+    for (const tab of REPORT_TABS) {
+      const value = parsed[tab.id]
+      if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+        out[tab.id] = value
+      }
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+function writeReportTabRecency(recency: Partial<Record<ReportTab, number>>) {
+  try {
+    localStorage.setItem(REPORT_TAB_RECENCY_KEY, JSON.stringify(recency))
+  } catch {
+    /* ignore storage failures */
+  }
+}
+
 const HEAT_WEEKDAYS = ['一', '二', '三', '四', '五', '六', '日']
 
 /** 日历表头：完整「周一…周日」，避免单字「一、二、三」在部分字体下显示异常 */
@@ -336,6 +364,9 @@ export function AuthorStatsPanel({
   const [statsScope, setStatsScope] = useState<'head' | 'all'>('head')
   const [statsRev, setStatsRev] = useState<string | null>(null)
   const [reportTab, setReportTab] = useState<ReportTab>(initialReportTab)
+  const [reportTabRecency, setReportTabRecency] = useState<Partial<Record<ReportTab, number>>>(() =>
+    readReportTabRecency()
+  )
   const [timeGran, setTimeGran] = useState<TimeGranularity>('day')
   const [calendarGranularity, setCalendarGranularity] = useState<CalendarGranularity>('day')
   /** 日历 Tab 当前展示的月份（自然月首日） */
@@ -383,6 +414,31 @@ export function AuthorStatsPanel({
   useEffect(() => {
     setReportTab(initialReportTab)
   }, [initialReportTab])
+
+  const orderedReportTabs = useMemo(() => {
+    return REPORT_TABS.map((tab, index) => ({ tab, index })).sort((a, b) => {
+      const at = reportTabRecency[a.tab.id] ?? 0
+      const bt = reportTabRecency[b.tab.id] ?? 0
+      if (at !== bt) return bt - at
+      return a.index - b.index
+    }).map(({ tab }) => tab)
+  }, [reportTabRecency])
+
+  const selectReportTab = useCallback(
+    (tab: ReportTab) => {
+      setReportTab(tab)
+      onReportTabChange?.(tab)
+      setReportTabRecency((prev) => {
+        const next = {
+          ...prev,
+          [tab]: Date.now(),
+        }
+        writeReportTabRecency(next)
+        return next
+      })
+    },
+    [onReportTabChange]
+  )
 
   useEffect(() => {
     if (reportTab !== 'lines' && reportTab !== 'paths' && reportTab !== 'territory') {
@@ -898,7 +954,7 @@ export function AuthorStatsPanel({
             role="tablist"
             aria-label="报表类型"
           >
-            {REPORT_TABS.map(({ id, label, Icon }) => (
+            {orderedReportTabs.map(({ id, label, Icon }) => (
               <button
                 key={id}
                 type="button"
@@ -911,8 +967,7 @@ export function AuthorStatsPanel({
                     : 'text-muted-foreground hover:bg-muted/80 hover:text-foreground'
                 )}
                 onClick={() => {
-                  setReportTab(id)
-                  onReportTabChange?.(id)
+                  selectReportTab(id)
                 }}
               >
                 <Icon className="h-3 w-3 shrink-0 opacity-90 sm:h-3.5 sm:w-3.5" aria-hidden />
