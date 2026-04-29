@@ -1841,8 +1841,15 @@ async fn save_recent_repo(path: String) -> Result<(), String> {
     let mut repos = if config_file.exists() {
         let content = fs::read_to_string(&config_file)
             .map_err(|e| format!("Failed to read config file: {}", e))?;
-        serde_json::from_str::<Vec<RecentRepo>>(&content)
-            .unwrap_or_default()
+        match serde_json::from_str::<Vec<RecentRepo>>(&content) {
+            Ok(repos) => repos,
+            Err(e) => {
+                // JSON 损坏：备份原文件，避免数据丢失
+                log_message("WARN", &format!("recent_repos.json 解析失败，已备份: {}", e));
+                let _ = fs::copy(&config_file, config_file.with_extension("json.bak"));
+                Vec::new()
+            }
+        }
     } else {
         Vec::new()
     };
@@ -2582,6 +2589,10 @@ async fn restore_silent_stash(stash_id: String) -> Result<String, String> {
             } else if src.is_file() {
                 if let Some(parent) = dst.parent() {
                     fs::create_dir_all(parent).map_err(|e| format!("创建恢复目录失败: {}", e))?;
+                }
+                // Windows: 目标文件若存在且只读，fs::copy 会报 Access denied，先尝试删除
+                if dst.exists() {
+                    let _ = fs::remove_file(&dst);
                 }
                 fs::copy(&src, &dst).map_err(|e| format!("恢复未跟踪文件失败: {}", e))?;
             }

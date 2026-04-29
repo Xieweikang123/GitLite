@@ -102,7 +102,7 @@ const Dialog: React.FC<DialogProps> = ({ open, onOpenChange, children }) => {
             onOpenChange: handleOpenChange,
           } as any)
         }
-        return child
+        return child 
       })}
     </div>
   )
