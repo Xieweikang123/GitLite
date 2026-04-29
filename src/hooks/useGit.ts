@@ -14,6 +14,7 @@ import {
   TimeBucketStat,
   DiffAggregateStats,
   FileTerritoryStat,
+  RecentChangedFileStat,
   BranchActivityLifecycleReport,
   RemoteManagementInfo,
 } from '../types/git'
@@ -741,6 +742,21 @@ export function useGit() {
     [repoInfo]
   )
 
+  const getRecentChangedFilesStats = useCallback(
+    async (scope: 'head' | 'all', rev?: string | null, limit?: number) => {
+      if (!repoInfo) throw new Error('No repository selected')
+      const r = rev?.trim() || null
+      return await invoke<RecentChangedFileStat[]>('get_recent_changed_files_stats', {
+        repoPath: repoInfo.path,
+        scope: scope === 'all' ? 'all' : null,
+        rev: r,
+        limit: limit ?? 80,
+        clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
+      })
+    },
+    [repoInfo]
+  )
+
   const getBranchActivityLifecycleStats = useCallback(
     async (baseBranch?: string | null) => {
       if (!repoInfo) throw new Error('No repository selected')
@@ -960,6 +976,7 @@ export function useGit() {
     getCommitsForActivityBucket,
     getDiffAggregateStats,
     getFileTerritoryStats,
+    getRecentChangedFilesStats,
     getBranchActivityLifecycleStats,
     getWorkspaceStatus,
     stageFile,

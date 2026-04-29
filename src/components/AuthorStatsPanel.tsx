@@ -28,6 +28,7 @@ import {
   Flame,
   FolderTree,
   GitCompareArrows,
+  History,
   Info,
   Loader2,
   RefreshCw,
@@ -46,10 +47,20 @@ import type {
   DiffAggregateStats,
   FileTerritoryStat,
   PathTouchStat,
+  RecentChangedFileStat,
   TimeBucketStat,
 } from '../types/git'
 
-type ReportTab = 'authors' | 'timeline' | 'heatmap' | 'calendar' | 'lines' | 'paths' | 'territory' | 'branches'
+type ReportTab =
+  | 'authors'
+  | 'timeline'
+  | 'heatmap'
+  | 'calendar'
+  | 'lines'
+  | 'paths'
+  | 'territory'
+  | 'recentFiles'
+  | 'branches'
 type TimeGranularity = 'day' | 'week' | 'month'
 type CalendarGranularity = 'day' | 'month' | 'year'
 
@@ -61,6 +72,7 @@ const REPORT_TABS: { id: ReportTab; label: string; Icon: React.ComponentType<{ c
   { id: 'calendar', label: '日历视图', Icon: Calendar },
   { id: 'lines', label: '增删行', Icon: GitCompareArrows },
   { id: 'paths', label: '文件热度', Icon: FileStack },
+  { id: 'recentFiles', label: '最近更改', Icon: History },
   { id: 'territory', label: '文件领地', Icon: FolderTree },
 ]
 
@@ -209,6 +221,7 @@ function calendarBucketCellClass(
 const DIFF_AGGREGATE_PATH_LIMIT = 50
 /** 文件领地：返回的文件路径条数上限（与后端默认一致） */
 const TERRITORY_FILE_LIMIT = 120
+const RECENT_CHANGED_FILE_LIMIT = 80
 const statsResultCache = {
   authors: new Map<string, AuthorCommitStat[]>(),
   activity: new Map<string, TimeBucketStat[]>(),
@@ -218,6 +231,7 @@ const statsResultCache = {
   calendar: new Map<string, TimeBucketStat[]>(),
   diff: new Map<string, DiffAggregateStats>(),
   territory: new Map<string, FileTerritoryStat[]>(),
+  recentFiles: new Map<string, RecentChangedFileStat[]>(),
   branches: new Map<string, BranchActivityLifecycleReport>(),
 }
 
@@ -245,6 +259,15 @@ function cacheKeyFileTerritory(
   limit: number
 ) {
   return `${repo}|${scope}|${rev ?? ''}|fileTerritory|l${limit}`
+}
+
+function cacheKeyRecentFiles(
+  repo: string,
+  scope: 'head' | 'all',
+  rev: string | null | undefined,
+  limit: number
+) {
+  return `${repo}|${scope}|${rev ?? ''}|recentFiles|l${limit}`
 }
 
 function cacheKeyBranchStats(repo: string, baseBranch: string | null | undefined) {
@@ -275,6 +298,11 @@ interface AuthorStatsPanelProps {
     rev?: string | null,
     fileLimit?: number
   ) => Promise<FileTerritoryStat[]>
+  getRecentChangedFilesStats: (
+    scope: 'head' | 'all',
+    rev?: string | null,
+    limit?: number
+  ) => Promise<RecentChangedFileStat[]>
   getBranchActivityLifecycleStats: (
     baseBranch?: string | null
   ) => Promise<BranchActivityLifecycleReport>
@@ -301,6 +329,7 @@ export function AuthorStatsPanel({
   getCommitsForActivityBucket,
   getDiffAggregateStats,
   getFileTerritoryStats,
+  getRecentChangedFilesStats,
   getBranchActivityLifecycleStats,
   onJumpToCommit,
 }: AuthorStatsPanelProps) {
@@ -318,6 +347,7 @@ export function AuthorStatsPanel({
   const [calendarRows, setCalendarRows] = useState<TimeBucketStat[]>([])
   const [diffAgg, setDiffAgg] = useState<DiffAggregateStats | null>(null)
   const [territoryRows, setTerritoryRows] = useState<FileTerritoryStat[]>([])
+  const [recentFileRows, setRecentFileRows] = useState<RecentChangedFileStat[]>([])
   const [branchReport, setBranchReport] = useState<BranchActivityLifecycleReport | null>(null)
   const [baseBranch, setBaseBranch] = useState<string | null>(null)
 
@@ -340,6 +370,7 @@ export function AuthorStatsPanel({
     diffDataRef.current = null
     setDiffAgg(null)
     setTerritoryRows([])
+    setRecentFileRows([])
     setDiffProgress(null)
     setCalendarGranularity('day')
     setCalendarRows([])
@@ -513,6 +544,14 @@ export function AuthorStatsPanel({
             setError(null)
             return
           }
+        } else if (reportTab === 'recentFiles') {
+          const k = cacheKeyRecentFiles(repoPath, scope, rev, RECENT_CHANGED_FILE_LIMIT)
+          const hit = statsResultCache.recentFiles.get(k)
+          if (hit) {
+            setRecentFileRows(hit)
+            setError(null)
+            return
+          }
         } else if (reportTab === 'branches') {
           const k = cacheKeyBranchStats(repoPath, baseBranch)
           const hit = statsResultCache.branches.get(k)
@@ -570,6 +609,12 @@ export function AuthorStatsPanel({
           const k = cacheKeyFileTerritory(repoPath, scope, rev, TERRITORY_FILE_LIMIT)
           statsResultCache.territory.set(k, data)
           setTerritoryRows(data)
+        } else if (reportTab === 'recentFiles') {
+          setRecentFileRows([])
+          const data = await getRecentChangedFilesStats(scope, rev, RECENT_CHANGED_FILE_LIMIT)
+          const k = cacheKeyRecentFiles(repoPath, scope, rev, RECENT_CHANGED_FILE_LIMIT)
+          statsResultCache.recentFiles.set(k, data)
+          setRecentFileRows(data)
         } else if (reportTab === 'branches') {
           setBranchReport(null)
           const data = await getBranchActivityLifecycleStats(baseBranch)
@@ -593,6 +638,7 @@ export function AuthorStatsPanel({
         setHeatmapDays([])
         setCalendarRows([])
         setTerritoryRows([])
+        setRecentFileRows([])
         setBranchReport(null)
         setDiffAgg(null)
         diffDataRef.current = null
@@ -617,6 +663,7 @@ export function AuthorStatsPanel({
       getCommitActivityStats,
       getDiffAggregateStats,
       getFileTerritoryStats,
+      getRecentChangedFilesStats,
       getBranchActivityLifecycleStats,
       baseBranch,
     ]
@@ -959,6 +1006,10 @@ export function AuthorStatsPanel({
 
           {reportTab === 'territory' && (
             <TerritorySection loading={loading} rows={territoryRows} diffProgress={diffProgress} />
+          )}
+
+          {reportTab === 'recentFiles' && (
+            <RecentChangedFilesSection loading={loading} rows={recentFileRows} />
           )}
 
           {reportTab === 'branches' && (
@@ -2040,6 +2091,131 @@ function BranchActivityLifecycleSection({
 }
 
 type TerritorySortKey = 'primary' | 'share' | 'total'
+
+function fileStatusLabel(status: string): string {
+  switch (status) {
+    case 'added':
+      return '新增'
+    case 'modified':
+      return '修改'
+    case 'deleted':
+      return '删除'
+    case 'renamed':
+      return '重命名'
+    case 'copied':
+      return '复制'
+    case 'typechanged':
+      return '类型变更'
+    default:
+      return '未知'
+  }
+}
+
+function fileStatusClass(status: string): string {
+  switch (status) {
+    case 'added':
+      return 'border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+    case 'deleted':
+      return 'border-rose-500/35 bg-rose-500/10 text-rose-700 dark:text-rose-300'
+    case 'renamed':
+    case 'copied':
+      return 'border-sky-500/35 bg-sky-500/10 text-sky-700 dark:text-sky-300'
+    case 'typechanged':
+      return 'border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+    default:
+      return 'border-border bg-muted/35 text-muted-foreground'
+  }
+}
+
+function RecentChangedFilesSection({
+  loading,
+  rows,
+}: {
+  loading: boolean
+  rows: RecentChangedFileStat[]
+}) {
+  if (loading && rows.length === 0) {
+    return (
+      <div className="flex min-h-[12rem] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-muted/15 py-12 text-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary/70" aria-hidden />
+        <p className="text-sm text-muted-foreground">正在统计最近更改的文件…</p>
+      </div>
+    )
+  }
+
+  if (!loading && rows.length === 0) {
+    return (
+      <div className="flex min-h-[10rem] items-center justify-center rounded-xl border border-dashed border-border bg-muted/20 text-sm text-muted-foreground">
+        该范围内暂无文件更改
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[12px] leading-relaxed text-muted-foreground">
+        按提交时间由新到旧遍历当前范围，展示每个文件最近一次被提交修改的位置；同一文件只出现一次。当前最多展示 {RECENT_CHANGED_FILE_LIMIT} 个文件。
+      </p>
+      <StatTableShell>
+        <table className="w-full min-w-[760px] border-collapse text-left text-sm">
+          <thead>
+            <tr className="border-b border-border bg-muted/45 text-xs text-muted-foreground">
+              <th className="px-4 py-3 font-medium">#</th>
+              <th className="px-4 py-3 font-medium">文件路径</th>
+              <th className="px-4 py-3 font-medium">状态</th>
+              <th className="px-4 py-3 font-medium">最近提交</th>
+              <th className="px-4 py-3 font-medium">作者</th>
+              <th className="px-4 py-3 font-medium">时间</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr
+                key={`${row.path}-${row.last_commit_id}`}
+                className={cn(
+                  'border-b border-border/60 last:border-0',
+                  i % 2 === 0 ? 'bg-background' : 'bg-muted/15',
+                  'hover:bg-muted/35'
+                )}
+              >
+                <td className="px-4 py-2.5 align-top font-mono text-xs text-muted-foreground">{i + 1}</td>
+                <td className="max-w-[min(36rem,55vw)] break-all px-4 py-2.5 align-top font-mono text-[12px] text-foreground">
+                  {row.path}
+                </td>
+                <td className="px-4 py-2.5 align-top">
+                  <span className={cn('inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium', fileStatusClass(row.status))}>
+                    {fileStatusLabel(row.status)}
+                  </span>
+                </td>
+                <td className="max-w-[18rem] px-4 py-2.5 align-top">
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                    <span className="font-mono text-[11px] font-semibold text-primary">
+                      {row.last_commit_short_id}
+                    </span>
+                    <span className="truncate text-[13px] text-foreground" title={row.last_commit_message}>
+                      {row.last_commit_message || '（无说明）'}
+                    </span>
+                  </div>
+                </td>
+                <td className="max-w-[12rem] px-4 py-2.5 align-top">
+                  <span className="block truncate text-[13px] text-foreground">{row.author}</span>
+                  {row.email.trim() ? (
+                    <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
+                      {row.email}
+                    </span>
+                  ) : null}
+                </td>
+                <td className="px-4 py-2.5 align-top font-mono text-[12px] tabular-nums text-muted-foreground">
+                  {row.changed_at}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </StatTableShell>
+    </div>
+  )
+}
 
 function TerritorySection({
   loading,

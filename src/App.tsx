@@ -68,6 +68,7 @@ function App() {
     getCommitsForActivityBucket,
     getDiffAggregateStats,
     getFileTerritoryStats,
+    getRecentChangedFilesStats,
     getBranchActivityLifecycleStats,
   } = useGit()
   
@@ -790,7 +791,15 @@ function App() {
     'workspace' | 'commits' | 'files' | 'stats'
   >('workspace')
   const [statsReportTab, setStatsReportTab] = useState<
-    'authors' | 'timeline' | 'heatmap' | 'calendar' | 'lines' | 'paths' | 'territory' | 'branches'
+    | 'authors'
+    | 'timeline'
+    | 'heatmap'
+    | 'calendar'
+    | 'lines'
+    | 'paths'
+    | 'territory'
+    | 'recentFiles'
+    | 'branches'
   >('authors')
 
   const handleStatsCommitJump = ({
@@ -1037,6 +1046,7 @@ function App() {
               getCommitsForActivityBucket={getCommitsForActivityBucket}
               getDiffAggregateStats={getDiffAggregateStats}
               getFileTerritoryStats={getFileTerritoryStats}
+              getRecentChangedFilesStats={getRecentChangedFilesStats}
               getBranchActivityLifecycleStats={getBranchActivityLifecycleStats}
               onJumpToCommit={handleStatsCommitJump}
             />

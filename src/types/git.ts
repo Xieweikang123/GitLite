@@ -43,6 +43,18 @@ export interface FileTerritoryStat {
   primary_share: number
 }
 
+/** 文件最近一次被提交修改的信息 */
+export interface RecentChangedFileStat {
+  path: string
+  status: string
+  last_commit_id: string
+  last_commit_short_id: string
+  last_commit_message: string
+  author: string
+  email: string
+  changed_at: string
+}
+
 /** 分支维度：活跃度 + 生命周期（以 base 分支为参照） */
 export interface BranchActivityLifecycleStat {
   branch: string

@@ -139,6 +139,19 @@ pub struct FileTerritoryStat {
     pub primary_share: f64,
 }
 
+/// 文件最近一次被提交修改的信息（按提交时间由新到旧取每个路径的首次出现）。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RecentChangedFileStat {
+    pub path: String,
+    pub status: String,
+    pub last_commit_id: String,
+    pub last_commit_short_id: String,
+    pub last_commit_message: String,
+    pub author: String,
+    pub email: String,
+    pub changed_at: String,
+}
+
 /// 分支维度统计（活跃度 + 生命周期），默认以某个基准分支为参照。
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BranchActivityLifecycleStat {
@@ -517,6 +530,106 @@ where
             .then_with(|| a.path.cmp(&b.path))
     });
     rows.truncate(file_limit.max(1).min(200));
+    Ok(rows)
+}
+
+fn delta_status_label(status: git2::Delta) -> &'static str {
+    match status {
+        git2::Delta::Added => "added",
+        git2::Delta::Modified => "modified",
+        git2::Delta::Deleted => "deleted",
+        git2::Delta::Renamed => "renamed",
+        git2::Delta::Copied => "copied",
+        git2::Delta::Typechange => "typechanged",
+        _ => "unknown",
+    }
+}
+
+fn recent_changed_files_for_scope(
+    repo: &Repository,
+    scope: CommitLogScope,
+    limit: usize,
+    client_calendar_offset_east_minutes: Option<i32>,
+) -> Result<Vec<RecentChangedFileStat>> {
+    let mut revwalk = repo
+        .revwalk()
+        .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
+    revwalk
+        .set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL)
+        .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
+    revwalk_push_scope(repo, &mut revwalk, scope)?;
+
+    let cap = limit.max(1).min(200);
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut rows: Vec<RecentChangedFileStat> = Vec::new();
+
+    for oid_result in revwalk {
+        if rows.len() >= cap {
+            break;
+        }
+        let oid = match oid_result {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let commit = match repo.find_commit(oid) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let diff = match diff_commit_to_first_parent(repo, &commit) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+
+        let author_sig = commit.author();
+        let author = author_sig.name().unwrap_or("Unknown").to_string();
+        let email = author_sig.email().unwrap_or("").to_string();
+        let message = commit
+            .message()
+            .unwrap_or("No message")
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string();
+        let changed_at = commit_display_time(&commit, client_calendar_offset_east_minutes);
+        let commit_id = oid.to_string();
+        let commit_short_id = format!("{:.7}", oid);
+
+        let _ = diff.foreach(
+            &mut |delta: git2::DiffDelta<'_>, _progress: f32| {
+                if rows.len() >= cap {
+                    return false;
+                }
+                let path_opt = delta
+                    .new_file()
+                    .path()
+                    .map(std::path::Path::to_path_buf)
+                    .or_else(|| delta.old_file().path().map(std::path::Path::to_path_buf));
+                let Some(path_buf) = path_opt else {
+                    return true;
+                };
+                let path = path_buf.to_string_lossy().replace('\\', "/");
+                if path.is_empty() || seen.contains(&path) {
+                    return true;
+                }
+                seen.insert(path.clone());
+                rows.push(RecentChangedFileStat {
+                    path,
+                    status: delta_status_label(delta.status()).to_string(),
+                    last_commit_id: commit_id.clone(),
+                    last_commit_short_id: commit_short_id.clone(),
+                    last_commit_message: message.clone(),
+                    author: author.clone(),
+                    email: email.clone(),
+                    changed_at: changed_at.clone(),
+                });
+                true
+            },
+            None,
+            None,
+            None,
+        );
+    }
+
     Ok(rows)
 }
 
@@ -3306,6 +3419,26 @@ async fn get_file_territory_stats(
             );
         })
         .map_err(|e| format!("统计文件维护者失败: {}", e))
+    })
+    .await
+    .map_err(|e| format!("任务已中断: {}", e))?
+}
+
+#[tauri::command]
+async fn get_recent_changed_files_stats(
+    repo_path: String,
+    scope: Option<String>,
+    rev: Option<String>,
+    limit: Option<u32>,
+    client_calendar_offset_east_minutes: Option<i32>,
+) -> Result<Vec<RecentChangedFileStat>, String> {
+    let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
+    let lim = limit.unwrap_or(80).max(1).min(200) as usize;
+    tokio::task::spawn_blocking(move || {
+        let repo =
+            Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+        recent_changed_files_for_scope(&repo, s, lim, client_calendar_offset_east_minutes)
+            .map_err(|e| format!("统计最近更改文件失败: {}", e))
     })
     .await
     .map_err(|e| format!("任务已中断: {}", e))?
@@ -6192,6 +6325,7 @@ fn main() {
             get_commit_activity_stats,
             get_diff_aggregate_stats,
             get_file_territory_stats,
+            get_recent_changed_files_stats,
             get_branch_activity_lifecycle_stats,
             search_commits,
             get_commits_for_activity_bucket,
