@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useLayoutEffect, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { Button } from './ui/button'
 import {
   Clock,
@@ -10,36 +10,17 @@ import {
   Download,
   Network,
   Sparkles,
-  ChevronDown,
+  Pencil,
+  Search,
+  Trash2,
 } from 'lucide-react'
 import { RecentRepo } from '../types/git'
-import { cn } from '../lib/utils'
+import { cn, shortenPathMiddle } from '../lib/utils'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
-import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 
-/** 与 `gap-1` 一致 */
-const RECENT_CHIP_GAP_PX = 4
-
-function maxVisibleRecentRepos(
-  chipWidths: number[],
-  containerWidth: number,
-  moreBtnWidth: number
-): number {
-  const n = chipWidths.length
-  if (n === 0 || containerWidth <= 0) return 0
-  const g = RECENT_CHIP_GAP_PX
-  for (let k = n; k >= 0; k--) {
-    let w = 0
-    for (let i = 0; i < k; i++) {
-      w += chipWidths[i] + (i > 0 ? g : 0)
-    }
-    if (k < n) w += g + moreBtnWidth
-    if (w <= containerWidth) return k
-  }
-  return 0
-}
+const INLINE_RECENT_REPO_LIMIT = 5
 
 interface MenuToolbarProps {
   onOpenRepository: () => void
@@ -87,12 +68,8 @@ export function MenuToolbar({
   } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
 
-  const [overflowOpen, setOverflowOpen] = useState(false)
-  const [itemWidths, setItemWidths] = useState<number[]>([])
-  const [moreBtnWidth, setMoreBtnWidth] = useState(80)
-  const [inlineWidth, setInlineWidth] = useState(0)
-  const measureRef = useRef<HTMLDivElement>(null)
-  const inlineRowRef = useRef<HTMLDivElement>(null)
+  const [recentDialogOpen, setRecentDialogOpen] = useState(false)
+  const [recentSearch, setRecentSearch] = useState('')
   const [editTarget, setEditTarget] = useState<RecentRepo | null>(null)
   const [editName, setEditName] = useState('')
   const [editPath, setEditPath] = useState('')
@@ -103,6 +80,21 @@ export function MenuToolbar({
   const [cloneRemoteUrl, setCloneRemoteUrl] = useState('')
   const [cloneTargetPath, setCloneTargetPath] = useState('')
   const [cloneBranchName, setCloneBranchName] = useState('')
+
+  useEffect(() => {
+    if (!editTarget) return
+    const closeEditFirst = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopPropagation()
+      e.stopImmediatePropagation()
+      setEditTarget(null)
+    }
+    document.addEventListener('keydown', closeEditFirst, true)
+    return () => {
+      document.removeEventListener('keydown', closeEditFirst, true)
+    }
+  }, [editTarget])
 
   useEffect(() => {
     if (!contextMenu) return
@@ -124,45 +116,21 @@ export function MenuToolbar({
     }
   }, [contextMenu])
 
-  useLayoutEffect(() => {
-    const root = measureRef.current
-    if (!root || recentRepos.length === 0) {
-      setItemWidths([])
-      return
-    }
-    const chips = root.querySelectorAll<HTMLElement>('[data-recent-chip-measure]')
-    const moreEl = root.querySelector<HTMLElement>('[data-recent-more-measure]')
-    setItemWidths(Array.from(chips).map((c) => c.offsetWidth))
-    setMoreBtnWidth(moreEl?.offsetWidth ?? 80)
-  }, [recentRepos])
+  const inlineRecentRepos = recentRepos.slice(0, INLINE_RECENT_REPO_LIMIT)
 
-  useEffect(() => {
-    const el = inlineRowRef.current
-    if (!el) return
-    const ro = new ResizeObserver(() => {
-      setInlineWidth(el.clientWidth)
+  const filteredRecentRepos = useMemo(() => {
+    const q = recentSearch.trim().toLowerCase()
+    if (!q) return recentRepos
+    return recentRepos.filter((repo) => {
+      return (
+        repo.name.toLowerCase().includes(q) ||
+        repo.path.toLowerCase().includes(q)
+      )
     })
-    ro.observe(el)
-    setInlineWidth(el.clientWidth)
-    return () => ro.disconnect()
-  }, [])
-
-  const visibleCount = useMemo(() => {
-    const n = recentRepos.length
-    if (n === 0) return 0
-    if (itemWidths.length !== n) return n
-    if (inlineWidth <= 0) return n
-    return maxVisibleRecentRepos(itemWidths, inlineWidth, moreBtnWidth)
-  }, [recentRepos.length, itemWidths, inlineWidth, moreBtnWidth])
-
-  const overflowRepos = useMemo(() => {
-    if (visibleCount >= recentRepos.length) return []
-    return recentRepos.slice(visibleCount)
-  }, [recentRepos, visibleCount])
+  }, [recentRepos, recentSearch])
 
   const openEdit = (repo: RecentRepo) => {
     setContextMenu(null)
-    setOverflowOpen(false)
     setEditTarget(repo)
     setEditName(repo.name)
     setEditPath(repo.path)
@@ -231,10 +199,34 @@ export function MenuToolbar({
 
   const selectRecentRepo = (path: string) => {
     onRepoSelect(path)
-    setOverflowOpen(false)
+    setRecentDialogOpen(false)
   }
 
-  const renderRecentChip = (repo: RecentRepo, measure?: boolean) => {
+  const openRecentRepoFolder = async (path: string) => {
+    const { invoke } = await import('@tauri-apps/api/tauri')
+    await invoke('open_folder', { path })
+  }
+
+  const removeRecentRepo = (path: string) => {
+    if (!window.confirm('从最近列表中移除此仓库？')) return
+    onRemoveRecentRepo(path)
+  }
+
+  const formatRecentTime = (value: string) => {
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return '未知时间'
+    const diffMs = Date.now() - date.getTime()
+    const diffMinutes = Math.floor(diffMs / 60_000)
+    if (diffMinutes < 1) return '刚刚'
+    if (diffMinutes < 60) return `${diffMinutes}分钟前`
+    const diffHours = Math.floor(diffMinutes / 60)
+    if (diffHours < 24) return `${diffHours}小时前`
+    const diffDays = Math.floor(diffHours / 24)
+    if (diffDays < 7) return `${diffDays}天前`
+    return date.toLocaleDateString()
+  }
+
+  const renderRecentChip = (repo: RecentRepo) => {
     const isActive = Boolean(repoInfo?.path && repo.path === repoInfo.path)
     return (
       <Button
@@ -242,21 +234,15 @@ export function MenuToolbar({
         role="listitem"
         size="sm"
         variant="ghost"
-        data-recent-chip-measure={measure ? '' : undefined}
         aria-current={isActive ? 'true' : undefined}
-        onClick={measure ? undefined : () => selectRecentRepo(repo.path)}
-        onContextMenu={
-          measure
-            ? undefined
-            : (e) => {
-                e.preventDefault()
-                setContextMenu({ x: e.clientX, y: e.clientY, repo })
-              }
-        }
-        disabled={measure ? false : loading}
-        tabIndex={measure ? -1 : undefined}
+        onClick={() => selectRecentRepo(repo.path)}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          setContextMenu({ x: e.clientX, y: e.clientY, repo })
+        }}
+        disabled={loading}
         className={cn(
-          'h-6 shrink-0 px-2 text-xs max-w-[180px] border',
+          'h-6 max-w-[150px] shrink-0 border px-2 text-xs',
           isActive
             ? 'border-primary/50 bg-primary/15 font-medium text-foreground shadow-sm hover:bg-primary/25'
             : 'border-transparent hover:bg-muted'
@@ -294,100 +280,26 @@ export function MenuToolbar({
         )}
       </div>
 
-      {/* 中间：最近仓库 — 一行内尽量平铺，其余收入「更多」 */}
+      {/* 中间：最近仓库 — 顶部固定展示最近 5 个，完整列表进入弹窗 */}
       {recentRepos.length > 0 && (
         <div className="relative flex w-full min-w-0 flex-1 items-center gap-1.5 px-1">
           <Clock className="h-3 w-3 shrink-0 text-muted-foreground" />
           <span className="shrink-0 text-muted-foreground">最近:</span>
           <div
-            ref={inlineRowRef}
             className="flex min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-hidden"
             role="list"
           >
-            {recentRepos
-              .slice(0, visibleCount)
-              .map((repo) => renderRecentChip(repo))}
-            {overflowRepos.length > 0 && (
-              <Popover open={overflowOpen} onOpenChange={setOverflowOpen}>
-                <PopoverTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-6 shrink-0 gap-0.5 px-2 text-xs"
-                    disabled={loading}
-                    aria-expanded={overflowOpen}
-                    aria-haspopup="dialog"
-                    title={`还有 ${overflowRepos.length} 个仓库`}
-                  >
-                    更多({overflowRepos.length})
-                    <ChevronDown className="h-3 w-3 opacity-50" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent
-                  align="end"
-                  side="bottom"
-                  sideOffset={6}
-                  className="z-[120] w-[min(22rem,calc(100vw-2rem))] max-h-[min(18rem,55vh)] overflow-y-auto p-1"
-                  onOpenAutoFocus={(e) => e.preventDefault()}
-                >
-                  <div className="flex flex-col gap-0.5" role="list">
-                    {overflowRepos.map((repo) => {
-                      const isActive = Boolean(
-                        repoInfo?.path && repo.path === repoInfo.path
-                      )
-                      return (
-                        <Button
-                          key={repo.path}
-                          role="listitem"
-                          size="sm"
-                          variant="ghost"
-                          aria-current={isActive ? 'true' : undefined}
-                          onClick={() => selectRecentRepo(repo.path)}
-                          onContextMenu={(e) => {
-                            e.preventDefault()
-                            setContextMenu({
-                              x: e.clientX,
-                              y: e.clientY,
-                              repo,
-                            })
-                          }}
-                          disabled={loading}
-                          className={cn(
-                            'h-auto min-h-8 w-full justify-start border px-2 py-1.5 text-xs font-normal',
-                            isActive
-                              ? 'border-primary/50 bg-primary/15 font-medium text-foreground shadow-sm hover:bg-primary/25'
-                              : 'border-transparent hover:bg-muted'
-                          )}
-                          title={repo.path}
-                        >
-                          <span className="truncate text-left">{repo.name}</span>
-                        </Button>
-                      )
-                    })}
-                  </div>
-                </PopoverContent>
-              </Popover>
-            )}
-          </div>
-
-          <div
-            ref={measureRef}
-            className="pointer-events-none fixed left-0 top-0 z-[-1] flex gap-1 opacity-0"
-            aria-hidden
-          >
-            {recentRepos.map((repo) => renderRecentChip(repo, true))}
+            {inlineRecentRepos.map((repo) => renderRecentChip(repo))}
             <Button
               type="button"
-              data-recent-more-measure
               variant="outline"
               size="sm"
-              tabIndex={-1}
-              className="h-6 shrink-0 gap-0.5 px-2 text-xs"
-              aria-hidden
+              className="h-6 shrink-0 px-2 text-xs"
+              disabled={loading}
+              onClick={() => setRecentDialogOpen(true)}
+              title="查看和管理全部最近仓库"
             >
-              更多({recentRepos.length})
-              <ChevronDown className="h-3 w-3 opacity-50" />
+              管理({recentRepos.length})
             </Button>
           </div>
         </div>
@@ -431,9 +343,7 @@ export function MenuToolbar({
             type="button"
             className="w-full rounded-sm px-2 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10"
             onClick={() => {
-              if (window.confirm('从最近列表中移除此仓库？')) {
-                onRemoveRecentRepo(contextMenu.repo.path)
-              }
+              removeRecentRepo(contextMenu.repo.path)
               setContextMenu(null)
             }}
           >
@@ -441,6 +351,130 @@ export function MenuToolbar({
           </button>
         </div>
       )}
+
+      <Dialog open={recentDialogOpen} onOpenChange={setRecentDialogOpen}>
+        <DialogContent className="max-h-[min(86vh,42rem)] max-w-3xl gap-0 overflow-hidden p-0">
+          <DialogHeader className="border-b border-border/60 px-5 py-4 text-left">
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <Clock className="h-4 w-4 text-primary" aria-hidden />
+              最近打开的仓库
+            </DialogTitle>
+            <p className="mt-1 text-xs text-muted-foreground">
+              顶部仅展示最近 {INLINE_RECENT_REPO_LIMIT} 个；这里可以查看、搜索和管理完整列表。
+            </p>
+          </DialogHeader>
+
+          <div className="border-b border-border/60 px-5 py-3">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={recentSearch}
+                onChange={(e) => setRecentSearch(e.target.value)}
+                placeholder="搜索仓库名或路径"
+                className="h-8 pl-8 text-sm"
+              />
+            </div>
+          </div>
+
+          <div className="max-h-[min(62vh,30rem)] overflow-y-auto px-5 py-3">
+            {filteredRecentRepos.length === 0 ? (
+              <div className="flex min-h-[10rem] items-center justify-center rounded-lg border border-dashed border-border bg-muted/20 text-sm text-muted-foreground">
+                没有匹配的最近仓库
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {filteredRecentRepos.map((repo) => {
+                  const isActive = Boolean(repoInfo?.path && repo.path === repoInfo.path)
+                  return (
+                    <div
+                      key={repo.path}
+                      className={cn(
+                        'flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-colors',
+                        isActive
+                          ? 'border-primary/45 bg-primary/10'
+                          : 'border-border/70 bg-background hover:bg-muted/35'
+                      )}
+                    >
+                      <button
+                        type="button"
+                        className="min-w-0 flex-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        onClick={() => selectRecentRepo(repo.path)}
+                        disabled={loading}
+                        title={repo.path}
+                      >
+                        <div className="flex min-w-0 items-center gap-2">
+                          <FolderOpen className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                          <span className="truncate text-sm font-medium text-foreground">
+                            {repo.name}
+                          </span>
+                          {isActive && (
+                            <span className="shrink-0 rounded-full border border-primary/35 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                              当前
+                            </span>
+                          )}
+                        </div>
+                        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                          <span className="min-w-0 truncate font-mono" title={repo.path}>
+                            {shortenPathMiddle(repo.path, 72)}
+                          </span>
+                          <span className="shrink-0 tabular-nums">
+                            {formatRecentTime(repo.last_opened)}
+                          </span>
+                        </div>
+                      </button>
+
+                      <div className="flex shrink-0 items-center gap-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0"
+                          disabled={loading}
+                          title="打开仓库"
+                          onClick={() => selectRecentRepo(repo.path)}
+                        >
+                          <FolderOpen className="h-3.5 w-3.5" aria-hidden />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0"
+                          title="编辑"
+                          onClick={() => openEdit(repo)}
+                        >
+                          <Pencil className="h-3.5 w-3.5" aria-hidden />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0"
+                          title="打开所在文件夹"
+                          onClick={() => void openRecentRepoFolder(repo.path)}
+                        >
+                          <FolderPlus className="h-3.5 w-3.5" aria-hidden />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
+                          disabled={loading}
+                          title="从最近列表移除"
+                          onClick={() => removeRecentRepo(repo.path)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                        </Button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={editTarget !== null}
