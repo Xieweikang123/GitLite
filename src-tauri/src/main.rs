@@ -3024,10 +3024,16 @@ async fn open_folder(path: String) -> Result<(), String> {
 // 在默认浏览器中打开外部链接（跨平台）
 #[tauri::command]
 async fn open_external_url(url: String) -> Result<(), String> {
+    // 校验 URL 以防命令注入（cmd.exe 会解释 shell 元字符）
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://") || trimmed.starts_with("mailto:")) {
+        return Err("不支持的 URL 协议".to_string());
+    }
+
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("cmd")
-            .args(["/C", "start", "", &url])
+            .args(["/C", "start", "", trimmed])
             .spawn()
             .map_err(|e| format!("Failed to open URL: {}", e))?;
     }
@@ -3035,7 +3041,7 @@ async fn open_external_url(url: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
-            .arg(&url)
+            .arg(trimmed)
             .spawn()
             .map_err(|e| format!("Failed to open URL: {}", e))?;
     }
@@ -3043,7 +3049,7 @@ async fn open_external_url(url: String) -> Result<(), String> {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         std::process::Command::new("xdg-open")
-            .arg(&url)
+            .arg(trimmed)
             .spawn()
             .map_err(|e| format!("Failed to open URL: {}", e))?;
     }
@@ -3119,6 +3125,7 @@ async fn init_repository(path: String, initial_branch: Option<String>) -> Result
 /// 克隆远程仓库到本地目录（等价于 `git clone`）。
 #[tauri::command]
 async fn clone_repository(
+    app_handle: tauri::AppHandle,
     remote_url: String,
     destination_path: String,
     branch: Option<String>,
@@ -3141,9 +3148,12 @@ async fn clone_repository(
         if rd.next().is_some() {
             return Err("目标目录非空，请选择一个空目录或不存在的路径".to_string());
         }
-    } else if let Some(parent) = dest_path.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent).map_err(|e| format!("创建父目录失败: {}", e))?;
+    } else {
+        // 目标路径不存在：检查父目录是否存在，不存在则报错（不自动创建）
+        if let Some(parent) = dest_path.parent() {
+            if !parent.exists() {
+                return Err(format!("父目录不存在: {}", parent.display()));
+            }
         }
     }
 
@@ -3152,22 +3162,102 @@ async fn clone_repository(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    let mut owned_args: Vec<String> = vec!["clone".to_string()];
+    // 构造 git clone --progress 参数
+    let mut args: Vec<String> = vec![
+        "-c".to_string(),
+        "clone.defaultRemoteName=origin".to_string(),
+        "clone".to_string(),
+        "--progress".to_string(),
+    ];
     if let Some(b) = branch_name.as_ref() {
-        owned_args.push("--branch".to_string());
-        owned_args.push(b.clone());
+        args.push("--branch".to_string());
+        args.push(b.clone());
     }
-    owned_args.push(url.to_string());
-    owned_args.push(dest.to_string());
-    let args: Vec<&str> = owned_args.iter().map(|s| s.as_str()).collect();
+    args.push(url.to_string());
+    args.push(dest.to_string());
 
-    let out = run_git(&args).map_err(|e| format!("无法执行 git clone: {}", e))?;
-    if !out.status.success() {
-        return Err(format!("克隆失败: {}", git_output_detail(&out)));
+    // 注入代理配置
+    let proxy_args = build_git_proxy_args();
+
+    // spawn 进程，流式读取 stderr 进度
+    let mut cmd = git_command();
+    for pa in &proxy_args {
+        cmd.arg(pa);
+    }
+    cmd.args(&args);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("无法启动 git clone: {}", e))?;
+
+    let stderr = child.stderr.take().ok_or("无法读取 git 输出")?;
+    let window = app_handle.clone();
+    let stderr_thread = std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader};
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                let trimmed = line.trim().to_string();
+                if !trimmed.is_empty() {
+                    let _ = window.emit_all("clone-progress", &trimmed);
+                }
+            }
+        }
+    });
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("等待 git clone 完成失败: {}", e))?;
+
+    let _ = stderr_thread.join();
+
+    if !status.success() {
+        // 解析常见错误，提供友好提示
+        let code = status.code().unwrap_or(-1);
+        return Err(match code {
+            128 => "克隆失败：远程地址无效或认证失败，请检查地址和凭据".to_string(),
+            _ => format!("克隆失败（退出码 {}）", code),
+        });
     }
 
     Repository::open(&dest_path).map_err(|e| format!("克隆后无法打开仓库: {}", e))?;
     Ok(format!("已克隆到 {}", dest_path.display()))
+}
+
+/// 读取代理配置，生成 git -c http.proxy=... 参数
+fn build_git_proxy_args() -> Vec<String> {
+    let config_file = get_config_dir().join("proxy_config.json");
+    if !config_file.exists() {
+        return Vec::new();
+    }
+    let Ok(content) = fs::read_to_string(&config_file) else {
+        return Vec::new();
+    };
+    let Ok(config) = serde_json::from_str::<ProxyConfig>(&content) else {
+        return Vec::new();
+    };
+    if !config.enabled {
+        return Vec::new();
+    }
+    let proxy_url = format!(
+        "{}://{}:{}@{}:{}",
+        config.protocol,
+        config.username.as_deref().unwrap_or(""),
+        config.password.as_deref().unwrap_or(""),
+        config.host,
+        config.port
+    );
+    // 去掉空的 user:pass@
+    let proxy_url = proxy_url
+        .replace("://:@", "://");
+    vec![
+        "-c".to_string(),
+        format!("http.proxy={}", proxy_url),
+        "-c".to_string(),
+        format!("https.proxy={}", proxy_url),
+    ]
 }
 
 #[tauri::command]
@@ -4375,20 +4465,22 @@ fn walk_tree_collect_paths(
 /// 列出当前 HEAD 提交树中的文件路径（扁平、已排序），用于文件树视图
 #[tauri::command]
 async fn get_head_file_paths(repo_path: String, max_entries: Option<usize>) -> Result<Vec<String>, String> {
-    let max = max_entries.unwrap_or(5000).min(50_000);
-    let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
-    let head = repo.head().map_err(|e| format!("无法读取 HEAD: {}", e))?;
-    let oid = head
-        .target()
-        .ok_or_else(|| "无法解析 HEAD 目标".to_string())?;
-    let commit = repo
-        .find_commit(oid)
-        .map_err(|e| format!("无法读取提交: {}", e))?;
-    let tree = commit.tree().map_err(|e| format!("无法读取树: {}", e))?;
-    let mut paths = Vec::new();
-    walk_tree_collect_paths(&repo, &tree, "", &mut paths, max)?;
-    paths.sort();
-    Ok(paths)
+    tokio::task::spawn_blocking(move || {
+        let max = max_entries.unwrap_or(5000).min(50_000);
+        let repo = Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
+        let head = repo.head().map_err(|e| format!("无法读取 HEAD: {}", e))?;
+        let oid = head
+            .target()
+            .ok_or_else(|| "无法解析 HEAD 目标".to_string())?;
+        let commit = repo
+            .find_commit(oid)
+            .map_err(|e| format!("无法读取提交: {}", e))?;
+        let tree = commit.tree().map_err(|e| format!("无法读取树: {}", e))?;
+        let mut paths = Vec::new();
+        walk_tree_collect_paths(&repo, &tree, "", &mut paths, max)?;
+        paths.sort();
+        Ok(paths)
+    }).await.map_err(|e| format!("任务异常: {}", e))?
 }
 
 fn collect_branch_tip_pairs(repo: &Repository) -> Result<Vec<(String, Oid, bool)>, String> {
@@ -6717,13 +6809,10 @@ async fn get_staged_file_diff(repo_path: String, file_path: String) -> Result<St
     let head_tree = head.tree()
         .map_err(|e| format!("Failed to get HEAD tree: {}", e))?;
     
-    let mut index = repo.index()
+    let index = repo.index()
         .map_err(|e| format!("Failed to get index: {}", e))?;
     
-    let index_tree = repo.find_tree(index.write_tree().map_err(|e| format!("Failed to write tree: {}", e))?)
-        .map_err(|e| format!("Failed to find index tree: {}", e))?;
-    
-    let diff = repo.diff_tree_to_tree(Some(&head_tree), Some(&index_tree), None)
+    let diff = repo.diff_tree_to_index(Some(&head_tree), Some(&index), None)
         .map_err(|e| format!("Failed to create diff: {}", e))?;
     
     let mut diff_text = String::new();
@@ -6773,15 +6862,15 @@ async fn get_unstaged_file_diff(repo_path: String, file_path: String) -> Result<
 // 获取未跟踪文件的内容
 #[tauri::command]
 async fn get_untracked_file_content(repo_path: String, file_path: String) -> Result<String, String> {
-    let full_path = Path::new(&repo_path).join(&file_path);
-    
+    let full_path = resolve_repo_workdir_path(&repo_path, &file_path)?;
+
     if full_path.is_dir() {
         return Err("Cannot show content of directory".to_string());
     }
-    
+
     let content = fs::read_to_string(&full_path)
         .map_err(|e| format!("Failed to read file: {}", e))?;
-    
+
     // 格式化为类似diff的格式，显示为新增文件
     let lines: Vec<&str> = content.lines().collect();
     let mut diff_text = format!("diff --git a/{} b/{}\n", file_path, file_path);
@@ -6789,34 +6878,33 @@ async fn get_untracked_file_content(repo_path: String, file_path: String) -> Res
     diff_text.push_str("index 0000000..0000000\n");
     diff_text.push_str("--- /dev/null\n");
     diff_text.push_str(&format!("+++ b/{}\n", file_path));
-    
-    for (i, line) in lines.iter().enumerate() {
-        diff_text.push_str(&format!("@@ -0,0 +{},1 @@\n", i + 1));
+    diff_text.push_str(&format!("@@ -0,0 +1,{} @@\n", lines.len()));
+    for line in &lines {
         diff_text.push_str(&format!("+{}\n", line));
     }
-    
+
     Ok(diff_text)
 }
 
 // 获取文件内容
 #[tauri::command]
 async fn get_file_content(repo_path: String, file_path: String) -> Result<String, String> {
-    let full_path = Path::new(&repo_path).join(&file_path);
-    
+    let full_path = resolve_repo_workdir_path(&repo_path, &file_path)?;
+
     if full_path.is_dir() {
         return Err("Cannot read content of directory".to_string());
     }
-    
+
     let content = fs::read_to_string(&full_path)
         .map_err(|e| format!("Failed to read file: {}", e))?;
-    
+
     Ok(content)
 }
 
 /// 优先读取工作区文件；若不存在则读取 HEAD 中的 blob（UTF-8 文本）
 #[tauri::command]
 async fn get_head_or_worktree_file_text(repo_path: String, file_path: String) -> Result<String, String> {
-    let full_path = Path::new(&repo_path).join(&file_path);
+    let full_path = resolve_repo_workdir_path(&repo_path, &file_path).unwrap_or_else(|_| Path::new(&repo_path).join(&file_path));
     if full_path.is_file() {
         return fs::read_to_string(&full_path).map_err(|e| format!("读取工作区文件失败: {}", e));
     }
@@ -7038,7 +7126,8 @@ async fn delete_stash(repo_path: String, stash_id: String) -> Result<String, Str
     // 查找贮藏的索引
     let mut stash_index = None;
     repo.stash_foreach(|index, _message, oid| {
-        if oid.to_string() == stash_id {
+        let oid_str = oid.to_string();
+        if oid_str == stash_id || oid_str.starts_with(&stash_id) {
             stash_index = Some(index);
             false // 停止遍历
         } else {

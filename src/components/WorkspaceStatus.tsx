@@ -1348,7 +1348,7 @@ export function WorkspaceStatus({
               <Button variant="outline" size="sm" onClick={() => setUntrackedDeleteConfirm(null)}>
                 取消
               </Button>
-              <Button size="sm" variant="destructive" onClick={() => void runUntrackedDeleteConfirm()}>
+              <Button size="sm" variant="destructive" disabled={deletingUntrackedPath !== null || deletingAllUntracked} onClick={() => void runUntrackedDeleteConfirm()}>
                 确认删除
               </Button>
             </div>
@@ -1427,9 +1427,9 @@ export function WorkspaceStatus({
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {workspaceStatus.conflicted_files.map((file, index) => (
+              {workspaceStatus.conflicted_files.map((file) => (
                 <div
-                  key={index}
+                  key={file.path}
                   className="flex items-start gap-2 p-2 rounded bg-red-50/30 dark:bg-red-950/10 hover:bg-red-50/50 dark:hover:bg-red-950/20 transition-colors"
                 >
                   <Badge variant="destructive" className="flex-shrink-0">
@@ -1487,8 +1487,8 @@ export function WorkspaceStatus({
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {workspaceStatus.staged_files.map((file, index) => (
-                <div key={index} className="flex items-start gap-2 p-2 rounded bg-green-50/30 dark:bg-green-900/5 hover:bg-green-50/50 dark:hover:bg-green-900/10 transition-colors">
+              {workspaceStatus.staged_files.map((file) => (
+                <div key={file.path} className="flex items-start gap-2 p-2 rounded bg-green-50/30 dark:bg-green-900/5 hover:bg-green-50/50 dark:hover:bg-green-900/10 transition-colors">
                   <Badge variant={getStatusBadgeVariant(file.status)} className="flex-shrink-0">
                     {getStatusText(file.status)}
                   </Badge>
@@ -1622,8 +1622,8 @@ export function WorkspaceStatus({
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {workspaceStatus.unstaged_files.map((file, index) => (
-                <div key={index} className="flex items-start gap-2 p-2 rounded bg-orange-50/30 dark:bg-orange-900/5 hover:bg-orange-50/50 dark:hover:bg-orange-900/10 transition-colors">
+              {workspaceStatus.unstaged_files.map((file) => (
+                <div key={file.path} className="flex items-start gap-2 p-2 rounded bg-orange-50/30 dark:bg-orange-900/5 hover:bg-orange-50/50 dark:hover:bg-orange-900/10 transition-colors">
                   <Badge variant={getStatusBadgeVariant(file.status)} className="flex-shrink-0">
                     {getStatusText(file.status)}
                   </Badge>
@@ -1762,8 +1762,8 @@ export function WorkspaceStatus({
             <div className="space-y-2">
               {workspaceStatus.untracked_files
                 .filter(file => !file.endsWith('/')) // 过滤掉文件夹
-                .map((file, index) => (
-                <div key={index} className="flex items-start gap-2 p-2 border rounded">
+                .map((file) => (
+                <div key={file} className="flex items-start gap-2 p-2 border rounded">
                   
                   <Badge variant="outline" className="flex-shrink-0">未跟踪</Badge>
                   <div className="flex-1 min-w-0">

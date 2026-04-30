@@ -15,12 +15,14 @@ const SelectContext = React.createContext<{
   onValueChange?: (value: string) => void
   open: boolean
   setOpen: (open: boolean) => void
+  disabled: boolean
 }>({
   open: false,
   setOpen: () => {},
+  disabled: false,
 })
 
-export function Select({ value, onValueChange, children, className }: SelectProps) {
+export function Select({ value, onValueChange, children, className, disabled }: SelectProps) {
   const [open, setOpen] = React.useState(false)
   const selectRef = React.useRef<HTMLDivElement>(null)
   
@@ -52,7 +54,7 @@ export function Select({ value, onValueChange, children, className }: SelectProp
   }, [open])
 
   return (
-    <SelectContext.Provider value={{ value, onValueChange, open, setOpen }}>
+    <SelectContext.Provider value={{ value, onValueChange, open, setOpen, disabled: disabled ?? false }}>
       <div
         ref={selectRef}
         className={cn("relative", className)}
@@ -70,8 +72,8 @@ export interface SelectTriggerProps extends React.ButtonHTMLAttributes<HTMLButto
 
 export const SelectTrigger = React.forwardRef<HTMLButtonElement, SelectTriggerProps>(
   ({ className, children, ...props }, ref) => {
-    const { open, setOpen } = React.useContext(SelectContext)
-    
+    const { open, setOpen, disabled } = React.useContext(SelectContext)
+
     return (
       <button
         ref={ref}
@@ -79,7 +81,8 @@ export const SelectTrigger = React.forwardRef<HTMLButtonElement, SelectTriggerPr
           "flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50",
           className
         )}
-        onClick={() => setOpen(!open)}
+        disabled={disabled}
+        onClick={() => { if (!disabled) setOpen(!open) }}
         {...props}
       >
         {children}

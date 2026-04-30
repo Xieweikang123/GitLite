@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { Button } from './ui/button'
 import {
   Clock,
@@ -14,6 +14,7 @@ import {
   Pencil,
   Search,
   Trash2,
+  Loader2,
 } from 'lucide-react'
 import { RecentRepo } from '../types/git'
 import { cn, shortenPathMiddle } from '../lib/utils'
@@ -83,6 +84,9 @@ export function MenuToolbar({
   const [cloneRemoteUrl, setCloneRemoteUrl] = useState('')
   const [cloneTargetPath, setCloneTargetPath] = useState('')
   const [cloneBranchName, setCloneBranchName] = useState('')
+  const [cloning, setCloning] = useState(false)
+  const [cloneProgress, setCloneProgress] = useState<string[]>([])
+  const cloneProgressRef = useRef<string[]>([])
 
   useEffect(() => {
     if (!editTarget) return
@@ -118,6 +122,19 @@ export function MenuToolbar({
       document.removeEventListener('keydown', onKey, true)
     }
   }, [contextMenu])
+
+  // 监听克隆进度事件
+  useEffect(() => {
+    if (!cloning) return
+    let unlisten: (() => void) | undefined
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      listen<string>('clone-progress', (event) => {
+        cloneProgressRef.current = [...cloneProgressRef.current, event.payload]
+        setCloneProgress([...cloneProgressRef.current])
+      }).then((fn) => { unlisten = fn })
+    })
+    return () => { unlisten?.() }
+  }, [cloning])
 
   const inlineRecentRepos = recentRepos.slice(0, INLINE_RECENT_REPO_LIMIT)
 
@@ -192,12 +209,18 @@ export function MenuToolbar({
 
   const submitCloneRepository = async () => {
     if (!onCloneRepository) return
+    setCloning(true)
+    setCloneProgress([])
+    cloneProgressRef.current = []
     const ok = await onCloneRepository(cloneRemoteUrl, cloneTargetPath, cloneBranchName)
+    setCloning(false)
     if (!ok) return
     setCloneDialogOpen(false)
     setCloneRemoteUrl('')
     setCloneTargetPath('')
     setCloneBranchName('')
+    setCloneProgress([])
+    cloneProgressRef.current = []
   }
 
   const selectRecentRepo = (path: string) => {
@@ -764,12 +787,25 @@ export function MenuToolbar({
               />
             </div>
           </div>
+          {cloning && (
+            <div className="max-h-40 overflow-y-auto rounded-md border bg-muted/30 p-2 font-mono text-xs text-muted-foreground">
+              {cloneProgress.length === 0 ? (
+                <span className="flex items-center gap-1">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  正在启动克隆…
+                </span>
+              ) : (
+                cloneProgress.map((line, i) => <div key={i}>{line}</div>)
+              )}
+            </div>
+          )}
           <div className="flex justify-end gap-2">
             <Button
               type="button"
               variant="outline"
               size="sm"
               onClick={() => setCloneDialogOpen(false)}
+              disabled={cloning}
             >
               取消
             </Button>
@@ -777,9 +813,16 @@ export function MenuToolbar({
               type="button"
               size="sm"
               onClick={() => void submitCloneRepository()}
-              disabled={loading || !cloneRemoteUrl.trim() || !cloneTargetPath.trim()}
+              disabled={cloning || loading || !cloneRemoteUrl.trim() || !cloneTargetPath.trim()}
             >
-              克隆
+              {cloning ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+                  克隆中…
+                </>
+              ) : (
+                '克隆'
+              )}
             </Button>
           </div>
         </DialogContent>
