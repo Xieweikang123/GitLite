@@ -17,6 +17,7 @@ import {
   RecentChangedFileStat,
   BranchActivityLifecycleReport,
   RemoteManagementInfo,
+  DirectoryRepoEntry,
 } from '../types/git'
 import { formatTauriInvokeError } from '../utils/tauriError'
 import { getClientCalendarOffsetEastMinutes } from '../utils/clientCalendarOffset'
@@ -945,6 +946,29 @@ export function useGit() {
     }
   }, [repoInfo])
 
+  const scanDirectoryRepos = useCallback(async (dirPath: string, recursive?: boolean, maxDepth?: number): Promise<DirectoryRepoEntry[]> => {
+    const path = dirPath.trim()
+    if (!path) throw new Error('目录路径不能为空')
+    return await invoke<DirectoryRepoEntry[]>('scan_directory_repos', {
+      dirPath: path,
+      recursive: recursive ?? false,
+      maxDepth: maxDepth ?? null,
+    })
+  }, [])
+
+  const openDirectoryDialogAndScan = useCallback(async (recursive?: boolean): Promise<DirectoryRepoEntry[] | null> => {
+    const selected = await open({
+      directory: true,
+      title: '选择要扫描的目录',
+    })
+    if (!selected || typeof selected !== 'string') return null
+    return await invoke<DirectoryRepoEntry[]>('scan_directory_repos', {
+      dirPath: selected,
+      recursive: recursive ?? false,
+      maxDepth: null,
+    })
+  }, [])
+
   return {
     repoInfo,
     loading,
@@ -996,5 +1020,7 @@ export function useGit() {
     pushChangesWithLogs,
     pushChangesWithRealtimeLogs,
     pullChangesWithLogs,
+    scanDirectoryRepos,
+    openDirectoryDialogAndScan,
   }
 }

@@ -210,6 +210,22 @@ export interface RemoteManagementInfo {
   current_branch: string
 }
 
+export interface DirectoryRepoEntry {
+  path: string
+  name: string
+  current_branch: string
+  head_short_id?: string | null
+  ahead: number
+  behind: number
+  has_upstream: boolean
+  has_origin_remote: boolean
+  remote_url?: string | null
+  staged_count: number
+  unstaged_count: number
+  untracked_count: number
+  conflicted_count: number
+}
+
 /** 工作区「提交 / 推送 / 拉取」经 useGit 统一封装时使用，避免组件内重复 invoke */
 export interface WorkspaceGitActions {
   commitChanges: (message: string) => Promise<void>

@@ -1759,6 +1759,24 @@ pub struct RepoInfo {
     pub has_origin_remote: bool,
 }
 
+/// 目录扫描中单个仓库的轻量状态（用于多仓库一览）
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DirectoryRepoEntry {
+    pub path: String,
+    pub name: String,
+    pub current_branch: String,
+    pub head_short_id: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    pub has_upstream: bool,
+    pub has_origin_remote: bool,
+    pub remote_url: Option<String>,
+    pub staged_count: usize,
+    pub unstaged_count: usize,
+    pub untracked_count: usize,
+    pub conflicted_count: usize,
+}
+
 /// 与 Git 索引一致：正斜杠、无 `./` 前缀，避免 Windows 反斜杠导致 reset / add 未命中条目。
 fn normalize_repo_rel_path(path: &str) -> String {
     let p = path
@@ -1984,6 +2002,72 @@ async fn update_recent_repo_entry(
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
     fs::write(&config_file, content)
         .map_err(|e| format!("Failed to write config file: {}", e))?;
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ScannedDirRecord {
+    pub path: String,
+    pub last_scanned: String,
+    pub recursive: bool,
+}
+
+#[tauri::command]
+async fn get_recent_scanned_dirs() -> Result<Vec<ScannedDirRecord>, String> {
+    let config_dir = get_config_dir();
+    let config_file = config_dir.join("recent_scanned_dirs.json");
+    if !config_file.exists() {
+        return Ok(Vec::new());
+    }
+    let content = fs::read_to_string(&config_file).map_err(|e| format!("读取扫描历史失败: {}", e))?;
+    let dirs: Vec<ScannedDirRecord> = serde_json::from_str(&content).map_err(|e| format!("解析扫描历史失败: {}", e))?;
+    Ok(dirs)
+}
+
+#[tauri::command]
+async fn save_recent_scanned_dir(path: String, recursive: Option<bool>) -> Result<(), String> {
+    let raw = path.trim().to_string();
+    if raw.is_empty() {
+        return Err("目录路径不能为空".to_string());
+    }
+    let rec = recursive.unwrap_or(false);
+    let config_dir = get_config_dir();
+    fs::create_dir_all(&config_dir).map_err(|e| format!("创建配置目录失败: {}", e))?;
+    let config_file = config_dir.join("recent_scanned_dirs.json");
+    let mut records: Vec<ScannedDirRecord> = if config_file.exists() {
+        let content = fs::read_to_string(&config_file).map_err(|e| format!("读取扫描历史失败: {}", e))?;
+        match serde_json::from_str::<Vec<ScannedDirRecord>>(&content) {
+            Ok(v) => v,
+            Err(e) => {
+                log_message("WARN", &format!("recent_scanned_dirs.json 解析失败，已备份: {}", e));
+                let _ = fs::copy(&config_file, config_file.with_extension("json.bak"));
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    records.retain(|r| r.path != raw);
+    records.insert(0, ScannedDirRecord { path: raw, last_scanned: chrono::Utc::now().to_rfc3339(), recursive: rec });
+    const MAX: usize = 20;
+    if records.len() > MAX { records.truncate(MAX); }
+    let content = serde_json::to_string_pretty(&records).map_err(|e| format!("序列化扫描历史失败: {}", e))?;
+    fs::write(&config_file, content).map_err(|e| format!("写入扫描历史失败: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn remove_recent_scanned_dir(path: String) -> Result<(), String> {
+    let config_dir = get_config_dir();
+    let config_file = config_dir.join("recent_scanned_dirs.json");
+    if !config_file.exists() { return Ok(()); }
+    let content = fs::read_to_string(&config_file).map_err(|e| format!("读取扫描历史失败: {}", e))?;
+    let mut records: Vec<ScannedDirRecord> = serde_json::from_str(&content).map_err(|e| format!("解析扫描历史失败: {}", e))?;
+    let before = records.len();
+    records.retain(|r| r.path != path);
+    if records.len() == before { return Ok(()); }
+    let content = serde_json::to_string_pretty(&records).map_err(|e| format!("序列化扫描历史失败: {}", e))?;
+    fs::write(&config_file, content).map_err(|e| format!("写入扫描历史失败: {}", e))?;
     Ok(())
 }
 
@@ -3087,6 +3171,218 @@ async fn open_repository(
     }
 
     Ok(repo_info)
+}
+
+/// 尝试为给定路径收集 DirectoryRepoEntry，成功则返回 Some，路径非仓库则返回 None
+fn try_collect_directory_entry(path: &Path) -> Option<DirectoryRepoEntry> {
+    let repo = Repository::open(path).ok()?;
+    // 轻量信息：分支 / ahead/behind / remote
+    let head = repo.head().ok();
+    let current_branch = head.as_ref().and_then(|h| h.shorthand()).unwrap_or("detached").to_string();
+    let head_short_id = head.as_ref().and_then(|h| h.peel_to_commit().ok()).map(|c| {
+        let s = c.id().to_string();
+        if s.len() > 7 { s[..7].to_string() } else { s }
+    });
+    let mut ahead: u32 = 0;
+    let mut behind: u32 = 0;
+    if let Ok(branch) = repo.find_branch(&current_branch, git2::BranchType::Local) {
+        if let (Some(local_oid), Some(upstream_oid)) = (
+            branch.get().target(),
+            branch.upstream().ok().and_then(|up| up.get().target()),
+        ) {
+            if let Ok((a, b)) = repo.graph_ahead_behind(local_oid, upstream_oid) {
+                ahead = a as u32;
+                behind = b as u32;
+            }
+        }
+    }
+    let has_upstream = repo.find_branch(&current_branch, git2::BranchType::Local).ok().map(|b| b.upstream().is_ok()).unwrap_or(false);
+    let has_origin_remote = repo.find_remote("origin").is_ok();
+    let remote_url = repo.find_remote("origin").ok().and_then(|r| r.url().map(|u| u.to_string()));
+
+    // 工作区计数
+    let (staged_count, unstaged_count, untracked_count, conflicted_count) = match collect_workspace_status(&repo) {
+        Ok(ws) => (ws.staged_files.len(), ws.unstaged_files.len(), ws.untracked_files.len(), ws.conflicted_files.len()),
+        Err(_) => (0, 0, 0, 0),
+    };
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+    Some(DirectoryRepoEntry {
+        path: path.to_string_lossy().to_string(),
+        name: if name.is_empty() { path.to_string_lossy().to_string() } else { name },
+        current_branch,
+        head_short_id,
+        ahead,
+        behind,
+        has_upstream,
+        has_origin_remote,
+        remote_url,
+        staged_count,
+        unstaged_count,
+        untracked_count,
+        conflicted_count,
+    })
+}
+
+/// 扫描指定目录下的 git 仓库（直接子目录默认，recursive 时可递归）并返回各自状态
+#[tauri::command]
+async fn scan_directory_repos(
+    dir_path: String,
+    recursive: Option<bool>,
+    max_depth: Option<u32>,
+) -> Result<Vec<DirectoryRepoEntry>, String> {
+    let dir = dir_path.trim().to_string();
+    if dir.is_empty() {
+        return Err("目录路径不能为空".to_string());
+    }
+    let do_recursive = recursive.unwrap_or(false);
+    let depth_limit = max_depth.unwrap_or(if do_recursive { 3 } else { 1 }).clamp(1, 5);
+    let dir_clone = dir.clone();
+    let entries = tokio::task::spawn_blocking(move || -> Result<Vec<DirectoryRepoEntry>, String> {
+        let root = PathBuf::from(&dir_clone);
+        if !root.exists() {
+            return Err(format!("目录不存在: {}", dir_clone));
+        }
+        if !root.is_dir() {
+            return Err(format!("目标不是目录: {}", dir_clone));
+        }
+        let mut out: Vec<DirectoryRepoEntry> = Vec::new();
+        // 1) 根目录本身若是仓库，也计入
+        if let Some(e) = try_collect_directory_entry(&root) {
+            out.push(e);
+        }
+        // BFS 队列：(路径, 当前深度) 深度 1 表示根的直接子目录
+        let mut queue: std::collections::VecDeque<(PathBuf, u32)> = std::collections::VecDeque::new();
+        if let Ok(rd) = fs::read_dir(&root) {
+            for ent in rd.flatten() {
+                let p = ent.path();
+                if p.is_dir() {
+                    // 跳过隐藏/系统目录的常见噪音，但保留正常目录
+                    if let Some(fname) = p.file_name().and_then(|n| n.to_str()) {
+                        if fname.starts_with('.') && fname != ".git" {
+                            // 仍允许扫描，但避免把 .git 本身当作仓库容器
+                            // . 开头的一般不是仓库容器，跳过以提升性能
+                            // 不跳过 .git 内部，因为它不是目录容器
+                        }
+                    }
+                    queue.push_back((p, 1));
+                }
+            }
+        }
+        let mut visited: HashSet<PathBuf> = HashSet::new();
+        while let Some((cur, depth)) = queue.pop_front() {
+            if out.len() >= 100 {
+                log_message("WARN", &format!("scan_directory_repos: 已达 100 个仓库上限，停止继续扫描 | root={}", dir_clone));
+                break;
+            }
+            // 去重
+            let canon = fs::canonicalize(&cur).unwrap_or(cur.clone());
+            if !visited.insert(canon) {
+                continue;
+            }
+            // 若当前路径本身就是 git 仓库，收集后不再深入其子目录（避免扫描仓库内部）
+            if let Some(entry) = try_collect_directory_entry(&cur) {
+                out.push(entry);
+                continue;
+            }
+            // 非仓库且未达深度限制，继续下探
+            if depth < depth_limit {
+                if let Ok(rd) = fs::read_dir(&cur) {
+                    for ent in rd.flatten() {
+                        let p = ent.path();
+                        if p.is_dir() {
+                            // 跳过仓库内部的 .git 目录
+                            if p.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                                continue;
+                            }
+                            queue.push_back((p, depth + 1));
+                        }
+                    }
+                }
+            }
+        }
+        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("任务已中断: {}", e))??;
+    log_message("INFO", &format!("scan_directory_repos: 完成 | dir={} recursive={} depth={} found={}", dir, do_recursive, depth_limit, entries.len()));
+    Ok(entries)
+}
+
+#[tauri::command]
+async fn get_repo_incoming_commits(
+    repo_path: String,
+    client_calendar_offset_east_minutes: Option<i32>,
+) -> Result<Vec<CommitInfo>, String> {
+    let rp = repo_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let repo = Repository::open(&rp).map_err(|e| format!("无法打开仓库: {}", e))?;
+        let head = repo.head().map_err(|e| format!("无法获取 HEAD: {}", e))?;
+        let current_branch = head.shorthand().unwrap_or("detached").to_string();
+        let behind: u32 = if let Ok(branch) = repo.find_branch(&current_branch, git2::BranchType::Local) {
+            if let (Some(local), Some(up)) = (branch.get().target(), branch.upstream().ok().and_then(|u| u.get().target())) {
+                repo.graph_ahead_behind(local, up).map(|(_, b)| b as u32).unwrap_or(0)
+            } else { 0 }
+        } else { 0 };
+        let incoming = get_incoming_commits(&repo, &current_branch, behind, client_calendar_offset_east_minutes);
+        Ok(incoming)
+    })
+    .await
+    .map_err(|e| format!("任务已中断: {}", e))?
+}
+
+fn get_outgoing_commits(
+    repo: &Repository,
+    current_branch: &str,
+    ahead: u32,
+    client_calendar_offset_east_minutes: Option<i32>,
+) -> Vec<CommitInfo> {
+    if ahead == 0 {
+        return Vec::new();
+    }
+    let Ok(branch) = repo.find_branch(current_branch, git2::BranchType::Local) else {
+        return Vec::new();
+    };
+    let Some(local_oid) = branch.get().target() else { return Vec::new(); };
+    let Ok(upstream_ref) = branch.upstream() else { return Vec::new(); };
+    let Some(upstream_oid) = upstream_ref.get().target() else { return Vec::new(); };
+    let mut revwalk = match repo.revwalk() { Ok(r)=>r, Err(_)=>return Vec::new() };
+    if revwalk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME).is_err() { return Vec::new(); }
+    if revwalk.push(local_oid).is_err() || revwalk.hide(upstream_oid).is_err() { return Vec::new(); }
+    let limit = (ahead as usize).min(500);
+    let mut out = Vec::new();
+    for oid_result in revwalk {
+        if out.len() >= limit { break; }
+        let Ok(oid) = oid_result else { continue; };
+        let Ok(commit) = repo.find_commit(oid) else { continue; };
+        let author = commit.author();
+        let message = commit.message().unwrap_or("No message").to_string();
+        let date = commit_display_time(&commit, client_calendar_offset_east_minutes);
+        out.push(CommitInfo { id: oid.to_string(), short_id: format!("{:.7}", oid), message: message.lines().next().unwrap_or("").to_string(), author: author.name().unwrap_or("Unknown").to_string(), email: author.email().unwrap_or("").to_string(), date, parent_ids: commit_parent_ids(&commit) });
+    }
+    out
+}
+
+#[tauri::command]
+async fn get_repo_outgoing_commits(
+    repo_path: String,
+    client_calendar_offset_east_minutes: Option<i32>,
+) -> Result<Vec<CommitInfo>, String> {
+    let rp = repo_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let repo = Repository::open(&rp).map_err(|e| format!("无法打开仓库: {}", e))?;
+        let head = repo.head().map_err(|e| format!("无法获取 HEAD: {}", e))?;
+        let current_branch = head.shorthand().unwrap_or("detached").to_string();
+        let ahead: u32 = if let Ok(branch) = repo.find_branch(&current_branch, git2::BranchType::Local) {
+            if let (Some(local), Some(up)) = (branch.get().target(), branch.upstream().ok().and_then(|u| u.get().target())) {
+                repo.graph_ahead_behind(local, up).map(|(a,_)| a as u32).unwrap_or(0)
+            } else { 0 }
+        } else { 0 };
+        let outgoing = get_outgoing_commits(&repo, &current_branch, ahead, client_calendar_offset_east_minutes);
+        Ok(outgoing)
+    })
+    .await
+    .map_err(|e| format!("任务已中断: {}", e))?
 }
 
 /// 初始化一个新的 Git 仓库（等价于 `git init`）。
@@ -7234,6 +7530,9 @@ fn main() {
             remove_remote,
             set_branch_upstream,
             open_repository,
+            scan_directory_repos,
+            get_repo_incoming_commits,
+            get_repo_outgoing_commits,
             get_commits_paginated,
             get_commit_count_head,
             get_author_commit_stats,
@@ -7309,7 +7608,10 @@ fn main() {
             save_auto_snapshot_config,
             set_current_repo_for_snapshot,
             trigger_auto_snapshot_now,
-            get_git_config_info
+            get_git_config_info,
+            get_recent_scanned_dirs,
+            save_recent_scanned_dir,
+            remove_recent_scanned_dir
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

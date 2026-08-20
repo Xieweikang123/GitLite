@@ -15,6 +15,7 @@ import {
   Search,
   Trash2,
   Loader2,
+  Layers,
 } from 'lucide-react'
 import { RecentRepo } from '../types/git'
 import { cn, shortenPathMiddle } from '../lib/utils'
@@ -47,6 +48,7 @@ interface MenuToolbarProps {
   onOpenProxyConfig?: () => void
   onOpenAiConfig?: () => void
   onOpenReliabilityPanel?: () => void
+  onOpenMultiRepoPage?: () => void
 }
 
 export function MenuToolbar({
@@ -63,7 +65,8 @@ export function MenuToolbar({
   onCloneRepository,
   onOpenProxyConfig,
   onOpenAiConfig,
-  onOpenReliabilityPanel
+  onOpenReliabilityPanel,
+  onOpenMultiRepoPage
 }: MenuToolbarProps) {
   const [contextMenu, setContextMenu] = useState<{
     x: number
@@ -579,6 +582,17 @@ export function MenuToolbar({
           title="打开仓库"
         >
           <FolderOpen className="h-3 w-3" />
+        </Button>
+
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 px-2 text-xs"
+          onClick={() => onOpenMultiRepoPage?.()}
+          title="多仓库 — 扫描目录并同时查看子仓库状态（独立页面）"
+        >
+          <Layers className="h-3 w-3 mr-1" />
+          多仓库
         </Button>
 
         {onInitRepository && (

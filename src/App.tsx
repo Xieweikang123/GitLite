@@ -8,6 +8,7 @@ import { getCurrent } from '@tauri-apps/api/window'
 import { TopToolbar } from './components/TopToolbar'
 import { MenuToolbar } from './components/MenuToolbar'
 import { OperationsPanel } from './components/OperationsPanel'
+import { Button } from './components/ui/button'
 import { CommitList } from './components/CommitList'
 import { FileList } from './components/FileList'
 import { UnifiedCommitView } from './components/UnifiedCommitView'
@@ -18,6 +19,7 @@ import { RemoteManageModal } from './components/RemoteManageModal'
 import { ReliabilityPanel } from './components/ReliabilityPanel'
 import { RepoFileTree } from './components/RepoFileTree'
 import { AuthorStatsPanel } from './components/AuthorStatsPanel'
+import { DirectoryRepoScanner } from './components/DirectoryRepoScanner'
 import { CommitInfo, FileChange } from './types/git'
 import { formatTauriInvokeError } from './utils/tauriError'
 
@@ -792,6 +794,19 @@ function App() {
   const [activeTab, setActiveTab] = useState<
     'workspace' | 'commits' | 'files' | 'stats'
   >('workspace')
+  const SHOW_MULTI_REPO_KEY = 'gitlite:showMultiRepoPage'
+  const [showMultiRepoPage, setShowMultiRepoPage] = useState(() => {
+    try {
+      return localStorage.getItem(SHOW_MULTI_REPO_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem(SHOW_MULTI_REPO_KEY, showMultiRepoPage ? '1' : '0')
+    } catch {}
+  }, [showMultiRepoPage])
   const [statsReportTab, setStatsReportTab] = useState<
     | 'authors'
     | 'timeline'
@@ -932,25 +947,58 @@ function App() {
         onOpenProxyConfig={() => setProxyConfigOpen(true)}
         onOpenAiConfig={() => setAiConfigOpen(true)}
         onOpenReliabilityPanel={() => setReliabilityOpen(true)}
+        onOpenMultiRepoPage={() => setShowMultiRepoPage(true)}
       />
       
-      {/* 顶部工具栏 */}
-      <TopToolbar
-        onBranchSelect={handleBranchSelect}
-        onCreateBranch={handleCreateBranch}
-        onDeleteBranch={handleDeleteBranch}
-        onRenameBranch={handleRenameBranch}
-        onMergeBranch={handleMergeBranch}
-        onOpenRemoteRepository={handleOpenRemoteRepository}
-        onOpenRemoteManage={() => setRemoteManageOpen(true)}
-        onPullChanges={handlePullChanges}
-        loading={loading}
-        repoInfo={repoInfo}
-        isDark={isDark}
-        onToggleDarkMode={toggleDarkMode}
-      />
+      {showMultiRepoPage ? (
+        <div className="flex-1 flex flex-col min-h-0">
+          <div className="shrink-0 flex items-center gap-3 border-b bg-muted/20 px-4 py-2.5">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowMultiRepoPage(false)}
+              className="h-7 gap-1.5 px-2.5"
+            >
+              ← 返回单仓库
+            </Button>
+            <div className="h-4 w-px bg-border" />
+            <div className="flex items-center gap-2">
+              <div className="rounded-md bg-primary/10 p-1.5">
+                <span className="text-primary text-xs font-bold">多</span>
+              </div>
+              <div className="leading-tight">
+                <div className="text-sm font-semibold">多仓库</div>
+                <div className="text-[11px] text-muted-foreground hidden sm:block">独立页面 · 扫描父目录并集中查看子仓库分支与工作区</div>
+              </div>
+            </div>
+          </div>
+          <div className="flex-1 min-h-0 overflow-auto px-4 py-4 bg-muted/5">
+            <DirectoryRepoScanner
+              onOpenRepo={(p) => {
+                setShowMultiRepoPage(false)
+                void handleRecentRepoSelect(p)
+              }}
+            />
+          </div>
+        </div>
+      ) : (
+        <>
+          <TopToolbar
+            onBranchSelect={handleBranchSelect}
+            onCreateBranch={handleCreateBranch}
+            onDeleteBranch={handleDeleteBranch}
+            onRenameBranch={handleRenameBranch}
+            onMergeBranch={handleMergeBranch}
+            onOpenRemoteRepository={handleOpenRemoteRepository}
+            onOpenRemoteManage={() => setRemoteManageOpen(true)}
+            onPullChanges={handlePullChanges}
+            loading={loading}
+            repoInfo={repoInfo}
+            isDark={isDark}
+            onToggleDarkMode={toggleDarkMode}
+          />
 
-      <div className="flex-1 flex flex-col min-h-0">
+          <div className="flex-1 flex flex-col min-h-0">
         {error && (
           <div className="mb-6 p-4 bg-destructive/10 border border-destructive/20 rounded-lg">
             <p className="text-destructive">{error}</p>
@@ -1113,6 +1161,8 @@ function App() {
           </div>
         )}
       </div>
+        </>
+      )}
       
       {/* 日志弹窗 */}
       <LogModal
