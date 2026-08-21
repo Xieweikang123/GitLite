@@ -933,15 +933,21 @@ export function useGit() {
     if (!repoInfo) throw new Error('No repository open')
     
     try {
+      const beforeHead = repoInfo.commits?.[0]?.id?.slice(0,7) ?? '?'
+      const beforeBehind = (repoInfo as any).behind ?? '?'
+      void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][useGit] before path=${repoInfo.path} head=${beforeHead} behind=${beforeBehind}` }).catch(()=>{})
       const result: PullWithLogsResult = await invoke('pull_changes_with_logs', {
         repoPath: repoInfo.path,
       })
+      void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][useGit] pull outcome kind=${(result as any)?.outcome?.kind} msg=${(result as any)?.outcome?.message}` }).catch(()=>{})
       
       const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+      void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][useGit] after head=${updatedRepoInfo.commits?.[0]?.id?.slice(0,7)} behind=${(updatedRepoInfo as any).behind} incoming=${(updatedRepoInfo as any).incoming_commits?.length} ahead=${(updatedRepoInfo as any).ahead}` }).catch(()=>{})
       setRepoInfo(updatedRepoInfo)
       
       return result
     } catch (err) {
+      void invoke('append_gitlite_log', { level: 'ERROR', message: `[DIAG][pull][useGit] error ${String(err)}` }).catch(()=>{})
       throw new Error(formatTauriInvokeError(err, '拉取失败'))
     }
   }, [repoInfo])

@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { FileChange } from '../types/git'
 import { FileText, Plus, Edit, Trash2, GitBranch } from 'lucide-react'
@@ -12,6 +13,49 @@ interface FileListProps {
 }
 
 export function FileList({ files, selectedFile, onFileSelect }: FileListProps) {
+  const listRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!selectedFile || !listRef.current) return
+    let el: HTMLElement | null = null
+    try {
+      const escaped =
+        typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+          ? CSS.escape(selectedFile)
+          : selectedFile.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+      el = listRef.current.querySelector(`[data-file-path="${escaped}"]`)
+    } catch {
+      el = listRef.current.querySelector('[data-file-path]')
+    }
+    if (el) el.scrollIntoView({ block: 'nearest' })
+  }, [selectedFile])
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (files.length === 0) return
+      const t = e.target
+      if (t instanceof HTMLElement) {
+        const tag = t.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable) return
+      }
+      const key = e.key
+      if (key !== 'ArrowUp' && key !== 'ArrowDown' && key !== 'Home' && key !== 'End') return
+      e.preventDefault()
+      let idx = selectedFile ? files.findIndex((f) => f.path === selectedFile) : -1
+      if (key === 'ArrowDown') {
+        if (idx === -1) idx = 0
+        else idx = Math.min(idx + 1, files.length - 1)
+      } else if (key === 'ArrowUp') {
+        if (idx === -1) idx = files.length - 1
+        else idx = Math.max(idx - 1, 0)
+      } else if (key === 'Home') idx = 0
+      else if (key === 'End') idx = files.length - 1
+      const next = files[idx]
+      if (next && next.path !== selectedFile) onFileSelect(next.path)
+    },
+    [files, selectedFile, onFileSelect]
+  )
+
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'added':
@@ -81,19 +125,32 @@ export function FileList({ files, selectedFile, onFileSelect }: FileListProps) {
         </CardTitle>
       </CardHeader>
       <CardContent className="px-2.5 py-2">
-        <div className="space-y-1">
+        <div
+          ref={listRef}
+          tabIndex={0}
+          role="listbox"
+          aria-label="变更文件列表，↑/↓ 移动"
+          onKeyDown={handleKeyDown}
+          className="space-y-1 overflow-y-auto outline-none"
+        >
           {files.map((file) => {
             const { dir, base } = splitRepoPath(file.path)
             return (
               <div
                 key={file.path}
+                data-file-path={file.path}
+                role="option"
+                aria-selected={selectedFile === file.path}
                 className={cn(
                   'cursor-pointer rounded-md border px-2 py-1.5 transition-colors',
                   selectedFile === file.path
                     ? 'border-primary bg-accent shadow-sm ring-1 ring-primary/20'
                     : 'border-border/35 hover:border-border/50 hover:bg-accent/50'
                 )}
-                onClick={() => onFileSelect(file.path)}
+                onClick={() => {
+                  onFileSelect(file.path)
+                  queueMicrotask(() => listRef.current?.focus())
+                }}
                 title={file.path}
               >
                 <div className="flex gap-2">

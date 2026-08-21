@@ -540,6 +540,7 @@ export function UnifiedCommitView({
   const loadingTimeoutRef = useRef<number | null>(null)
   const currentLoadingFileRef = useRef<string | null>(null)
   const commitListScrollRef = useRef<HTMLDivElement>(null)
+  const fileListScrollRef = useRef<HTMLDivElement>(null)
   const loadMoreSentinelRef = useRef<HTMLDivElement>(null)
   const [branchLabelsByCommit, setBranchLabelsByCommit] = useState<
     Map<string, BranchOnCommit[]>
@@ -1757,6 +1758,8 @@ export function UnifiedCommitView({
     setSelectedFile(filePath)
     setLoadingDiff(true)
     currentLoadingFileRef.current = filePath
+    // 保持焦点在文件列表容器内，便于连续键盘移动
+    queueMicrotask(() => fileListScrollRef.current?.focus())
     
     if (!selectedCommit) {
       console.error('❌ 没有选中的提交')
@@ -1780,6 +1783,93 @@ export function UnifiedCommitView({
       }
     }
   }, [selectedFile, selectedCommit, onGetSingleFileDiff])
+
+  // 键盘：文件列表内 ArrowUp/Down 移动选中，自动滚动到可见
+  useEffect(() => {
+    if (!selectedFile) return
+    const root = fileListScrollRef.current
+    if (!root) return
+    // data-file-path 可能含特殊字符，用 querySelector 转义
+    let el: HTMLElement | null = null
+    try {
+      const escaped =
+        typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+          ? CSS.escape(selectedFile)
+          : selectedFile.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+      el = root.querySelector(`[data-file-path="${escaped}"]`)
+    } catch {
+      el = root.querySelector('[data-file-path]')
+    }
+    if (el) el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [selectedFile])
+
+  const isTypingTarget = useCallback((target: EventTarget | null) => {
+    if (!(target instanceof HTMLElement)) return false
+    const tag = target.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+    if (target.isContentEditable) return true
+    return false
+  }, [])
+
+  const handleCommitListKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (isTypingTarget(e.target)) return
+      if (filteredCommits.length === 0) return
+      const key = e.key
+      if (key !== 'ArrowUp' && key !== 'ArrowDown' && key !== 'Home' && key !== 'End') return
+      e.preventDefault()
+      const curId = selectedCommitRef.current?.id ?? null
+      let idx = curId ? filteredCommits.findIndex((c) => c.id === curId) : -1
+      if (key === 'ArrowDown') {
+        if (idx === -1) idx = 0
+        else idx = Math.min(idx + 1, filteredCommits.length - 1)
+      } else if (key === 'ArrowUp') {
+        if (idx === -1) idx = filteredCommits.length - 1
+        else idx = Math.max(idx - 1, 0)
+      } else if (key === 'Home') {
+        idx = 0
+      } else if (key === 'End') {
+        idx = filteredCommits.length - 1
+      }
+      const next = filteredCommits[idx]
+      if (next && next.id !== curId) {
+        void handleCommitSelect(next)
+      }
+    },
+    [filteredCommits, handleCommitSelect, isTypingTarget]
+  )
+
+  const handleFileListKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (isTypingTarget(e.target)) return
+      if (commitFiles.length === 0) return
+      const key = e.key
+      if (key !== 'ArrowUp' && key !== 'ArrowDown' && key !== 'Home' && key !== 'End' && key !== 'Enter') return
+      e.preventDefault()
+      const curPath = selectedFile ?? null
+      let idx = curPath ? commitFiles.findIndex((f) => f.path === curPath) : -1
+      if (key === 'ArrowDown') {
+        if (idx === -1) idx = 0
+        else idx = Math.min(idx + 1, commitFiles.length - 1)
+        const next = commitFiles[idx]
+        if (next) void handleFileSelect(next.path)
+      } else if (key === 'ArrowUp') {
+        if (idx === -1) idx = commitFiles.length - 1
+        else idx = Math.max(idx - 1, 0)
+        const next = commitFiles[idx]
+        if (next) void handleFileSelect(next.path)
+      } else if (key === 'Home') {
+        const next = commitFiles[0]
+        if (next) void handleFileSelect(next.path)
+      } else if (key === 'End') {
+        const next = commitFiles[commitFiles.length - 1]
+        if (next) void handleFileSelect(next.path)
+      } else if (key === 'Enter') {
+        if (curPath) void handleFileSelect(curPath)
+      }
+    },
+    [commitFiles, selectedFile, handleFileSelect, isTypingTarget]
+  )
 
   // 清理定时器
   useEffect(() => {
@@ -1856,6 +1946,9 @@ export function UnifiedCommitView({
 
     return (
       <div
+        data-file-path={file.path}
+        role="option"
+        aria-selected={isSelected}
         className={cn(
           'cursor-pointer rounded-md border px-2 py-1.5 transition-colors',
           isSelected
@@ -2311,7 +2404,11 @@ export function UnifiedCommitView({
           <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden p-0">
             <div
               ref={commitListScrollRef}
-              className="h-full min-h-0 overflow-y-auto scrollbar-thin scrollbar-thumb-zinc-400/30 scrollbar-track-transparent dark:scrollbar-thumb-zinc-600/35"
+              tabIndex={0}
+              role="listbox"
+              aria-label="提交列表，↑/↓ 移动，Home/End 跳转"
+              onKeyDown={handleCommitListKeyDown}
+              className="h-full min-h-0 overflow-y-auto scrollbar-thin scrollbar-thumb-zinc-400/30 scrollbar-track-transparent outline-none dark:scrollbar-thumb-zinc-600/35"
             >
               {filteredCommits.length === 0 ? (
                 <div className="flex min-h-[10rem] flex-col items-center justify-center gap-2 px-4 py-10 text-center">
@@ -2393,7 +2490,10 @@ export function UnifiedCommitView({
                 return (
                 <div
                   key={commit.id}
+                  id={`commit-row-${commit.id}`}
                   data-commit-id={commit.id}
+                  role="option"
+                  aria-selected={isRowSelected}
                   ref={(el) => {
                     commitRowElsRef.current[i] = el
                   }}
@@ -2407,8 +2507,15 @@ export function UnifiedCommitView({
                       'bg-emerald-500/[0.11] ring-1 ring-inset ring-emerald-500/25 dark:bg-emerald-500/[0.13]',
                     !isRowSelected && 'hover:bg-muted/35 dark:hover:bg-muted/15'
                   )}
-                  onClick={() => handleCommitSelect(commit, { scrollIntoView: false })}
+                  onClick={() => {
+                    void handleCommitSelect(commit, { scrollIntoView: false })
+                    // 保持焦点在列表容器内，便于随后用方向键继续移动
+                    commitListScrollRef.current?.focus()
+                  }}
                   onContextMenu={(e) => {
+                    // 始终阻止系统默认菜单，避免“默认菜单”覆盖自定义菜单
+                    e.preventDefault()
+                    e.stopPropagation()
                     if (
                       !onResetToCommit &&
                       !onCreateBranch &&
@@ -2418,8 +2525,6 @@ export function UnifiedCommitView({
                     ) {
                       return
                     }
-                    e.preventDefault()
-                    e.stopPropagation()
                     setCommitContextMenu({ x: e.clientX, y: e.clientY, commit })
                   }}
                 >
@@ -2659,7 +2764,14 @@ export function UnifiedCommitView({
                       <p className="text-muted-foreground">此提交没有文件变更</p>
                     </div>
                   ) : (
-                    <div className="scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent h-full space-y-1 overflow-y-auto">
+                    <div
+                      ref={fileListScrollRef}
+                      tabIndex={0}
+                      role="listbox"
+                      aria-label="变更文件列表，↑/↓ 移动，Home/End 跳转，回车选中"
+                      onKeyDown={handleFileListKeyDown}
+                      className="scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent h-full space-y-1 overflow-y-auto outline-none"
+                    >
                       {commitFiles.map((file) => (
                         <FileItem
                           key={file.path}
@@ -2824,24 +2936,45 @@ export function UnifiedCommitView({
               </button>
             )}
             {onResetToCommit && (
-              <button
-                type="button"
-                role="menuitem"
-                className="flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={syncBusy || isCommitCheckedOut(commitContextMenu.commit)}
-                title={
-                  isCommitCheckedOut(commitContextMenu.commit)
-                    ? '工作区已在此提交'
-                    : '将分支重置到该提交（与 git reset 一致）'
-                }
-                onClick={() => {
-                  openResetDialogForCommit(commitContextMenu.commit)
-                  setCommitContextMenu(null)
-                }}
-              >
-                <RotateCcw className="h-3.5 w-3.5 shrink-0" />
-                重置到此提交
-              </button>
+              <>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={syncBusy || isCommitCheckedOut(commitContextMenu.commit)}
+                  title={
+                    isCommitCheckedOut(commitContextMenu.commit)
+                      ? '工作区已在此提交'
+                      : '将分支重置到该提交（本地回退，不影响远端，需推送才同步）'
+                  }
+                  onClick={() => {
+                    openResetDialogForCommit(commitContextMenu.commit)
+                    setCommitContextMenu(null)
+                  }}
+                >
+                  <RotateCcw className="h-3.5 w-3.5 shrink-0" />
+                  回退/重置到此提交
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm text-amber-700 hover:bg-amber-500/10 dark:text-amber-300 disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={syncBusy || isCommitCheckedOut(commitContextMenu.commit)}
+                  title="本地硬回退到该提交（git reset --hard），仅改本地，不推远端，适合造待拉测试"
+                  onClick={async () => {
+                    const c = commitContextMenu.commit
+                    setCommitContextMenu(null)
+                    if (!onResetToCommit) return
+                    if (!confirm(`本地回退到 ${c.short_id} ${c.message.split('\n')[0]}？\n仅本地 --hard，不影响远端，之后可用“拉取”拉回。`)) return
+                    try {
+                      await onResetToCommit(c.id, 'hard')
+                    } catch {}
+                  }}
+                >
+                  <RotateCcw className="h-3.5 w-3.5 shrink-0" />
+                  快速回退（--hard，测试用）
+                </button>
+              </>
             )}
             {onCherryPickCommit && (
               <button
@@ -3080,7 +3213,8 @@ export function UnifiedCommitView({
       >
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>重置到该提交</DialogTitle>
+            <DialogTitle>回退/重置到该提交 — 仅本地，不影响远端</DialogTitle>
+            <p className="text-xs text-muted-foreground pt-1">本地 git reset，推送前远端不变；选 --hard 可造“待拉”用于测试拉取</p>
           </DialogHeader>
           {resetTargetCommit && (
             <div className="space-y-4 text-sm">

@@ -444,7 +444,9 @@ function App() {
     setIsOperationRunning(true)
     
     try {
+      void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][App] handlePull start path=${repoInfo.path}` }).catch(()=>{})
       const { logs: logData, outcome } = await pullChangesWithLogs()
+      void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][App] handlePull outcome kind=${outcome.kind} msg=${outcome.message} staged=${outcome.staged_count} unstaged=${outcome.unstaged_count}` }).catch(()=>{})
       
       // 转换日志格式，并附加结构化结果摘要（与 SourceTree 一致：拉取后工作区计数）
       const formattedLogs = logData.map(([timestamp, level, message]) => ({
@@ -461,15 +463,14 @@ function App() {
       setLogs(formattedLogs)
       setIsOperationRunning(false)
       
-      // 拉取成功后重置状态
+      // 拉取成功后只重置选中态，不清空列表；incoming/local 由 repoInfo 驱动
+      // 否则与 useGit.ts:940 setRepoInfo + App.tsx:654/661 的回灌竞态，导致待拉残留
       setSelectedCommit(null)
       setCommitFiles([])
       setSelectedFile(null)
-      setIncomingCommits([])
-      setLocalCommits([])
-      setHasMoreCommits(true)
     } catch (error) {
       console.error('拉取失败:', error)
+      void invoke('append_gitlite_log', { level: 'ERROR', message: `[DIAG][pull][App] handlePull error ${String(error)}` }).catch(()=>{})
       setIsOperationRunning(false)
       
       // 添加错误日志
@@ -504,10 +505,10 @@ function App() {
       setLogs(formattedLogs)
       setIsOperationRunning(false)
       
-      // 获取成功后重置状态（获取不会改变工作区，所以不需要重置文件状态）
-      setIncomingCommits([])
-      setLocalCommits([])
-      setHasMoreCommits(true)
+      // 获取不改变工作区，仅清选中；列表由 App.tsx:654 的 incoming 回灌驱动
+      setSelectedCommit(null)
+      setCommitFiles([])
+      setSelectedFile(null)
     } catch (error) {
       console.error('获取失败:', error)
       setIsOperationRunning(false)
@@ -653,7 +654,12 @@ function App() {
   // 获取/拉取后仅有 incoming 变化时仍会更新，且不依赖「加载更多」用的 localCommits  effect
   React.useEffect(() => {
     if (!repoInfo) return
-    if (commitLogScope !== 'head' || commitLogRev) return
+    if (commitLogScope !== 'head' || commitLogRev) {
+      void invoke('append_gitlite_log', { level: 'DEBUG', message: `[DIAG][pull][App] skip incoming scope=${commitLogScope} rev=${commitLogRev ?? 'null'} behind=${(repoInfo as any).behind}` }).catch(()=>{})
+      return
+    }
+    const incLen = (repoInfo.incoming_commits ?? []).length
+    void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][App] setIncoming behind=${(repoInfo as any).behind} incoming=${incLen} head=${repoInfo.commits?.[0]?.id?.slice(0,7)}` }).catch(()=>{})
     setIncomingCommits(repoInfo.incoming_commits ?? [])
   }, [repoInfo, commitLogScope, commitLogRev])
 
@@ -690,15 +696,18 @@ function App() {
         )
         return
       }
-      // 分页列表已建立后，不再用 repoInfo 快照覆盖，避免与 loadMore 并发时列表基准跳变
+      // HEAD 已前进时必须刷新，否则拉取后待拉不消失（尤其已加载更多 >50 条时）
       const localHeadId = localCommitsRef.current[0]?.id ?? ''
       const repoHeadId = repoInfo.commits[0]?.id ?? ''
+      const headMoved = localHeadId !== '' && repoHeadId !== '' && localHeadId !== repoHeadId
       const canHydrateFromRepoInfo =
-        localCommitsRef.current.length === 0 ||
-        (localCommitsRef.current.length <= 50 && localHeadId !== repoHeadId)
+        localCommitsRef.current.length === 0 || headMoved
+      void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][App] hydrate check localLen=${localCommitsRef.current.length} localHead=${localHeadId.slice(0,7)} repoHead=${repoHeadId.slice(0,7)} headMoved=${headMoved} canHydrate=${canHydrateFromRepoInfo} repoBehind=${(repoInfo as any).behind}` }).catch(()=>{})
       if (!canHydrateFromRepoInfo) {
+        void invoke('append_gitlite_log', { level: 'DEBUG', message: `[DIAG][pull][App] skip hydrate` }).catch(()=>{})
         return
       }
+      void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][App] do hydrate local=${repoInfo.commits.length} head=${repoHeadId.slice(0,7)}` }).catch(()=>{})
       setLocalCommits(repoInfo.commits)
       setHasMoreCommits(repoInfo.commits.length >= 50)
       return

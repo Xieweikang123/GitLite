@@ -3080,10 +3080,17 @@ async fn open_folder(path: String) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("explorer")
-            .arg(target)
-            .spawn()
-            .map_err(|e| format!("Failed to open folder: {}", e))?;
+        if target.is_file() {
+            std::process::Command::new("explorer")
+                .args(["/select,", &target.to_string_lossy().to_string()])
+                .spawn()
+                .map_err(|e| format!("Failed to open folder: {}", e))?;
+        } else {
+            std::process::Command::new("explorer")
+                .arg(target)
+                .spawn()
+                .map_err(|e| format!("Failed to open folder: {}", e))?;
+        }
     }
 
     #[cfg(target_os = "macos")]

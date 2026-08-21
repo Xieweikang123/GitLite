@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useMemo } from 'react'
+import React, { useState, useCallback, useEffect, useMemo, useSyncExternalStore } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { open } from '@tauri-apps/api/dialog'
 import { Button } from './ui/button'
@@ -7,7 +7,10 @@ import { Card, CardHeader, CardTitle, CardContent } from './ui/card'
 import { Badge } from './ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { MonacoDiffEditor } from './MonacoDiffEditor'
+import Editor from '@monaco-editor/react'
+import { getMonacoLanguageFromPath } from '@/utils/monacoLanguage'
 import { DirectoryRepoEntry, CommitInfo, WorkspaceStatus } from '../types/git'
+import { useMinimapConfig } from '@/utils/minimapConfig'
 import { getClientCalendarOffsetEastMinutes } from '../utils/clientCalendarOffset'
 import {
   FolderOpen,
@@ -50,6 +53,8 @@ interface ScannedDirRecord {
 }
 
 const RECENT_SCANNED_KEY = 'gitlite:recentScannedDirs'
+const DETAIL_TAB_CACHE_KEY = 'gitlite:dirScanner:detailTabCache'
+const EXPANDED_STATE_KEY = 'gitlite:dirScanner:expandedState'
 
 function timeAgo(iso: string): string {
   const d = new Date(iso)
@@ -65,6 +70,15 @@ function timeAgo(iso: string): string {
   return d.toLocaleDateString()
 }
 
+function subscribeDarkClass(cb: () => void) {
+  const obs = new MutationObserver(cb)
+  obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+  return () => obs.disconnect()
+}
+function getDarkClass(): boolean {
+  return document.documentElement.classList.contains('dark')
+}
+
 export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) {
   const [dirPath, setDirPath] = useState('')
   const [recursive, setRecursive] = useState(false)
@@ -78,8 +92,12 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
   const [pullingPath, setPullingPath] = useState<string | null>(null)
   const [batchPulling, setBatchPulling] = useState(false)
   const [fetchingAll, setFetchingAll] = useState(false)
+  const [fetchingPath, setFetchingPath] = useState<string | null>(null)
+  const [fetchingPaths, setFetchingPaths] = useState<Set<string>>(new Set())
+  const [fetchDoneCount, setFetchDoneCount] = useState(0)
   const [expandedPath, setExpandedPath] = useState<string | null>(null)
   const [activeDetailTab, setActiveDetailTab] = useState<'incoming' | 'outgoing' | 'workspace' | 'recent'>('incoming')
+  const [detailTabCache, setDetailTabCache] = useState<Record<string, 'incoming' | 'outgoing' | 'workspace' | 'recent'>>({})
   const [incomingCache, setIncomingCache] = useState<Record<string, CommitInfo[]>>({})
   const [incomingLoading, setIncomingLoading] = useState<string | null>(null)
   const [outgoingCache, setOutgoingCache] = useState<Record<string, CommitInfo[]>>({})
@@ -88,12 +106,29 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
   const [workspaceLoading, setWorkspaceLoading] = useState<string | null>(null)
   const [recentCache, setRecentCache] = useState<Record<string, CommitInfo[]>>({})
   const [recentLoading, setRecentLoading] = useState<string | null>(null)
+  const [recentError, setRecentError] = useState<Record<string, string>>({})
+  const [recentContextMenu, setRecentContextMenu] = useState<{ x: number; y: number; repoPath: string; commit: CommitInfo } | null>(null)
+  const [detailFileMenu, setDetailFileMenu] = useState<{ x: number; y: number; filePath: string } | null>(null)
   const [detailCommit, setDetailCommit] = useState<{ repoPath: string; commit: CommitInfo } | null>(null)
   const [detailFiles, setDetailFiles] = useState<import('../types/git').FileChange[]>([])
   const [detailFilesLoading, setDetailFilesLoading] = useState(false)
   const [detailSelectedFile, setDetailSelectedFile] = useState<string | null>(null)
   const [detailDiff, setDetailDiff] = useState<string>('')
   const [detailDiffLoading, setDetailDiffLoading] = useState(false)
+  const detailFilesListRef = React.useRef<HTMLDivElement>(null)
+  const [wsDetail, setWsDetail] = useState<{ repoPath: string; filePath: string; kind: 'staged' | 'unstaged' | 'untracked' } | null>(null)
+  const [wsDiff, setWsDiff] = useState<string>('')
+  const [wsDiffLoading, setWsDiffLoading] = useState(false)
+  const isDark = useSyncExternalStore(subscribeDarkClass, getDarkClass, () => false)
+  const { config: minimapConfig } = useMinimapConfig()
+  const minimapOptions = useMemo(() => ({
+    enabled: minimapConfig.enabled,
+    side: minimapConfig.side,
+    scale: minimapConfig.scale,
+    showSlider: minimapConfig.showSlider,
+    renderCharacters: minimapConfig.renderCharacters,
+    maxColumn: minimapConfig.maxColumn,
+  }), [minimapConfig])
 
   const loadRecentScanned = useCallback(async () => {
     try {
@@ -148,6 +183,41 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
     })()
   }, [loadRecentScanned, restored])
 
+  // 恢复上次的展开状态与 tab 记忆
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(DETAIL_TAB_CACHE_KEY)
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, 'incoming' | 'outgoing' | 'workspace' | 'recent'>
+        if (parsed && typeof parsed === 'object') setDetailTabCache(parsed)
+      }
+      const raw2 = localStorage.getItem(EXPANDED_STATE_KEY)
+      if (raw2) {
+        const obj = JSON.parse(raw2) as { path: string | null; tab: 'incoming' | 'outgoing' | 'workspace' | 'recent' }
+        if (obj?.path) {
+          setExpandedPath(obj.path)
+          if (obj.tab) setActiveDetailTab(obj.tab)
+        }
+      }
+    } catch {}
+  }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(DETAIL_TAB_CACHE_KEY, JSON.stringify(detailTabCache))
+    } catch {}
+  }, [detailTabCache])
+
+  useEffect(() => {
+    try {
+      if (expandedPath) {
+        localStorage.setItem(EXPANDED_STATE_KEY, JSON.stringify({ path: expandedPath, tab: activeDetailTab }))
+      } else {
+        localStorage.removeItem(EXPANDED_STATE_KEY)
+      }
+    } catch {}
+  }, [expandedPath, activeDetailTab])
+
   const pickFolder = useCallback(async () => {
     const selected = await open({ directory: true, title: '选择要扫描的目录' })
     if (typeof selected === 'string') setDirPath(selected)
@@ -188,23 +258,40 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
   )
 
   const handleRefresh = useCallback(() => {
-    if (scannedDir) void doScan(scannedDir)
+    if (scannedDir) {
+      setWorkspaceCache({})
+      setIncomingCache({})
+      setOutgoingCache({})
+      setRecentCache({})
+      void doScan(scannedDir)
+    }
   }, [scannedDir, doScan])
 
   const handlePull = useCallback(
     async (repoPath: string) => {
+      const before = entries?.find((e) => e.path === repoPath)
+      void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][multi] start path=${repoPath} beforeBehind=${before?.behind ?? '?'} beforeHead=${before?.head_short_id ?? '?'}` }).catch(()=>{})
       setPullingPath(repoPath)
       setError(null)
       try {
         await invoke('pull_changes', { repoPath })
+        void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][multi] pull ok path=${repoPath}` }).catch(()=>{})
+        // 拉取后缓存失效，否则待拉列表仍显示已拉取的提交
+        setIncomingCache((m) => { const c={...m}; delete c[repoPath]; return c })
+        setOutgoingCache((m) => { const c={...m}; delete c[repoPath]; return c })
+        setRecentCache((m) => { const c={...m}; delete c[repoPath]; return c })
+        setWorkspaceCache((m) => { const c={...m}; delete c[repoPath]; return c })
         if (scannedDir) await doScan(scannedDir)
+        const after = entries?.find((e) => e.path === repoPath)
+        void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][multi] after scan path=${repoPath} entriesBehind=${after?.behind ?? '?'}` }).catch(()=>{})
       } catch (err) {
+        void invoke('append_gitlite_log', { level: 'ERROR', message: `[DIAG][pull][multi] fail path=${repoPath} err=${String(err)}` }).catch(()=>{})
         setError(formatTauriInvokeError(err, `拉取失败 ${shortenPathMiddle(repoPath, 40)}`))
       } finally {
         setPullingPath(null)
       }
     },
-    [scannedDir, doScan]
+    [scannedDir, doScan, entries]
   )
 
   const handleBatchPull = useCallback(async () => {
@@ -222,49 +309,52 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
   const handleFetchAll = useCallback(async () => {
     if (!entries || !scannedDir) return
     setFetchingAll(true)
+    setFetchingPath(entries[0]?.path ?? null)
+    setFetchingPaths(new Set(entries.map((e) => e.path)))
+    setFetchDoneCount(0)
     setError(null)
+    // 并发获取：不同仓库独立，无 git 锁冲突，IO 密集型并发更快
+    // 用 Promise.allSettled 保证单仓失败不影响其他，最后统一 doScan 刷新 behind/ahead
     try {
-      for (const e of entries) {
-        try {
-          // eslint-disable-next-line no-await-in-loop
-          await invoke('fetch_changes', { repoPath: e.path })
-        } catch {}
-      }
+      await Promise.allSettled(
+        entries.map(async (e) => {
+          try {
+            await invoke('fetch_changes', { repoPath: e.path })
+          } catch {}
+          finally {
+            // 逐个完成时更新进度与高亮
+            setFetchingPaths((prev) => {
+              const n = new Set(prev)
+              n.delete(e.path)
+              return n
+            })
+            setFetchDoneCount((c) => c + 1)
+            setFetchingPath((cur) => {
+              // 若当前高亮刚完成，切换到剩余集合中任意一个
+              if (cur === e.path) {
+                const remaining = entries.map((x) => x.path).filter((p) => p !== e.path)
+                // 延迟由下一轮 setFetchingPaths 驱动，这里简单置 null 由渲染取剩余
+                return remaining[0] ?? null
+              }
+              return cur
+            })
+          }
+        })
+      )
       await doScan(scannedDir)
+      // 获取后 behind 可能变化，旧待拉/待推缓存失效
+      setIncomingCache({})
+      setOutgoingCache({})
+      setRecentCache({})
+      void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][fetch][multi] all done` }).catch(()=>{})
     } catch (err) {
       setError(formatTauriInvokeError(err, '全部获取失败'))
     } finally {
       setFetchingAll(false)
+      setFetchingPath(null)
+      setFetchingPaths(new Set())
     }
   }, [entries, scannedDir, doScan])
-
-  const toggleIncoming = useCallback(
-    async (repoPath: string, behind: number) => {
-      const isSame = expandedPath === repoPath
-      if (isSame) {
-        setExpandedPath(null)
-        return
-      }
-      // 允许查看详情即使 behind==0（可看工作区/最近提交）
-      setExpandedPath(repoPath)
-      setActiveDetailTab('incoming')
-      if (behind > 0 && !incomingCache[repoPath]) {
-        setIncomingLoading(repoPath)
-        try {
-          const commits: CommitInfo[] = await invoke('get_repo_incoming_commits', {
-            repoPath,
-            clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
-          })
-          setIncomingCache((m) => ({ ...m, [repoPath]: commits }))
-        } catch {
-          setIncomingCache((m) => ({ ...m, [repoPath]: [] }))
-        } finally {
-          setIncomingLoading(null)
-        }
-      }
-    },
-    [expandedPath, incomingCache]
-  )
 
   const fetchOutgoingIfNeeded = useCallback(async (repoPath: string) => {
     if (outgoingCache[repoPath] || outgoingLoading) return
@@ -288,6 +378,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
     try {
       const ws: WorkspaceStatus = await invoke('get_workspace_status', { repoPath })
       setWorkspaceCache((m) => ({ ...m, [repoPath]: ws }))
+      setEntries((prev) => (prev ? prev.map((e) => (e.path === repoPath ? { ...e, staged_count: ws.staged_files.length, unstaged_count: ws.unstaged_files.length, untracked_count: ws.untracked_files.length, conflicted_count: ws.conflicted_files?.length ?? 0 } : e)) : prev))
     } catch {
       setWorkspaceCache((m) => ({ ...m, [repoPath]: { staged_files: [], unstaged_files: [], untracked_files: [], conflicted_files: [] } as WorkspaceStatus }))
     } finally {
@@ -295,8 +386,35 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
     }
   }, [workspaceCache, workspaceLoading])
 
-  const fetchRecentIfNeeded = useCallback(async (repoPath: string) => {
-    if (recentCache[repoPath] || recentLoading) return
+  const refreshWorkspace = useCallback(async (repoPath: string) => {
+    setWorkspaceCache((m) => {
+      const c = { ...m }
+      delete c[repoPath]
+      return c
+    })
+    setWorkspaceLoading(repoPath)
+    try {
+      const ws: WorkspaceStatus = await invoke('get_workspace_status', { repoPath })
+      setWorkspaceCache((m) => ({ ...m, [repoPath]: ws }))
+      setEntries((prev) => (prev ? prev.map((e) => (e.path === repoPath ? { ...e, staged_count: ws.staged_files.length, unstaged_count: ws.unstaged_files.length, untracked_count: ws.untracked_files.length, conflicted_count: ws.conflicted_files?.length ?? 0 } : e)) : prev))
+    } catch {
+      setWorkspaceCache((m) => ({ ...m, [repoPath]: { staged_files: [], unstaged_files: [], untracked_files: [], conflicted_files: [] } as WorkspaceStatus }))
+    } finally {
+      setWorkspaceLoading(null)
+    }
+  }, [])
+
+  const refreshRecent = useCallback(async (repoPath: string) => {
+    setRecentCache((m) => {
+      const c = { ...m }
+      delete c[repoPath]
+      return c
+    })
+    setRecentError((m) => {
+      const c = { ...m }
+      delete c[repoPath]
+      return c
+    })
     setRecentLoading(repoPath)
     try {
       const commits: CommitInfo[] = await invoke('get_commits_paginated', {
@@ -308,19 +426,201 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
         clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
       })
       setRecentCache((m) => ({ ...m, [repoPath]: commits }))
+    } catch (err) {
+      setRecentError((m) => ({ ...m, [repoPath]: formatTauriInvokeError(err, '加载失败') }))
+    } finally {
+      setRecentLoading(null)
+    }
+  }, [])
+
+  const refreshIncoming = useCallback(async (repoPath: string, behind: number) => {
+    if (behind <= 0) return
+    setIncomingCache((m) => {
+      const c = { ...m }
+      delete c[repoPath]
+      return c
+    })
+    setIncomingLoading(repoPath)
+    try {
+      const commits: CommitInfo[] = await invoke('get_repo_incoming_commits', {
+        repoPath,
+        clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
+      })
+      setIncomingCache((m) => ({ ...m, [repoPath]: commits }))
     } catch {
-      setRecentCache((m) => ({ ...m, [repoPath]: [] }))
+      setIncomingCache((m) => ({ ...m, [repoPath]: [] }))
+    } finally {
+      setIncomingLoading(null)
+    }
+  }, [])
+
+  const refreshOutgoing = useCallback(async (repoPath: string) => {
+    setOutgoingCache((m) => {
+      const c = { ...m }
+      delete c[repoPath]
+      return c
+    })
+    setOutgoingLoading(repoPath)
+    try {
+      const commits: CommitInfo[] = await invoke('get_repo_outgoing_commits', {
+        repoPath,
+        clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
+      })
+      setOutgoingCache((m) => ({ ...m, [repoPath]: commits }))
+    } catch {
+      setOutgoingCache((m) => ({ ...m, [repoPath]: [] }))
+    } finally {
+      setOutgoingLoading(null)
+    }
+  }, [])
+
+  const fetchRecentIfNeeded = useCallback(async (repoPath: string) => {
+    if (recentCache[repoPath] || recentLoading) return
+    setRecentLoading(repoPath)
+    setRecentError((m) => {
+      const c = { ...m }
+      delete c[repoPath]
+      return c
+    })
+    try {
+      const commits: CommitInfo[] = await invoke('get_commits_paginated', {
+        repoPath,
+        limit: 5,
+        offset: 0,
+        scope: null,
+        rev: null,
+        clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
+      })
+      setRecentCache((m) => ({ ...m, [repoPath]: commits }))
+    } catch (err) {
+      setRecentError((m) => ({ ...m, [repoPath]: formatTauriInvokeError(err, '加载失败') }))
     } finally {
       setRecentLoading(null)
     }
   }, [recentCache, recentLoading])
 
+  const toggleIncoming = useCallback(
+    async (repoPath: string, behind: number) => {
+      const isSame = expandedPath === repoPath
+      if (isSame) {
+        setExpandedPath(null)
+        return
+      }
+      const cached = detailTabCache[repoPath] as 'incoming' | 'outgoing' | 'workspace' | 'recent' | undefined
+      const targetTab = cached ?? 'incoming'
+      setExpandedPath(repoPath)
+      setActiveDetailTab(targetTab)
+      if (targetTab === 'incoming' && behind > 0 && !incomingCache[repoPath]) {
+        setIncomingLoading(repoPath)
+        try {
+          const commits: CommitInfo[] = await invoke('get_repo_incoming_commits', {
+            repoPath,
+            clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
+          })
+          setIncomingCache((m) => ({ ...m, [repoPath]: commits }))
+        } catch {
+          setIncomingCache((m) => ({ ...m, [repoPath]: [] }))
+        } finally {
+          setIncomingLoading(null)
+        }
+      } else if (targetTab === 'outgoing' && !outgoingCache[repoPath]) {
+        void fetchOutgoingIfNeeded(repoPath)
+      } else if (targetTab === 'workspace' && !workspaceCache[repoPath]) {
+        void fetchWorkspaceIfNeeded(repoPath)
+      } else if (targetTab === 'recent' && !recentCache[repoPath]) {
+        void fetchRecentIfNeeded(repoPath)
+      }
+    },
+    [expandedPath, incomingCache, outgoingCache, workspaceCache, recentCache, detailTabCache, fetchOutgoingIfNeeded, fetchWorkspaceIfNeeded, fetchRecentIfNeeded]
+  )
+
   const handleDetailTab = (tab: 'incoming' | 'outgoing' | 'workspace' | 'recent', entry: DirectoryRepoEntry) => {
     setActiveDetailTab(tab)
+    setDetailTabCache((m) => ({ ...m, [entry.path]: tab }))
+    if (tab === 'incoming') {
+      if (entry.behind > 0 && !incomingCache[entry.path] && incomingLoading !== entry.path) void refreshIncoming(entry.path, entry.behind)
+      // 已清缓存但 behind>0 时强制刷新，避免“角标1但列表空”
+      if (entry.behind > 0 && incomingCache[entry.path]?.length === 0) void refreshIncoming(entry.path, entry.behind)
+    }
     if (tab === 'outgoing') void fetchOutgoingIfNeeded(entry.path)
     if (tab === 'workspace') void fetchWorkspaceIfNeeded(entry.path)
     if (tab === 'recent') void fetchRecentIfNeeded(entry.path)
   }
+
+  // 持久化恢复后自动拉取对应 tab 数据
+  useEffect(() => {
+    if (!expandedPath || !entries) return
+    const entry = entries.find((e) => e.path === expandedPath)
+    if (!entry) return
+    if (activeDetailTab === 'workspace' && !workspaceCache[expandedPath] && workspaceLoading !== expandedPath) {
+      void fetchWorkspaceIfNeeded(expandedPath)
+    } else if (activeDetailTab === 'outgoing' && !outgoingCache[expandedPath] && outgoingLoading !== expandedPath) {
+      void fetchOutgoingIfNeeded(expandedPath)
+    } else if (activeDetailTab === 'recent' && !recentCache[expandedPath] && recentLoading !== expandedPath && !recentError[expandedPath]) {
+      void fetchRecentIfNeeded(expandedPath)
+    } else if (activeDetailTab === 'incoming' && entry.behind > 0 && !incomingCache[expandedPath] && incomingLoading !== expandedPath) {
+      void (async () => {
+        setIncomingLoading(expandedPath)
+        try {
+          const commits: CommitInfo[] = await invoke('get_repo_incoming_commits', {
+            repoPath: expandedPath,
+            clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
+          })
+          setIncomingCache((m) => ({ ...m, [expandedPath]: commits }))
+        } catch {
+          setIncomingCache((m) => ({ ...m, [expandedPath]: [] }))
+        } finally {
+          setIncomingLoading(null)
+        }
+      })()
+    }
+  }, [expandedPath, activeDetailTab, entries, workspaceCache, outgoingCache, recentCache, incomingCache, workspaceLoading, outgoingLoading, recentLoading, recentError, fetchWorkspaceIfNeeded, fetchOutgoingIfNeeded, fetchRecentIfNeeded])
+
+  // 多仓库提交历史右键回退（本地，不影响远端）
+  useEffect(() => {
+    if (!recentContextMenu) return
+    const close = () => setRecentContextMenu(null)
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+    document.addEventListener('click', close)
+    document.addEventListener('contextmenu', close)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('click', close)
+      document.removeEventListener('contextmenu', close)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [recentContextMenu])
+
+  useEffect(() => {
+    if (!detailFileMenu) return
+    const close = () => setDetailFileMenu(null)
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+    document.addEventListener('click', close)
+    document.addEventListener('contextmenu', close)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('click', close)
+      document.removeEventListener('contextmenu', close)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [detailFileMenu])
+
+  const handleRecentResetHard = useCallback(async (repoPath: string, commit: CommitInfo) => {
+    if (!confirm(`本地回退 ${repoPath}\n到 ${commit.short_id} ${commit.message.split('\n')[0]}？\n仅本地 --hard，不影响远端，之后可“拉取”拉回。`)) return
+    try {
+      await invoke('reset_to_commit', { repoPath, commitId: commit.id, mode: 'hard' })
+      void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][reset][multi] hard ok path=${repoPath} to=${commit.short_id}` }).catch(()=>{})
+      // 回退后待拉/待推/历史均失效，全部清缓存，靠 doScan 更新 behind 后再懒加载
+      setIncomingCache((m) => { const c={...m}; delete c[repoPath]; return c })
+      setOutgoingCache((m) => { const c={...m}; delete c[repoPath]; return c })
+      setRecentCache((m) => { const c={...m}; delete c[repoPath]; return c })
+      setWorkspaceCache((m) => { const c={...m}; delete c[repoPath]; return c })
+      if (scannedDir) await doScan(scannedDir)
+      void fetchRecentIfNeeded(repoPath)
+    } catch (e) {
+      setError(formatTauriInvokeError(e, '回退失败'))
+    }
+  }, [scannedDir, doScan, fetchRecentIfNeeded])
 
   const handleViewCommit = useCallback(async (repoPath: string, commit: CommitInfo) => {
     setDetailCommit({ repoPath, commit })
@@ -335,6 +635,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
         const first = files[0].path
         setDetailSelectedFile(first)
         setDetailDiffLoading(true)
+        queueMicrotask(() => detailFilesListRef.current?.focus())
         try {
           const diff: string = await invoke('get_single_file_diff', { repoPath, commitId: commit.id, filePath: first })
           setDetailDiff(diff)
@@ -348,6 +649,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
       setDetailFiles([])
     } finally {
       setDetailFilesLoading(false)
+      queueMicrotask(() => detailFilesListRef.current?.focus())
     }
   }, [])
 
@@ -356,6 +658,8 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
       if (!detailCommit) return
       setDetailSelectedFile(filePath)
       setDetailDiffLoading(true)
+      // 保持焦点在文件列表容器内，便于连续用方向键切换
+      queueMicrotask(() => detailFilesListRef.current?.focus())
       try {
         const diff: string = await invoke('get_single_file_diff', {
           repoPath: detailCommit.repoPath,
@@ -371,6 +675,108 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
     },
     [detailCommit]
   )
+
+  // 键盘切换：多库详情的「变更文件」列表支持 ↑/↓/Home/End
+  useEffect(() => {
+    if (!detailSelectedFile || !detailFilesListRef.current) return
+    let el: HTMLElement | null = null
+    try {
+      const escaped =
+        typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+          ? CSS.escape(detailSelectedFile)
+          : detailSelectedFile.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+      el = detailFilesListRef.current.querySelector(`[data-file-path="${escaped}"]`)
+    } catch {
+      el = detailFilesListRef.current.querySelector('[data-file-path]')
+    }
+    if (el) el.scrollIntoView({ block: 'nearest' })
+  }, [detailSelectedFile])
+
+  const handleDetailFilesKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (detailFiles.length === 0) return
+      const t = e.target
+      if (t instanceof HTMLElement) {
+        const tag = t.tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable) return
+      }
+      const key = e.key
+      if (key !== 'ArrowUp' && key !== 'ArrowDown' && key !== 'Home' && key !== 'End' && key !== 'Enter') return
+      e.preventDefault()
+      let idx = detailSelectedFile ? detailFiles.findIndex((f) => f.path === detailSelectedFile) : -1
+      if (key === 'ArrowDown') {
+        if (idx === -1) idx = 0
+        else idx = Math.min(idx + 1, detailFiles.length - 1)
+        const next = detailFiles[idx]
+        if (next) void handleDetailFileSelect(next.path)
+      } else if (key === 'ArrowUp') {
+        if (idx === -1) idx = detailFiles.length - 1
+        else idx = Math.max(idx - 1, 0)
+        const next = detailFiles[idx]
+        if (next) void handleDetailFileSelect(next.path)
+      } else if (key === 'Home') {
+        const next = detailFiles[0]
+        if (next) void handleDetailFileSelect(next.path)
+      } else if (key === 'End') {
+        const next = detailFiles[detailFiles.length - 1]
+        if (next) void handleDetailFileSelect(next.path)
+      } else if (key === 'Enter') {
+        if (detailSelectedFile) void handleDetailFileSelect(detailSelectedFile)
+      }
+    },
+    [detailFiles, detailSelectedFile, handleDetailFileSelect]
+  )
+
+  const handleWsFileClick = useCallback(async (repoPath: string, filePath: string, kind: 'staged' | 'unstaged' | 'untracked') => {
+    console.log('[GitLite][wsDetail] handleWsFileClick', kind, filePath, 'repo', repoPath)
+    void invoke('append_gitlite_log', { level: 'INFO', message: `[wsDetail] click ${kind} ${filePath} @ ${repoPath}` }).catch(() => {})
+    setWsDetail({ repoPath, filePath, kind })
+    setWsDiff('')
+    setWsDiffLoading(true)
+    try {
+      let diff = ''
+      if (kind === 'staged') {
+        try {
+          diff = await invoke<string>('get_staged_file_diff', { repoPath, filePath })
+        } catch {
+          diff = await invoke<string>('get_staged_file_diff', { repoPath, filePath })
+        }
+      } else if (kind === 'unstaged') {
+        diff = await invoke<string>('get_unstaged_file_diff', { repoPath, filePath })
+      } else {
+        let content = ''
+        try {
+          content = await invoke<string>('get_file_content', { repoPath, filePath })
+        } catch {
+          try {
+            content = await invoke<string>('get_head_or_worktree_file_text', { repoPath, filePath })
+          } catch {
+            // 最后降级才用 diff 格式的接口，前端再剥掉头部
+            const diffText = await invoke<string>('get_untracked_file_content', { repoPath, filePath })
+            // 剥掉 diff 头，取 + 行
+            const lines = diffText.split('\n')
+            const atIdx = lines.findIndex((l) => l.startsWith('@@'))
+            if (atIdx >= 0) {
+              content = lines
+                .slice(atIdx + 1)
+                .map((l) => (l.startsWith('+') ? l.slice(1) : l))
+                .join('\n')
+            } else {
+              content = diffText
+            }
+          }
+        }
+        diff = content
+        console.log('[GitLite][wsDetail] untracked content', filePath, 'contentLen', content.length)
+        void invoke('append_gitlite_log', { level: 'INFO', message: `[wsDetail] untracked ${filePath} contentLen=${content.length}` }).catch(() => {})
+      }
+      setWsDiff(diff)
+    } catch (e) {
+      setWsDiff(`无法加载: ${formatTauriInvokeError(e, '')}`)
+    } finally {
+      setWsDiffLoading(false)
+    }
+  }, [])
 
   const openFolder = async (path: string) => {
     try {
@@ -611,12 +1017,24 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
         ) : (
           <Card className="overflow-hidden border shadow-sm">
             <div className="flex items-center justify-between gap-2 border-b bg-muted/30 px-4 py-2">
-              <div className="text-xs text-muted-foreground">
-                共 <span className="font-medium text-foreground">{entries.length}</span> 个仓库
-                {filter && filteredEntries && filteredEntries.length !== entries.length && (
-                  <span> · 已过滤 {filteredEntries.length} 个</span>
+              <div className="text-xs text-muted-foreground flex items-center gap-2 min-w-0">
+                <span>
+                  共 <span className="font-medium text-foreground">{entries.length}</span> 个仓库
+                  {filter && filteredEntries && filteredEntries.length !== entries.length && (
+                    <span> · 已过滤 {filteredEntries.length} 个</span>
+                  )}
+                  {stats && stats.needSync > 0 && <span className="ml-2 text-amber-600 dark:text-amber-400">· {stats.needSync} 个待同步</span>}
+                </span>
+                {fetchingAll && (
+                  <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] text-primary truncate max-w-[260px]" title={Array.from(fetchingPaths).join(', ')}>
+                    <RefreshCw className="h-3 w-3 animate-spin shrink-0" />
+                    <span className="truncate">
+                      {fetchingPaths.size > 0
+                        ? `并发获取中 ${fetchDoneCount}/${entries.length} · 剩余 ${fetchingPaths.size} 个`
+                        : `获取中 ${fetchDoneCount}/${entries.length}`}
+                    </span>
+                  </span>
                 )}
-                {stats && stats.needSync > 0 && <span className="ml-2 text-amber-600 dark:text-amber-400">· {stats.needSync} 个待同步</span>}
               </div>
               <div className="flex gap-1.5">
                 <Button
@@ -628,7 +1046,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                   title="对全部仓库执行 git fetch"
                 >
                   <RefreshCw className={`h-3.5 w-3.5 mr-1 ${fetchingAll ? 'animate-spin' : ''}`} />
-                  {fetchingAll ? '获取中…' : '全部获取'}
+                  {fetchingAll ? `获取中 ${fetchDoneCount}/${entries.length}` : '全部获取'}
                 </Button>
                 <Button
                   size="sm"
@@ -646,11 +1064,11 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
               <table className="w-full text-xs">
                 <thead className="sticky top-0 z-10 bg-muted/80 backdrop-blur supports-[backdrop-filter]:bg-muted/60 border-b">
                   <tr className="text-[11px] tracking-wider text-muted-foreground">
-                    <th className="text-left font-semibold px-4 py-2.5 w-[38%]">仓库</th>
-                    <th className="text-left font-semibold px-3 py-2.5">分支</th>
-                    <th className="text-left font-semibold px-3 py-2.5">同步</th>
-                    <th className="text-left font-semibold px-3 py-2.5">工作区</th>
-                    <th className="text-right font-semibold px-4 py-2.5">操作</th>
+                    <th className="text-left font-semibold px-3 py-2 w-[36%]">仓库</th>
+                    <th className="text-left font-semibold px-2 py-2">分支</th>
+                    <th className="text-left font-semibold px-2 py-2">同步</th>
+                    <th className="text-left font-semibold px-2 py-2">工作区</th>
+                    <th className="text-right font-semibold px-3 py-2">操作</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/60">
@@ -658,19 +1076,29 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                     const hasChanges = entry.staged_count + entry.unstaged_count + entry.untracked_count + entry.conflicted_count > 0
                     const isDirty = hasChanges
                     const isExpanded = expandedPath === entry.path
+                    const isFetchingThis = fetchingAll && fetchingPaths.has(entry.path)
                     return (
                       <React.Fragment key={entry.path}>
-                        <tr className={`group hover:bg-muted/30 transition-colors ${isDirty ? 'bg-amber-500/[0.02]' : ''} ${isExpanded ? 'bg-muted/20' : ''}`}>
+                        <tr className={`group hover:bg-muted/30 transition-colors ${isDirty ? 'bg-amber-500/[0.02]' : ''} ${isExpanded ? 'bg-muted/20' : ''} ${isFetchingThis ? 'bg-primary/[0.06] ring-1 ring-inset ring-primary/20' : ''}`}>
                         
-                        <td className="px-4 py-3 align-top">
+                        <td className="px-3 py-2.5 align-top">
                           <div className="flex flex-col gap-1 min-w-0">
                             <div className="flex items-center gap-2 min-w-0">
-                              <span className="font-medium text-sm text-foreground truncate" title={entry.name}>
-                                {entry.name}
-                              </span>
+                              <button
+                                onClick={() => void toggleIncoming(entry.path, entry.behind)}
+                                className="font-medium text-sm text-foreground truncate hover:text-primary text-left flex items-center gap-1 min-w-0"
+                                title="点击展开/折叠详情"
+                              >
+                                <span className="truncate">{entry.name}</span>
+                                {isExpanded ? (
+                                  <ChevronUp className="h-3 w-3 shrink-0 text-muted-foreground" />
+                                ) : (
+                                  <ChevronDown className="h-3 w-3 shrink-0 opacity-40 group-hover:opacity-100 text-muted-foreground" />
+                                )}
+                              </button>
                               <button
                                 onClick={() => copyText(entry.path)}
-                                className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-all"
+                                className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-all shrink-0"
                                 title="复制路径"
                               >
                                 <Copy className="h-3 w-3" />
@@ -680,22 +1108,10 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                               <Folder className="h-3 w-3 shrink-0" />
                               <span className="truncate">{shortenPathMiddle(entry.path, 52)}</span>
                             </div>
-                            {entry.remote_url && (
-                              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/80 truncate" title={entry.remote_url}>
-                                <Link2 className="h-3 w-3 shrink-0" />
-                                <span className="truncate">{entry.remote_url}</span>
-                                <button
-                                  onClick={() => entry.remote_url && copyText(entry.remote_url)}
-                                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-muted"
-                                  title="复制远程地址"
-                                >
-                                  <Copy className="h-3 w-3" />
-                                </button>
-                              </div>
-                            )}
+
                           </div>
                         </td>
-                        <td className="px-3 py-3 align-top">
+                        <td className="px-2 py-2.5 align-top">
                           <div className="inline-flex items-center gap-1.5 rounded-full border bg-background px-2.5 py-1 shadow-sm">
                             <GitBranch className="h-3 w-3 text-primary" />
                             <span className="font-medium text-foreground">{entry.current_branch}</span>
@@ -704,8 +1120,13 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                             )}
                           </div>
                         </td>
-                        <td className="px-3 py-3 align-top">
-                          <div className="flex flex-wrap gap-1.5">
+                        <td className="px-2 py-2.5 align-top">
+                          <div className="flex flex-wrap gap-1.5 items-center">
+                            {isFetchingThis && (
+                              <span className="inline-flex items-center gap-1 text-[11px] text-primary whitespace-nowrap">
+                                <RefreshCw className="h-3 w-3 animate-spin" /> 获取中
+                              </span>
+                            )}
                             {entry.ahead > 0 && (
                               <Badge variant="default" className="inline-flex items-center gap-1 whitespace-nowrap text-[11px] px-2.5 py-0 h-6 shrink-0">
                                 <ArrowUp className="h-3 w-3 shrink-0" /> <span className="whitespace-nowrap">{entry.ahead} 待推</span>
@@ -755,38 +1176,30 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                             )}
                           </div>
                         </td>
-                        <td className="px-3 py-3 align-top">
-                          <div className="flex flex-wrap gap-1.5 items-center">
+                        <td className="px-2 py-2 align-top">
+                          <div className="flex items-center gap-1.5 flex-nowrap">
                             {entry.conflicted_count > 0 ? (
-                              <Badge variant="destructive" className="gap-1 h-6">
-                                <AlertTriangle className="h-3 w-3" /> 冲突 {entry.conflicted_count}
+                              <Badge variant="destructive" className="gap-1 h-5 text-[11px] px-2 whitespace-nowrap shrink-0">
+                                <AlertTriangle className="h-3 w-3 shrink-0" /> 冲突 {entry.conflicted_count}
                               </Badge>
                             ) : !hasChanges ? (
-                              <Badge className="gap-1 bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 h-6">
-                                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> 干净
+                              <Badge className="gap-1 bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 h-5 text-[11px] px-2 whitespace-nowrap shrink-0">
+                                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" /> 干净
                               </Badge>
                             ) : (
-                              <Badge variant="outline" className="gap-1 border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300 h-6">
-                                <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" /> 有改动
-                              </Badge>
-                            )}
-                            {entry.staged_count > 0 && (
-                              <span className="inline-flex items-center rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-400">
-                                暂存 {entry.staged_count}
+                              <span
+                                className="inline-flex items-center gap-1 rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 h-5 text-[11px] font-medium whitespace-nowrap shrink-0"
+                                title={`暂存 ${entry.staged_count} · 未暂存 ${entry.unstaged_count} · 未跟踪 ${entry.untracked_count}`}
+                              >
+                                <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
+                                有改动
+                                <span className="text-[10px] opacity-70">· {entry.staged_count + entry.unstaged_count + entry.untracked_count}</span>
                               </span>
-                            )}
-                            {entry.unstaged_count > 0 && (
-                              <span className="inline-flex items-center rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400">
-                                未暂存 {entry.unstaged_count}
-                              </span>
-                            )}
-                            {entry.untracked_count > 0 && (
-                              <span className="inline-flex items-center rounded-full border bg-muted px-2 py-0.5 text-[11px]">未跟踪 {entry.untracked_count}</span>
                             )}
                           </div>
                         </td>
-                        <td className="px-4 py-3 align-top text-right">
-                          <div className="flex justify-end gap-1.5 flex-wrap">
+                        <td className="px-3 py-2 align-top text-right">
+                          <div className="flex justify-end gap-1 items-center flex-nowrap">
                             {entry.behind > 0 && (
                               <Button
                                 size="sm"
@@ -809,7 +1222,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                               variant={isExpanded ? 'secondary' : 'outline'}
                               className="h-7 px-2.5 text-xs shrink-0 border"
                               onClick={() => void toggleIncoming(entry.path, entry.behind)}
-                              title={isExpanded ? '收起详情' : '查看待拉/待推/工作区/最近提交详情'}
+                              title={isExpanded ? '收起详情' : '查看待拉/待推/工作区/提交历史详情'}
                             >
                               {isExpanded ? <ChevronUp className="h-3.5 w-3.5 mr-1" /> : <ChevronDown className="h-3.5 w-3.5 mr-1" />}
                               {isExpanded ? '收起' : '详情'}
@@ -824,12 +1237,12 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                             </Button>
                             <Button
                               size="sm"
-                              variant="outline"
-                              className="h-7 px-2.5 text-xs"
+                              variant="ghost"
+                              className="h-7 w-7 p-0 shrink-0"
                               onClick={() => void openFolder(entry.path)}
+                              title="打开文件夹"
                             >
-                              <ExternalLink className="h-3.5 w-3.5 mr-1 hidden sm:inline" />
-                              文件夹
+                              <ExternalLink className="h-3.5 w-3.5" />
                             </Button>
                           </div>
                         </td>
@@ -866,15 +1279,35 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                                   onClick={() => handleDetailTab('recent', entry)}
                                   className={`px-2.5 py-1 rounded-md text-xs flex items-center gap-1.5 border ${activeDetailTab === 'recent' ? 'bg-background shadow-sm border-border text-foreground' : 'border-transparent hover:bg-muted text-muted-foreground'}`}
                                 >
-                                  <Clock className="h-3 w-3" /> 最近提交
+                                  <Clock className="h-3 w-3" /> 提交历史
                                 </button>
-                                <div className="ml-auto flex gap-1">
+                                <div className="ml-auto flex gap-1 items-center">
                                   {activeDetailTab === 'incoming' && entry.behind > 0 && (
                                     <Button size="sm" className="h-6 text-xs px-2" disabled={pullingPath === entry.path} onClick={() => void handlePull(entry.path)}>
                                       {pullingPath === entry.path ? <RefreshCw className="h-3 w-3 animate-spin mr-1" /> : <Download className="h-3 w-3 mr-1" />}
                                       拉取
                                     </Button>
                                   )}
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-6 w-7 p-0"
+                                    onClick={() => {
+                                      if (activeDetailTab === 'incoming') {
+                                        void refreshIncoming(entry.path, entry.behind)
+                                      } else if (activeDetailTab === 'outgoing') {
+                                        void refreshOutgoing(entry.path)
+                                      } else if (activeDetailTab === 'workspace') {
+                                        void refreshWorkspace(entry.path)
+                                      } else if (activeDetailTab === 'recent') {
+                                        void refreshRecent(entry.path)
+                                      }
+                                    }}
+                                    title="刷新当前标签"
+                                    disabled={incomingLoading === entry.path || outgoingLoading === entry.path || workspaceLoading === entry.path || recentLoading === entry.path}
+                                  >
+                                    <RefreshCw className={`h-3 w-3 ${incomingLoading === entry.path || outgoingLoading === entry.path || workspaceLoading === entry.path || recentLoading === entry.path ? 'animate-spin' : ''}`} />
+                                  </Button>
                                   <Button variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={() => setExpandedPath(null)}>
                                     收起
                                   </Button>
@@ -946,49 +1379,92 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                                       <RefreshCw className="h-4 w-4 animate-spin" />
                                       加载工作区中…
                                     </div>
-                                  ) : (() => {
-                                    const ws = workspaceCache[entry.path]
-                                    if (!ws) return <div className="px-3 py-6 text-xs text-muted-foreground text-center">点击“工作区”已触发加载</div>
-                                    const hasAny = ws.staged_files.length + ws.unstaged_files.length + ws.untracked_files.length + (ws.conflicted_files?.length ?? 0) > 0
-                                    if (!hasAny) return <div className="px-3 py-8 text-xs text-muted-foreground text-center flex flex-col items-center gap-1"><CheckCircle2 className="h-5 w-5 text-emerald-500" />工作区干净</div>
-                                    return (
-                                      <div className="grid md:grid-cols-3 gap-3 p-3 max-h-64 overflow-auto">
-                                        {[
-                                          { title: `暂存 ${ws.staged_files.length}`, files: ws.staged_files, color: 'emerald' },
-                                          { title: `未暂存 ${ws.unstaged_files.length}`, files: ws.unstaged_files, color: 'amber' },
-                                          { title: `未跟踪 ${ws.untracked_files.length}`, files: ws.untracked_files.map((p: string) => ({ path: p, status: 'untracked' })) as any, color: 'muted' },
-                                        ].map((group) => (
-                                          <div key={group.title} className="rounded border bg-muted/20">
-                                            <div className="px-2 py-1 border-b text-xs font-medium bg-muted/30">{group.title}</div>
-                                            <div className="divide-y divide-border/40 max-h-40 overflow-auto">
-                                              {group.files.length === 0 ? (
-                                                <div className="px-2 py-3 text-xs text-muted-foreground text-center">无</div>
-                                              ) : (
-                                                group.files.slice(0, 50).map((f: any) => (
-                                                  <div key={f.path} className="px-2 py-1 text-xs font-mono truncate" title={f.path}>
-                                                    {f.path}
-                                                  </div>
-                                                ))
-                                              )}
-                                            </div>
+                                  ) : !workspaceCache[entry.path] ? (
+                                    <div className="px-3 py-6 text-xs text-muted-foreground text-center">点击“工作区”已触发加载</div>
+                                  ) : workspaceCache[entry.path]!.staged_files.length + workspaceCache[entry.path]!.unstaged_files.length + workspaceCache[entry.path]!.untracked_files.length + (workspaceCache[entry.path]!.conflicted_files?.length ?? 0) === 0 ? (
+                                    <div className="px-3 py-8 text-xs text-muted-foreground text-center flex flex-col items-center gap-1">
+                                      <CheckCircle2 className="h-5 w-5 text-emerald-500" />工作区干净
+                                    </div>
+                                  ) : (
+                                    <div className="grid md:grid-cols-3 gap-3 p-3 max-h-64 overflow-auto">
+                                      {[
+                                        { title: `未暂存 ${workspaceCache[entry.path]!.unstaged_files.length}`, files: workspaceCache[entry.path]!.unstaged_files, kind: 'unstaged' as const },
+                                        { title: `未跟踪 ${workspaceCache[entry.path]!.untracked_files.length}`, files: workspaceCache[entry.path]!.untracked_files.map((p: string) => ({ path: p, status: 'untracked' })) as any, kind: 'untracked' as const },
+                                        { title: `暂存 ${workspaceCache[entry.path]!.staged_files.length}`, files: workspaceCache[entry.path]!.staged_files, kind: 'staged' as const },
+                                      ].map((group) => (
+                                        <div key={group.title} className="rounded border bg-muted/20 overflow-hidden">
+                                          <div className="px-2 py-1.5 border-b text-xs font-medium bg-muted/30 flex items-center justify-between">
+                                            <span>{group.title}</span>
+                                            <span className="text-[10px] text-muted-foreground">点击查看</span>
                                           </div>
-                                        ))}
-                                      </div>
-                                    )
-                                  })())}
+                                          <div className="divide-y divide-border/20 max-h-48 overflow-auto">
+                                            {group.files.length === 0 ? (
+                                              <div className="px-2 py-6 text-xs text-muted-foreground text-center">无</div>
+                                            ) : (
+                                              group.files.slice(0, 50).map((f: any) => (
+                                                <button
+                                                  key={f.path}
+                                                  onClick={() => void handleWsFileClick(entry.path, f.path, group.kind)}
+                                                  className="w-full text-left px-2 py-1.5 text-xs font-mono truncate hover:bg-muted focus:outline-none focus-visible:ring-1 focus-visible:ring-primary/30 flex items-center gap-1.5 group/file border-l-2 border-l-transparent hover:border-l-primary"
+                                                  title={`点击查看改动 · ${f.path}`}
+                                                >
+                                                  <Eye className="h-3 w-3 opacity-40 group-hover/file:opacity-100 text-primary shrink-0" />
+                                                  <span className="truncate flex-1">{f.path}</span>
+                                                </button>
+                                              ))
+                                            )}
+                                            {group.files.length > 50 && <div className="px-2 py-1 text-[10px] text-muted-foreground text-center">仅显示前 50 个</div>}
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ))}
 
                                 {activeDetailTab === 'recent' &&
                                   (recentLoading === entry.path ? (
                                     <div className="flex items-center justify-center gap-2 px-3 py-8 text-xs text-muted-foreground">
                                       <RefreshCw className="h-4 w-4 animate-spin" />
-                                      加载最近提交中…
+                                      加载提交历史中…
+                                    </div>
+                                  ) : recentError[entry.path] ? (
+                                    <div className="px-3 py-6 text-xs text-destructive text-center flex flex-col items-center gap-2">
+                                      <span className="break-all">{recentError[entry.path]}</span>
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-7 text-xs"
+                                        onClick={() => {
+                                          setRecentCache((m) => {
+                                            const c = { ...m }
+                                            delete c[entry.path]
+                                            return c
+                                          })
+                                          setRecentError((m) => {
+                                            const c = { ...m }
+                                            delete c[entry.path]
+                                            return c
+                                          })
+                                          void fetchRecentIfNeeded(entry.path)
+                                        }}
+                                      >
+                                        重试
+                                      </Button>
                                     </div>
                                   ) : !recentCache[entry.path] || recentCache[entry.path].length === 0 ? (
-                                    <div className="px-3 py-8 text-xs text-muted-foreground text-center">暂无提交或加载失败</div>
+                                    <div className="px-3 py-8 text-xs text-muted-foreground text-center">暂无提交</div>
                                   ) : (
                                     <div className="divide-y divide-border/60 max-h-64 overflow-auto">
                                       {recentCache[entry.path].map((c) => (
-                                        <div key={c.id} className="flex gap-3 px-3 py-2 hover:bg-muted/20 text-xs items-center">
+                                        <div
+                                          key={c.id}
+                                          className="flex gap-3 px-3 py-2 hover:bg-muted/20 text-xs items-center"
+                                          title="右键 → 回退/快速回退（仅本地，不影响远端）"
+                                          onContextMenu={(e) => {
+                                            e.preventDefault()
+                                            e.stopPropagation()
+                                            setRecentContextMenu({ x: e.clientX, y: e.clientY, repoPath: entry.path, commit: c })
+                                          }}
+                                        >
                                           <span className="font-mono text-[11px] bg-muted px-1.5 py-0.5 rounded border shrink-0">{c.short_id}</span>
                                           <span className="flex-1 min-w-0 truncate cursor-pointer hover:text-foreground" title={c.message} onClick={() => void handleViewCommit(entry.path, c)}>
                                             {c.message}
@@ -1026,8 +1502,8 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
       </div>
 
       <Dialog open={!!detailCommit} onOpenChange={(o) => !o && setDetailCommit(null)}>
-        <DialogContent className="max-w-5xl h-[80vh] flex flex-col p-0 gap-0 overflow-hidden">
-          <DialogHeader className="px-4 py-3 border-b shrink-0">
+        <DialogContent className="max-w-5xl h-[80vh] flex flex-col p-0 gap-0 overflow-hidden border-border/40 dark:border-white/[0.06]">
+          <DialogHeader className="px-4 py-3 border-b border-border/40 shrink-0 dark:border-white/[0.06]">
             <DialogTitle className="flex items-center gap-2 text-sm">
               <FileText className="h-4 w-4 text-primary" />
               <span className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded border">{detailCommit?.commit.short_id}</span>
@@ -1043,12 +1519,19 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
             </div>
           </DialogHeader>
           <div className="flex flex-1 min-h-0">
-            <div className="w-64 border-r flex flex-col min-h-0 bg-muted/20">
-              <div className="px-3 py-2 border-b text-xs font-medium bg-muted/30 flex items-center justify-between">
+            <div className="w-64 border-r border-border/40 flex flex-col min-h-0 bg-muted/20 dark:border-white/[0.06]">
+              <div className="px-3 py-2 border-b border-border/40 text-xs font-medium bg-muted/30 flex items-center justify-between dark:border-white/[0.06]">
                 <span>变更文件 ({detailFiles.length})</span>
                 {detailFilesLoading && <RefreshCw className="h-3 w-3 animate-spin" />}
               </div>
-              <div className="flex-1 overflow-auto divide-y divide-border/40">
+              <div
+                ref={detailFilesListRef}
+                tabIndex={0}
+                role="listbox"
+                aria-label="变更文件列表，↑/↓ 移动，Home/End 跳转"
+                onKeyDown={handleDetailFilesKeyDown}
+                className="flex-1 overflow-auto divide-y divide-border/10 outline-none"
+              >
                 {detailFilesLoading ? (
                   <div className="p-4 text-xs text-muted-foreground text-center">加载中…</div>
                 ) : detailFiles.length === 0 ? (
@@ -1057,9 +1540,17 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                   detailFiles.map((f) => (
                     <button
                       key={f.path}
+                      data-file-path={f.path}
+                      role="option"
+                      aria-selected={detailSelectedFile === f.path}
                       onClick={() => void handleDetailFileSelect(f.path)}
+                      onContextMenu={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        setDetailFileMenu({ x: e.clientX, y: e.clientY, filePath: f.path })
+                      }}
                       className={`w-full text-left px-3 py-2 text-xs font-mono truncate hover:bg-muted flex items-center gap-2 ${detailSelectedFile === f.path ? 'bg-muted border-l-2 border-l-primary' : 'border-l-2 border-l-transparent'}`}
-                      title={`${f.path} · ${f.status}`}
+                      title={`${f.path} · ${f.status} (右键更多)`}
                     >
                       <span className={`h-2 w-2 rounded-full shrink-0 ${f.status === 'added' ? 'bg-emerald-500' : f.status === 'deleted' ? 'bg-red-500' : f.status === 'renamed' ? 'bg-blue-500' : 'bg-amber-500'}`} />
                       <span className="truncate flex-1">{f.path}</span>
@@ -1070,7 +1561,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
               </div>
             </div>
             <div className="flex-1 min-h-0 flex flex-col bg-background min-w-0">
-              <div className="px-3 py-1.5 border-b bg-muted/30 text-xs font-mono truncate flex items-center gap-2 shrink-0">
+              <div className="px-3 py-1.5 border-b border-border/40 bg-muted/30 text-xs font-mono truncate flex items-center gap-2 shrink-0 dark:border-white/[0.06]">
                 <FileText className="h-3 w-3 shrink-0" />
                 <span className="truncate flex-1">{detailSelectedFile || '请选择文件'}</span>
                 {detailDiff && (
@@ -1095,6 +1586,132 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
           </div>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={!!wsDetail} onOpenChange={(o) => !o && setWsDetail(null)}>
+        <DialogContent className="max-w-5xl h-[75vh] flex flex-col p-0 gap-0 overflow-hidden border-border/40 dark:border-white/[0.06]">
+          <DialogHeader className="px-4 py-3 border-b border-border/40 shrink-0 dark:border-white/[0.06]">
+            <DialogTitle className="flex items-center gap-2 text-sm">
+              <FileText className="h-4 w-4 text-primary" />
+              <span className="font-mono text-xs truncate" title={wsDetail?.filePath}>
+                {wsDetail?.filePath}
+              </span>
+              <Badge
+                variant="outline"
+                className={`text-[10px] capitalize border ${wsDetail?.kind === 'staged' ? 'bg-emerald-500/10 text-emerald-700 border-emerald-500/20 dark:text-emerald-400 dark:border-emerald-500/20' : wsDetail?.kind === 'unstaged' ? 'bg-amber-500/10 text-amber-700 border-amber-500/20 dark:text-amber-400 dark:border-amber-500/20' : 'bg-sky-500/10 text-sky-700 border-sky-500/20 dark:text-sky-400 dark:border-sky-500/20'}`}
+              >
+                {wsDetail?.kind === 'staged' ? '已暂存' : wsDetail?.kind === 'unstaged' ? '未暂存' : '未跟踪'}
+              </Badge>
+            </DialogTitle>
+            <div className="text-xs text-muted-foreground flex items-center gap-1.5 truncate" title={wsDetail?.repoPath}>
+              <Folder className="h-3 w-3 shrink-0" />
+              <span className="truncate">{wsDetail?.repoPath ? shortenPathMiddle(wsDetail.repoPath, 56) : ''}</span>
+            </div>
+          </DialogHeader>
+          <div className="flex-1 min-h-0 overflow-hidden bg-background flex flex-col">
+            <div className="px-3 py-1.5 border-b border-border/40 bg-muted/20 text-xs flex items-center justify-between dark:border-white/[0.06]">
+              <span className="font-mono truncate flex items-center gap-1.5">
+                <FileText className="h-3 w-3" />
+                {wsDetail?.filePath}
+              </span>
+              {wsDiff && (
+                <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => copyText(wsDiff)}>
+                  <Copy className="h-3 w-3 mr-1" /> 复制
+                </Button>
+              )}
+            </div>
+            <div className="flex-1 min-h-0 overflow-hidden">
+              {wsDiffLoading ? (
+                <div className="flex items-center justify-center gap-2 p-8 text-xs text-muted-foreground">
+                  <RefreshCw className="h-4 w-4 animate-spin" /> 加载中…
+                </div>
+              ) : wsDiff ? (
+                wsDetail?.kind === 'untracked' ? (
+                  <Editor
+                    height="100%"
+                    language={getMonacoLanguageFromPath(wsDetail?.filePath ?? '')}
+                    theme={isDark ? 'vs-dark' : 'vs'}
+                    value={wsDiff}
+                    options={{ readOnly: true, minimap: minimapOptions, scrollBeyondLastLine: false, fontSize: 13, wordWrap: 'on', automaticLayout: true }}
+                  />
+                ) : (
+                  <MonacoDiffEditor diff={wsDiff} filePath={wsDetail?.filePath} />
+                )
+              ) : (
+                <div className="p-8 text-center text-xs text-muted-foreground">无内容</div>
+              )}
+            </div>
+          </div>
+          </DialogContent>
+      </Dialog>
+
+      {recentContextMenu && (
+        <div
+          className="fixed z-[200] min-w-[14rem] rounded-lg border border-border/60 bg-popover p-1 text-popover-foreground shadow-lg"
+          style={{ left: Math.min(Math.max(6, recentContextMenu.x), window.innerWidth - 240), top: Math.min(Math.max(6, recentContextMenu.y), window.innerHeight - 120) }}
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <button
+            className="flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm hover:bg-accent"
+            onClick={() => { const m=recentContextMenu; setRecentContextMenu(null); if(m) void handleRecentResetHard(m.repoPath, m.commit) }}
+          >
+            <RefreshCw className="h-3.5 w-3.5" /> 快速回退（--hard，测试用）
+          </button>
+          <div className="px-2.5 py-1 text-[11px] text-muted-foreground">仅本地，不影响远端 · 之后可拉取恢复</div>
+        </div>
+      )}
+
+      {detailFileMenu && (
+        <div
+          className="fixed z-[200] min-w-[14rem] rounded-lg border border-border/60 bg-popover p-1 text-popover-foreground shadow-lg"
+          style={{ left: Math.min(Math.max(6, detailFileMenu.x), window.innerWidth - 220), top: Math.min(Math.max(6, detailFileMenu.y), window.innerHeight - 140) }}
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <div className="max-w-[20rem] truncate px-2.5 py-1 text-[11px] text-muted-foreground" title={detailFileMenu.filePath}>{detailFileMenu.filePath}</div>
+          <button
+            className="flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm hover:bg-accent"
+            onClick={() => {
+              const m=detailFileMenu; if(!m || !detailCommit) return;
+              const isWin = detailCommit.repoPath.includes('\\')
+              const sep = isWin ? '\\' : '/'
+              const base = detailCommit.repoPath.replace(/[\/\\]+$/, '')
+              const rel = m.filePath.replace(/^[\/\\]+/, '').replace(/\//g, sep).replace(/\\/g, sep)
+              const full = base + sep + rel
+              setDetailFileMenu(null); void copyText(full)
+            }}
+          >
+            <Copy className="h-3.5 w-3.5" /> 复制全路径
+          </button>
+          <button
+            className="flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm hover:bg-accent"
+            onClick={() => { const p=detailFileMenu.filePath; setDetailFileMenu(null); void copyText(p) }}
+          >
+            <Copy className="h-3.5 w-3.5" /> 复制相对路径
+          </button>
+          <button
+            className="flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm hover:bg-accent"
+            onClick={() => { const p=detailFileMenu.filePath.split('/').pop() || detailFileMenu.filePath.split('\\').pop() || detailFileMenu.filePath; setDetailFileMenu(null); void copyText(p) }}
+          >
+            <Copy className="h-3.5 w-3.5" /> 复制文件名
+          </button>
+          <button
+            className="flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm hover:bg-accent"
+            onClick={() => {
+              const m=detailFileMenu; setDetailFileMenu(null); if(!m || !detailCommit) return;
+              // 保留原分隔符，拼接为文件全路径，让后端 explorer /select 高亮文件（若文件不存在则打开父目录）
+              const isWin = detailCommit.repoPath.includes('\\')
+              const sep = isWin ? '\\' : '/'
+              const base = detailCommit.repoPath.replace(/[\/\\]+$/, '')
+              const rel = m.filePath.replace(/^[\/\\]+/, '').replace(/\//g, sep).replace(/\\/g, sep)
+              const full = base + sep + rel
+              void openFolder(full)
+            }}
+          >
+            <ExternalLink className="h-3.5 w-3.5" /> 在文件管理器打开并选中
+          </button>
+        </div>
+      )}
     </div>
   )
 }
