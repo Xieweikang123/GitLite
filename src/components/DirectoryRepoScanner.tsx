@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useMemo, useSyncExternalStore } from 'react'
+import React, { useState, useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { open } from '@tauri-apps/api/dialog'
 import { Button } from './ui/button'
@@ -183,8 +183,11 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
     })()
   }, [loadRecentScanned, restored])
 
-  // 恢复上次的展开状态与 tab 记忆
+  // 恢复上次的展开状态与 tab 记忆（StrictMode 双挂载只执行一次，避免空值覆盖）
+  const restoredRef = useRef(false)
   useEffect(() => {
+    if (restoredRef.current) return
+    restoredRef.current = true
     try {
       const raw = localStorage.getItem(DETAIL_TAB_CACHE_KEY)
       if (raw) {
@@ -203,12 +206,14 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
   }, [])
 
   useEffect(() => {
+    if (!restoredRef.current) return
     try {
       localStorage.setItem(DETAIL_TAB_CACHE_KEY, JSON.stringify(detailTabCache))
     } catch {}
   }, [detailTabCache])
 
   useEffect(() => {
+    if (!restoredRef.current) return
     try {
       if (expandedPath) {
         localStorage.setItem(EXPANDED_STATE_KEY, JSON.stringify({ path: expandedPath, tab: activeDetailTab }))
@@ -503,6 +508,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
     async (repoPath: string, behind: number) => {
       const isSame = expandedPath === repoPath
       if (isSame) {
+        setDetailTabCache((m) => ({ ...m, [repoPath]: activeDetailTab }))
         setExpandedPath(null)
         return
       }
@@ -531,7 +537,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
         void fetchRecentIfNeeded(repoPath)
       }
     },
-    [expandedPath, incomingCache, outgoingCache, workspaceCache, recentCache, detailTabCache, fetchOutgoingIfNeeded, fetchWorkspaceIfNeeded, fetchRecentIfNeeded]
+    [expandedPath, activeDetailTab, incomingCache, outgoingCache, workspaceCache, recentCache, detailTabCache, fetchOutgoingIfNeeded, fetchWorkspaceIfNeeded, fetchRecentIfNeeded]
   )
 
   const handleDetailTab = (tab: 'incoming' | 'outgoing' | 'workspace' | 'recent', entry: DirectoryRepoEntry) => {
