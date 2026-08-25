@@ -36,6 +36,7 @@ const LANGUAGE_MAP: Record<string, string> = {
   xml: "xml",
   html: "html",
   htm: "html",
+  vue: "html",
   css: "css",
   scss: "scss",
   sass: "scss",

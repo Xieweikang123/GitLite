@@ -180,7 +180,7 @@ export function FileList({ files, selectedFile, onFileSelect }: FileListProps) {
                     </div>
                     {dir ? (
                       <p
-                        className="mt-0.5 truncate text-[11px] leading-tight text-muted-foreground"
+                        className="mt-1 block min-h-[14px] truncate text-[11px] leading-snug text-muted-foreground"
                         title={file.path}
                       >
                         {dir}

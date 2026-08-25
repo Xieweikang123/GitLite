@@ -801,21 +801,23 @@ function App() {
   const [pendingJumpCommitId, setPendingJumpCommitId] = useState<string | null>(null)
 
   const [activeTab, setActiveTab] = useState<
-    'workspace' | 'commits' | 'files' | 'stats'
-  >('workspace')
-  const SHOW_MULTI_REPO_KEY = 'gitlite:showMultiRepoPage'
-  const [showMultiRepoPage, setShowMultiRepoPage] = useState(() => {
+    'workspace' | 'commits' | 'files' | 'stats' | 'multi'
+  >(() => {
     try {
-      return localStorage.getItem(SHOW_MULTI_REPO_KEY) === '1'
+      const saved = localStorage.getItem('gitlite:activeTab') as 'workspace' | 'commits' | 'files' | 'stats' | 'multi' | null
+      if (saved === 'workspace' || saved === 'commits' || saved === 'files' || saved === 'stats' || saved === 'multi') return saved
+      // 兼容旧版 showMultiRepoPage
+      if (localStorage.getItem('gitlite:showMultiRepoPage') === '1') return 'multi'
+      return 'workspace'
     } catch {
-      return false
+      return 'workspace'
     }
   })
   useEffect(() => {
     try {
-      localStorage.setItem(SHOW_MULTI_REPO_KEY, showMultiRepoPage ? '1' : '0')
+      localStorage.setItem('gitlite:activeTab', activeTab)
     } catch {}
-  }, [showMultiRepoPage])
+  }, [activeTab])
   const [statsReportTab, setStatsReportTab] = useState<
     | 'authors'
     | 'timeline'
@@ -956,114 +958,119 @@ function App() {
         onOpenProxyConfig={() => setProxyConfigOpen(true)}
         onOpenAiConfig={() => setAiConfigOpen(true)}
         onOpenReliabilityPanel={() => setReliabilityOpen(true)}
-        onOpenMultiRepoPage={() => setShowMultiRepoPage(true)}
+        onOpenMultiRepoPage={() => setActiveTab('multi')}
       />
-      
-      {showMultiRepoPage ? (
-        <div className="flex-1 flex flex-col min-h-0">
-          <div className="shrink-0 flex items-center gap-3 border-b bg-muted/20 px-4 py-2.5">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowMultiRepoPage(false)}
-              className="h-7 gap-1.5 px-2.5"
-            >
-              ← 返回单仓库
-            </Button>
-            <div className="h-4 w-px bg-border" />
-            <div className="flex items-center gap-2">
-              <div className="rounded-md bg-primary/10 p-1.5">
-                <span className="text-primary text-xs font-bold">多</span>
-              </div>
-              <div className="leading-tight">
-                <div className="text-sm font-semibold">多仓库</div>
-                <div className="text-[11px] text-muted-foreground hidden sm:block">独立页面 · 扫描父目录并集中查看子仓库分支与工作区</div>
-              </div>
-            </div>
-          </div>
-          <div className="flex-1 min-h-0 overflow-auto px-4 py-4 bg-muted/5">
-            <DirectoryRepoScanner
-              onOpenRepo={(p) => {
-                setShowMultiRepoPage(false)
-                void handleRecentRepoSelect(p)
-              }}
-            />
-          </div>
-        </div>
-      ) : (
-        <>
-          <TopToolbar
-            onBranchSelect={handleBranchSelect}
-            onCreateBranch={handleCreateBranch}
-            onDeleteBranch={handleDeleteBranch}
-            onRenameBranch={handleRenameBranch}
-            onMergeBranch={handleMergeBranch}
-            onOpenRemoteRepository={handleOpenRemoteRepository}
-            onOpenRemoteManage={() => setRemoteManageOpen(true)}
-            onPullChanges={handlePullChanges}
-            loading={loading}
-            repoInfo={repoInfo}
-            isDark={isDark}
-            onToggleDarkMode={toggleDarkMode}
-          />
 
-          <div className="flex-1 flex flex-col min-h-0">
+      {activeTab !== 'multi' && (
+        <TopToolbar
+          onBranchSelect={handleBranchSelect}
+          onCreateBranch={handleCreateBranch}
+          onDeleteBranch={handleDeleteBranch}
+          onRenameBranch={handleRenameBranch}
+          onMergeBranch={handleMergeBranch}
+          onOpenRemoteRepository={handleOpenRemoteRepository}
+          onOpenRemoteManage={() => setRemoteManageOpen(true)}
+          onPullChanges={handlePullChanges}
+          loading={loading}
+          repoInfo={repoInfo}
+          isDark={isDark}
+          onToggleDarkMode={toggleDarkMode}
+        />
+      )}
+
+      <div className="flex-1 flex flex-col min-h-0">
         {error && (
           <div className="mb-6 p-4 bg-destructive/10 border border-destructive/20 rounded-lg">
             <p className="text-destructive">{error}</p>
           </div>
         )}
 
-        {/* 顶部 Tab 切换 */}
-        <div className="flex-shrink-0 px-4 pt-2 border-b border-border flex items-center gap-1">
-          <button
-            type="button"
-            className={`px-4 py-2.5 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
-              activeTab === 'workspace'
-                ? 'border-primary text-primary bg-background'
-                : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'
-            }`}
-            onClick={() => setActiveTab('workspace')}
-          >
-            工作区
-          </button>
-          <button
-            type="button"
-            className={`px-4 py-2.5 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
-              activeTab === 'commits'
-                ? 'border-primary text-primary bg-background'
-                : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'
-            }`}
-            onClick={() => setActiveTab('commits')}
-          >
-            提交
-          </button>
-          <button
-            type="button"
-            className={`px-4 py-2.5 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
-              activeTab === 'files'
-                ? 'border-primary text-primary bg-background'
-                : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'
-            }`}
-            onClick={() => setActiveTab('files')}
-          >
-            文件树
-          </button>
-          <button
-            type="button"
-            className={`px-4 py-2.5 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
-              activeTab === 'stats'
-                ? 'border-primary text-primary bg-background'
-                : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'
-            }`}
-            onClick={() => setActiveTab('stats')}
-          >
-            统计
-          </button>
+        {/* 全局模式切换 - 与标题栏轻量级 Git GUI 客户端同级，单/多仓库为顶层 */}
+        <div className="flex shrink-0 items-center justify-between border-b border-border/40 bg-muted/20 px-4 py-1.5">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="hidden sm:inline">轻量级 Git GUI 客户端</span>
+            <span className="sm:hidden">GitLite</span>
+          </div>
+          <div className="inline-flex rounded-full border bg-background p-0.5 shadow-sm">
+            <button
+              type="button"
+              onClick={() => setActiveTab((prev) => (prev === 'multi' ? 'workspace' : prev))}
+              className={`rounded-full px-4 py-1 text-xs font-medium transition-colors ${activeTab !== 'multi' ? 'bg-primary text-primary-foreground shadow' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+              单仓库
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('multi')}
+              className={`rounded-full px-4 py-1 text-xs font-medium transition-colors ${activeTab === 'multi' ? 'bg-primary text-primary-foreground shadow' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+              多仓库
+            </button>
+          </div>
+          <div className="hidden sm:block text-[11px] text-muted-foreground">{activeTab === 'multi' ? '聚合扫描' : repoInfo ? repoInfo.current_branch : '未打开仓库'}</div>
         </div>
 
-        {/* Tab 内容 */}
-        {activeTab === 'workspace' ? (
+        {/* 单仓库子 Tab - 仅单仓库模式可见 */}
+        {activeTab !== 'multi' && (
+          <div className="flex-shrink-0 px-4 pt-2 border-b border-border flex items-center gap-1">
+            <button
+              type="button"
+              className={`px-4 py-2.5 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
+                activeTab === 'workspace'
+                  ? 'border-primary text-primary bg-background'
+                  : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'
+              }`}
+              onClick={() => setActiveTab('workspace')}
+            >
+              工作区
+            </button>
+            <button
+              type="button"
+              className={`px-4 py-2.5 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
+                activeTab === 'commits'
+                  ? 'border-primary text-primary bg-background'
+                  : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'
+              }`}
+              onClick={() => setActiveTab('commits')}
+            >
+              提交
+            </button>
+            <button
+              type="button"
+              className={`px-4 py-2.5 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
+                activeTab === 'files'
+                  ? 'border-primary text-primary bg-background'
+                  : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'
+              }`}
+              onClick={() => setActiveTab('files')}
+            >
+              文件树
+            </button>
+            <button
+              type="button"
+              className={`px-4 py-2.5 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
+                activeTab === 'stats'
+                  ? 'border-primary text-primary bg-background'
+                  : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'
+              }`}
+              onClick={() => setActiveTab('stats')}
+            >
+              统计
+            </button>
+          </div>
+        )}
+
+        {/* Tab 内容 - 5 项平级 */}
+        {activeTab === 'multi' ? (
+          <div className="flex min-h-0 flex-1 flex-col px-4 py-4 bg-muted/5 overflow-auto">
+            <DirectoryRepoScanner
+              onOpenRepo={(p) => {
+                void handleRecentRepoSelect(p)
+                setActiveTab('workspace')
+              }}
+            />
+          </div>
+        ) : activeTab === 'workspace' ? (
           <div className="flex-1 flex flex-col min-h-0 px-4">
             <OperationsPanel
               repoInfo={repoInfo}
@@ -1170,8 +1177,6 @@ function App() {
           </div>
         )}
       </div>
-        </>
-      )}
       
       {/* 日志弹窗 */}
       <LogModal
