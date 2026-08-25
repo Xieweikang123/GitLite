@@ -43,3 +43,6 @@ Thumbs.db
 .Trashes
 ehthumbs.db
 Desktop.ini
+
+# Local test repos
+test-repo/
