@@ -634,7 +634,7 @@ fn recent_changed_files_for_scope(
     Ok(rows)
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BranchInfo {
     pub name: String,
     pub is_current: bool,
@@ -1775,6 +1775,9 @@ pub struct DirectoryRepoEntry {
     pub unstaged_count: usize,
     pub untracked_count: usize,
     pub conflicted_count: usize,
+    /// 本地分支列表（多仓库页切换分支用）
+    #[serde(default)]
+    pub branches: Vec<BranchInfo>,
 }
 
 /// 与 Git 索引一致：正斜杠、无 `./` 前缀，避免 Windows 反斜杠导致 reset / add 未命中条目。
@@ -3180,6 +3183,27 @@ async fn open_repository(
     Ok(repo_info)
 }
 
+fn collect_local_branch_infos(repo: &Repository, current_branch: &str) -> Vec<BranchInfo> {
+    let mut branches = Vec::new();
+    let Ok(iter) = repo.branches(Some(git2::BranchType::Local)) else {
+        return branches;
+    };
+    for item in iter {
+        let Ok((branch, _)) = item else { continue };
+        let name = match branch.name() {
+            Ok(Some(n)) => n.to_string(),
+            _ => continue,
+        };
+        branches.push(BranchInfo {
+            is_current: name == current_branch,
+            name,
+            is_remote: false,
+        });
+    }
+    branches.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    branches
+}
+
 /// 尝试为给定路径收集 DirectoryRepoEntry，成功则返回 Some，路径非仓库则返回 None
 fn try_collect_directory_entry(path: &Path) -> Option<DirectoryRepoEntry> {
     let repo = Repository::open(path).ok()?;
@@ -3213,6 +3237,7 @@ fn try_collect_directory_entry(path: &Path) -> Option<DirectoryRepoEntry> {
         Err(_) => (0, 0, 0, 0),
     };
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+    let branches = collect_local_branch_infos(&repo, &current_branch);
     Some(DirectoryRepoEntry {
         path: path.to_string_lossy().to_string(),
         name: if name.is_empty() { path.to_string_lossy().to_string() } else { name },
@@ -3227,7 +3252,16 @@ fn try_collect_directory_entry(path: &Path) -> Option<DirectoryRepoEntry> {
         unstaged_count,
         untracked_count,
         conflicted_count,
+        branches,
     })
+}
+
+/// 刷新单个扫描条目（切分支 / 拉取后不必整目录重扫）
+#[tauri::command]
+async fn get_directory_repo_entry(repo_path: String) -> Result<DirectoryRepoEntry, String> {
+    let path = PathBuf::from(repo_path.trim());
+    try_collect_directory_entry(&path)
+        .ok_or_else(|| format!("无法读取仓库状态: {}", path.display()))
 }
 
 /// 扫描指定目录下的 git 仓库（直接子目录默认，recursive 时可递归）并返回各自状态
@@ -7538,6 +7572,7 @@ fn main() {
             set_branch_upstream,
             open_repository,
             scan_directory_repos,
+            get_directory_repo_entry,
             get_repo_incoming_commits,
             get_repo_outgoing_commits,
             get_commits_paginated,

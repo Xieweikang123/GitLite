@@ -10,13 +10,13 @@ import { MonacoDiffEditor } from './MonacoDiffEditor'
 import Editor from '@monaco-editor/react'
 import { getMonacoLanguageFromPath } from '@/utils/monacoLanguage'
 import { DirectoryRepoEntry, CommitInfo, WorkspaceStatus } from '../types/git'
+import { MultiRepoBranchSelect } from './MultiRepoBranchSelect'
 import { useMinimapConfig } from '@/utils/minimapConfig'
 import { getClientCalendarOffsetEastMinutes } from '../utils/clientCalendarOffset'
 import {
   FolderOpen,
   RefreshCw,
   Search,
-  GitBranch,
   Folder,
   AlertCircle,
   Clock,
@@ -90,6 +90,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
   const [restored, setRestored] = useState(false)
   const [filter, setFilter] = useState('')
   const [pullingPath, setPullingPath] = useState<string | null>(null)
+  const [checkoutPath, setCheckoutPath] = useState<string | null>(null)
   const [batchPulling, setBatchPulling] = useState(false)
   const [fetchingAll, setFetchingAll] = useState(false)
   const [fetchingPath, setFetchingPath] = useState<string | null>(null)
@@ -260,6 +261,60 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
       }
     },
     [dirPath, recursive, loadRecentScanned]
+  )
+
+  const patchEntry = useCallback((updated: DirectoryRepoEntry) => {
+    setEntries((prev) => {
+      if (!prev) return prev
+      return prev.map((e) => (e.path === updated.path ? updated : e))
+    })
+  }, [])
+
+  const refreshOneEntry = useCallback(
+    async (repoPath: string) => {
+      const updated: DirectoryRepoEntry = await invoke('get_directory_repo_entry', { repoPath })
+      patchEntry(updated)
+      setIncomingCache((m) => {
+        const c = { ...m }
+        delete c[repoPath]
+        return c
+      })
+      setOutgoingCache((m) => {
+        const c = { ...m }
+        delete c[repoPath]
+        return c
+      })
+      setRecentCache((m) => {
+        const c = { ...m }
+        delete c[repoPath]
+        return c
+      })
+      setWorkspaceCache((m) => {
+        const c = { ...m }
+        delete c[repoPath]
+        return c
+      })
+      return updated
+    },
+    [patchEntry]
+  )
+
+  const handleCheckoutBranch = useCallback(
+    async (repoPath: string, branchName: string) => {
+      setCheckoutPath(repoPath)
+      setError(null)
+      try {
+        await invoke('checkout_branch', { repoPath, branchName })
+        await refreshOneEntry(repoPath)
+      } catch (err) {
+        setError(
+          formatTauriInvokeError(err, `切换分支失败 ${shortenPathMiddle(repoPath, 40)}`)
+        )
+      } finally {
+        setCheckoutPath(null)
+      }
+    },
+    [refreshOneEntry]
   )
 
   const handleRefresh = useCallback(() => {
@@ -1000,7 +1055,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
               </div>
               <div className="text-center">
                 <p className="font-medium text-foreground">尚未扫描</p>
-                <p className="text-xs mt-1">选择目录并点击“扫描”，将以表格展示子仓库的分支与工作区状态</p>
+                <p className="text-xs mt-1">选择目录并点击“扫描”，将以表格展示子仓库的分支与工作区状态，可直接切换分支</p>
               </div>
             </CardContent>
           </Card>
@@ -1118,13 +1173,15 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                           </div>
                         </td>
                         <td className="px-2 py-2.5 align-top">
-                          <div className="inline-flex items-center gap-1.5 rounded-full border bg-background px-2.5 py-1 shadow-sm">
-                            <GitBranch className="h-3 w-3 text-primary" />
-                            <span className="font-medium text-foreground">{entry.current_branch}</span>
-                            {entry.head_short_id && (
-                              <span className="font-mono text-[11px] bg-muted px-1.5 py-0.5 rounded border">{entry.head_short_id}</span>
-                            )}
-                          </div>
+                          <MultiRepoBranchSelect
+                            currentBranch={entry.current_branch}
+                            headShortId={entry.head_short_id}
+                            branches={entry.branches ?? []}
+                            loading={checkoutPath === entry.path}
+                            disabled={batchPulling || fetchingAll || pullingPath === entry.path}
+                            onSelect={(name) => void handleCheckoutBranch(entry.path, name)}
+                            onNeedBranches={() => void refreshOneEntry(entry.path)}
+                          />
                         </td>
                         <td className="px-2 py-2.5 align-top">
                           <div className="flex flex-wrap gap-1.5 items-center">

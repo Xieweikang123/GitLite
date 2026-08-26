@@ -224,6 +224,8 @@ export interface DirectoryRepoEntry {
   unstaged_count: number
   untracked_count: number
   conflicted_count: number
+  /** 本地分支；旧扫描结果可能缺省 */
+  branches?: BranchInfo[]
 }
 
 /** 工作区「提交 / 推送 / 拉取」经 useGit 统一封装时使用，避免组件内重复 invoke */
