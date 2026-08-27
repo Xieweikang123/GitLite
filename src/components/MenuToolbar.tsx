@@ -1,4 +1,11 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import {
+  useState,
+  useEffect,
+  useRef,
+  useMemo,
+  useCallback,
+  type KeyboardEvent,
+} from 'react'
 import { Button } from './ui/button'
 import {
   Clock,
@@ -24,6 +31,26 @@ import { Input } from './ui/input'
 import { Label } from './ui/label'
 
 const INLINE_RECENT_REPO_LIMIT = 5
+
+function normalizePastedPath(value: string) {
+  let q = value.trim()
+  if (
+    (q.startsWith('"') && q.endsWith('"')) ||
+    (q.startsWith("'") && q.endsWith("'"))
+  ) {
+    q = q.slice(1, -1).trim()
+  }
+  return q
+}
+
+function looksLikeRepoPath(value: string) {
+  const q = normalizePastedPath(value)
+  if (!q) return false
+  if (/^[a-zA-Z]:[\\/]/.test(q)) return true
+  if (q.startsWith('\\\\') || q.startsWith('//')) return true
+  if (q.startsWith('/') || q.startsWith('~/')) return true
+  return q.includes('\\') && q.length >= 3
+}
 
 interface MenuToolbarProps {
   onOpenRepository: () => void
@@ -229,6 +256,51 @@ export function MenuToolbar({
   const selectRecentRepo = (path: string) => {
     onRepoSelect(path)
     setRecentDialogOpen(false)
+    setRecentSearch('')
+  }
+
+  const typedRepoPath = looksLikeRepoPath(recentSearch)
+    ? normalizePastedPath(recentSearch)
+    : ''
+
+  const openTypedRepoPath = () => {
+    if (!typedRepoPath) return
+    selectRecentRepo(typedRepoPath)
+  }
+
+  const pickAndOpenRepo = async () => {
+    const { open } = await import('@tauri-apps/api/dialog')
+    const selected = await open({
+      directory: true,
+      title: '选择 Git 仓库',
+    })
+    if (typeof selected === 'string') {
+      selectRecentRepo(selected)
+    }
+  }
+
+  const handleRecentSearchKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== 'Enter') return
+    e.preventDefault()
+    const query = normalizePastedPath(recentSearch)
+    if (!query) return
+
+    const exact = recentRepos.find(
+      (repo) =>
+        repo.path.toLowerCase() === query.toLowerCase() ||
+        repo.name.toLowerCase() === query.toLowerCase()
+    )
+    if (exact) {
+      selectRecentRepo(exact.path)
+      return
+    }
+    if (typedRepoPath) {
+      openTypedRepoPath()
+      return
+    }
+    if (filteredRecentRepos.length === 1) {
+      selectRecentRepo(filteredRecentRepos[0].path)
+    }
   }
 
   const openRecentRepoFolder = async (path: string) => {
@@ -381,7 +453,13 @@ export function MenuToolbar({
         </div>
       )}
 
-      <Dialog open={recentDialogOpen} onOpenChange={setRecentDialogOpen}>
+      <Dialog
+        open={recentDialogOpen}
+        onOpenChange={(open) => {
+          setRecentDialogOpen(open)
+          if (!open) setRecentSearch('')
+        }}
+      >
         <DialogContent className="max-h-[min(86vh,42rem)] max-w-3xl gap-0 overflow-hidden p-0">
           <DialogHeader className="border-b border-border/60 px-5 py-4 text-left">
             <DialogTitle className="flex items-center gap-2 text-base">
@@ -389,29 +467,115 @@ export function MenuToolbar({
               最近打开的仓库
             </DialogTitle>
             <p className="mt-1 text-xs text-muted-foreground">
-              顶部仅展示最近 {INLINE_RECENT_REPO_LIMIT} 个；这里可以查看、搜索和管理完整列表。
+              顶部仅展示最近 {INLINE_RECENT_REPO_LIMIT} 个；这里可以搜索、管理列表，也可粘贴路径或浏览打开新仓库。
             </p>
           </DialogHeader>
 
           <div className="border-b border-border/60 px-5 py-3">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={recentSearch}
-                onChange={(e) => setRecentSearch(e.target.value)}
-                placeholder="搜索仓库名或路径"
-                className="h-8 pl-8 text-sm"
-              />
+            <div className="flex items-center gap-2">
+              <div className="relative min-w-0 flex-1">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={recentSearch}
+                  onChange={(e) => setRecentSearch(e.target.value)}
+                  onKeyDown={handleRecentSearchKeyDown}
+                  placeholder="搜索，或粘贴仓库路径后回车打开"
+                  className="h-8 pl-8 text-sm"
+                  spellCheck={false}
+                />
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 shrink-0"
+                disabled={loading}
+                onClick={() => void pickAndOpenRepo()}
+              >
+                浏览…
+              </Button>
+              {typedRepoPath && (
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-8 shrink-0"
+                  disabled={loading}
+                  onClick={openTypedRepoPath}
+                >
+                  打开路径
+                </Button>
+              )}
             </div>
           </div>
 
           <div className="max-h-[min(62vh,30rem)] overflow-y-auto px-5 py-3">
             {filteredRecentRepos.length === 0 ? (
-              <div className="flex min-h-[10rem] items-center justify-center rounded-lg border border-dashed border-border bg-muted/20 text-sm text-muted-foreground">
-                没有匹配的最近仓库
+              <div className="flex min-h-[10rem] flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border bg-muted/20 px-4 text-center text-sm text-muted-foreground">
+                {typedRepoPath ? (
+                  <>
+                    <p>最近列表中没有这项，可以直接打开该路径：</p>
+                    <p className="max-w-full truncate font-mono text-xs text-foreground" title={typedRepoPath}>
+                      {typedRepoPath}
+                    </p>
+                    <div className="flex flex-wrap items-center justify-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={loading}
+                        onClick={openTypedRepoPath}
+                      >
+                        打开此路径
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={loading}
+                        onClick={() => void pickAndOpenRepo()}
+                      >
+                        浏览选择…
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <p>没有匹配的最近仓库</p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={loading}
+                      onClick={() => void pickAndOpenRepo()}
+                    >
+                      浏览打开新仓库
+                    </Button>
+                  </>
+                )}
               </div>
             ) : (
               <div className="space-y-1.5">
+                {typedRepoPath &&
+                  !filteredRecentRepos.some(
+                    (repo) => repo.path.toLowerCase() === typedRepoPath.toLowerCase()
+                  ) && (
+                    <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed border-primary/35 bg-primary/5 px-3 py-2">
+                      <div className="min-w-0 text-xs">
+                        <div className="text-muted-foreground">打开尚未记录的路径</div>
+                        <div className="truncate font-mono text-foreground" title={typedRepoPath}>
+                          {typedRepoPath}
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="h-7 shrink-0"
+                        disabled={loading}
+                        onClick={openTypedRepoPath}
+                      >
+                        打开
+                      </Button>
+                    </div>
+                  )}
                 {filteredRecentRepos.map((repo) => {
                   const isActive = Boolean(repoInfo?.path && repo.path === repoInfo.path)
                   return (
