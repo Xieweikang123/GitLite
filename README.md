@@ -61,12 +61,14 @@ npm run tauri:dev
 
 ### 构建应用
 
+完整步骤、产物路径与 Windows rustup 代理问题见 [打包流程](PACKAGING.md)。
+
 ```bash
-# 构建生产版本
+# 构建生产版本（单文件 GitLite.exe，无安装包）
 npm run tauri:build
 ```
 
-构建完成后，可执行文件位于 `src-tauri/target/release/` 目录。
+构建完成后，可执行文件位于 `src-tauri/target/release/GitLite.exe`。
 
 ## 使用指南（核心模块）
 

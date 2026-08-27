@@ -45,7 +45,20 @@ npm install -g cnpm --registry=https://registry.npmmirror.com
 cnpm install
 ```
 
-### 3. Rust 编译错误
+### 3. cargo / rustc：没有应用程序关联，或系统无法执行指定的程序
+
+**原因：** rustup 1.28+ 在 Windows 上把 `~/.cargo/bin` 的 `cargo.exe`、`rustc.exe` 做成指向 `rustup.exe` 的符号链接，PowerShell/cmd 无法按普通 exe 启动。
+
+**当次绕过：** 将真实 toolchain 放到 PATH 最前后再打包，详见 [PACKAGING.md](PACKAGING.md)。
+
+```powershell
+$env:Path = "$env:USERPROFILE\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin;$env:USERPROFILE\.cargo\bin;$env:Path"
+cargo --version
+```
+
+**长期：** 设置 `RUSTUP_HARDLINK_PROXIES=1`，删掉上述符号链接后执行 `rustup default stable`。
+
+### 4. Rust 编译错误
 
 **解决方案：**
 ```bash
@@ -59,7 +72,7 @@ rustup show
 rustup target add x86_64-pc-windows-msvc
 ```
 
-### 4. Tauri CLI 未找到
+### 5. Tauri CLI 未找到
 
 **解决方案：**
 ```bash
@@ -70,7 +83,7 @@ npm install -g @tauri-apps/cli
 npx @tauri-apps/cli dev
 ```
 
-### 5. Git 操作权限错误
+### 6. Git 操作权限错误
 
 **解决方案：**
 ```bash
@@ -108,6 +121,8 @@ npm run tauri:dev
 ```
 
 ### 构建应用
+完整流程见 [PACKAGING.md](PACKAGING.md)。
+
 ```bash
 npm run tauri:build
 ```

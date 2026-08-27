@@ -42,6 +42,7 @@ GitLite/
 ├── 📄 .prettierrc                  # Prettier 配置
 ├── 📄 .gitignore                   # Git 忽略文件
 ├── 📄 README.md                    # 项目说明
+├── 📄 PACKAGING.md                 # 生产打包流程
 ├── 📄 ROADMAP.md                   # 开发路线图
 └── 📄 PROJECT_STRUCTURE.md         # 项目结构说明 (本文件)
 ```
