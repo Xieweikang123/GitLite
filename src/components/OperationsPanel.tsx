@@ -1,6 +1,5 @@
 import { WorkspaceStatus } from './WorkspaceStatus'
-import type { WorkspaceGitActions } from '../types/git'
-import type { CommitInfo } from '../types/git'
+import type { CommitInfo, WorkspaceGitActions } from '../types/git'
 
 interface OperationsPanelProps {
   repoInfo: any

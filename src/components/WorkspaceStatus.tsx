@@ -3,7 +3,7 @@ import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
-import { FileChange, type WorkspaceGitActions } from '../types/git'
+import { FileChange, type WorkspaceGitActions, type CommitInfo } from '../types/git'
 import { FileDiffModal } from './FileDiffModal'
 import { Eye, Archive, ArchiveRestore, Trash2, CheckCircle, AlertCircle, Loader2, Sparkles, RotateCcw } from 'lucide-react'
 import { shortenPathMiddle } from '../lib/utils'
@@ -19,7 +19,7 @@ interface WorkspaceStatusProps {
   onPullChanges?: () => void
   onFetchChanges?: () => void
   gitActions?: WorkspaceGitActions
-  onJumpToCommit?: (commit: import('../types/git').CommitInfo) => void
+  onJumpToCommit?: (commit: CommitInfo) => void
 }
 
 interface WorkspaceStatusData {

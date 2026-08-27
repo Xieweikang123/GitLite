@@ -309,7 +309,10 @@ export function RemoteManageModal({
             </div>
 
             <div className="rounded-md border border-border p-3">
-              <p className="mb-2 text-sm font-medium">上游分支</p>
+              <p className="mb-1 text-sm font-medium">对应的远程分支</p>
+              <p className="mb-2 text-xs text-muted-foreground">
+                新开的本地分支默认没有远程对应项。可在此指定，或直接推送一次由远程创建同名分支。
+              </p>
               <div className="grid gap-2">
                 <div className="grid gap-1.5">
                   <Label htmlFor="upstream-branch">本地分支</Label>
@@ -368,7 +371,7 @@ export function RemoteManageModal({
                     onClick={() => void handleClearUpstream()}
                     disabled={busy || loading || !selectedBranch}
                   >
-                    清除上游
+                    取消关联
                   </Button>
                   <Button
                     type="button"
@@ -376,7 +379,7 @@ export function RemoteManageModal({
                     onClick={() => void handleSetUpstream()}
                     disabled={busy || loading || !selectedBranch}
                   >
-                    设置上游
+                    关联远程分支
                   </Button>
                 </div>
               </div>

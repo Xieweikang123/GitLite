@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactElement } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { Loader2 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
@@ -10,7 +10,7 @@ interface PendingCommitsPopoverProps {
   kind: 'outgoing' | 'incoming'
   repoPath?: string | null
   count: number
-  children: React.ReactElement
+  children: ReactElement
   onCommitClick?: (commit: CommitInfo) => void
   align?: 'start' | 'center' | 'end'
 }

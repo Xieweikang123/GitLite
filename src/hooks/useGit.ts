@@ -464,7 +464,7 @@ export function useGit() {
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
-        setError(formatTauriInvokeError(err, '设置上游失败'))
+        setError(formatTauriInvokeError(err, '关联远程分支失败'))
         return false
       } finally {
         setLoading(false)

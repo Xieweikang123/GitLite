@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { open } from '@tauri-apps/api/dialog'
 import { Button } from './ui/button'
@@ -7,11 +7,8 @@ import { Card, CardHeader, CardTitle, CardContent } from './ui/card'
 import { Badge } from './ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { MonacoDiffEditor } from './MonacoDiffEditor'
-import Editor from '@monaco-editor/react'
-import { getMonacoLanguageFromPath } from '@/utils/monacoLanguage'
 import { DirectoryRepoEntry, CommitInfo, WorkspaceStatus } from '../types/git'
 import { MultiRepoBranchSelect } from './MultiRepoBranchSelect'
-import { useMinimapConfig } from '@/utils/minimapConfig'
 import { getClientCalendarOffsetEastMinutes } from '../utils/clientCalendarOffset'
 import {
   FolderOpen,
@@ -36,6 +33,7 @@ import {
   Copy,
   Info,
   Download,
+  Upload,
   Eye,
   FileText,
 } from 'lucide-react'
@@ -55,6 +53,15 @@ interface ScannedDirRecord {
 const RECENT_SCANNED_KEY = 'gitlite:recentScannedDirs'
 const DETAIL_TAB_CACHE_KEY = 'gitlite:dirScanner:detailTabCache'
 const EXPANDED_STATE_KEY = 'gitlite:dirScanner:expandedState'
+/** 仅刷新当前展开的工作区，与单仓库页间隔对齐，不扫全部子仓 */
+const WORKSPACE_POLL_MS = 10_000
+const WORKSPACE_FOCUS_DEBOUNCE_MS = 400
+const EMPTY_WORKSPACE: WorkspaceStatus = {
+  staged_files: [],
+  unstaged_files: [],
+  untracked_files: [],
+  conflicted_files: [],
+}
 
 function timeAgo(iso: string): string {
   const d = new Date(iso)
@@ -70,13 +77,9 @@ function timeAgo(iso: string): string {
   return d.toLocaleDateString()
 }
 
-function subscribeDarkClass(cb: () => void) {
-  const obs = new MutationObserver(cb)
-  obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
-  return () => obs.disconnect()
-}
-function getDarkClass(): boolean {
-  return document.documentElement.classList.contains('dark')
+function repoNeedsPush(e: DirectoryRepoEntry): boolean {
+  if (!e.has_origin_remote) return false
+  return e.ahead > 0 || !e.has_upstream
 }
 
 export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) {
@@ -90,8 +93,10 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
   const [restored, setRestored] = useState(false)
   const [filter, setFilter] = useState('')
   const [pullingPath, setPullingPath] = useState<string | null>(null)
+  const [pushingPath, setPushingPath] = useState<string | null>(null)
   const [checkoutPath, setCheckoutPath] = useState<string | null>(null)
   const [batchPulling, setBatchPulling] = useState(false)
+  const [batchPushing, setBatchPushing] = useState(false)
   const [fetchingAll, setFetchingAll] = useState(false)
   const [fetchingPath, setFetchingPath] = useState<string | null>(null)
   const [fetchingPaths, setFetchingPaths] = useState<Set<string>>(new Set())
@@ -104,7 +109,11 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
   const [outgoingCache, setOutgoingCache] = useState<Record<string, CommitInfo[]>>({})
   const [outgoingLoading, setOutgoingLoading] = useState<string | null>(null)
   const [workspaceCache, setWorkspaceCache] = useState<Record<string, WorkspaceStatus>>({})
-  const [workspaceLoading, setWorkspaceLoading] = useState<string | null>(null)
+  const [workspaceLoading, setWorkspaceLoading] = useState<Record<string, boolean>>({})
+  const workspaceCacheRef = useRef<Record<string, WorkspaceStatus>>({})
+  const workspaceInFlightRef = useRef<Set<string>>(new Set())
+  const workspaceFetchGenRef = useRef<Record<string, number>>({})
+  const lastWorkspaceFocusRefreshRef = useRef(0)
   const [recentCache, setRecentCache] = useState<Record<string, CommitInfo[]>>({})
   const [recentLoading, setRecentLoading] = useState<string | null>(null)
   const [recentError, setRecentError] = useState<Record<string, string>>({})
@@ -120,16 +129,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
   const [wsDetail, setWsDetail] = useState<{ repoPath: string; filePath: string; kind: 'staged' | 'unstaged' | 'untracked' } | null>(null)
   const [wsDiff, setWsDiff] = useState<string>('')
   const [wsDiffLoading, setWsDiffLoading] = useState(false)
-  const isDark = useSyncExternalStore(subscribeDarkClass, getDarkClass, () => false)
-  const { config: minimapConfig } = useMinimapConfig()
-  const minimapOptions = useMemo(() => ({
-    enabled: minimapConfig.enabled,
-    side: minimapConfig.side,
-    scale: minimapConfig.scale,
-    showSlider: minimapConfig.showSlider,
-    renderCharacters: minimapConfig.renderCharacters,
-    maxColumn: minimapConfig.maxColumn,
-  }), [minimapConfig])
+  workspaceCacheRef.current = workspaceCache
 
   const loadRecentScanned = useCallback(async () => {
     try {
@@ -247,6 +247,8 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
         })
         setEntries(result)
         setScannedDir(path)
+        // 扫描会更新表格计数；丢掉文件列表缓存，避免角标新、列表旧
+        setWorkspaceCache({})
         try {
           await invoke('save_recent_scanned_dir', { path, recursive: rec })
           await loadRecentScanned()
@@ -256,6 +258,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
       } catch (err) {
         setError(formatTauriInvokeError(err, '扫描失败'))
         setEntries(null)
+        setWorkspaceCache({})
       } finally {
         setLoading(false)
       }
@@ -366,6 +369,42 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
     setBatchPulling(false)
   }, [entries, scannedDir, handlePull])
 
+  const handlePush = useCallback(
+    async (repoPath: string) => {
+      const before = entries?.find((e) => e.path === repoPath)
+      void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][push][multi] start path=${repoPath} beforeAhead=${before?.ahead ?? '?'} hasUpstream=${before?.has_upstream ?? '?'}` }).catch(()=>{})
+      setPushingPath(repoPath)
+      setError(null)
+      try {
+        await invoke('push_changes', { repoPath })
+        void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][push][multi] push ok path=${repoPath}` }).catch(()=>{})
+        setIncomingCache((m) => { const c={...m}; delete c[repoPath]; return c })
+        setOutgoingCache((m) => { const c={...m}; delete c[repoPath]; return c })
+        setRecentCache((m) => { const c={...m}; delete c[repoPath]; return c })
+        setWorkspaceCache((m) => { const c={...m}; delete c[repoPath]; return c })
+        if (scannedDir) await doScan(scannedDir)
+      } catch (err) {
+        void invoke('append_gitlite_log', { level: 'ERROR', message: `[DIAG][push][multi] fail path=${repoPath} err=${String(err)}` }).catch(()=>{})
+        setError(formatTauriInvokeError(err, `推送失败 ${shortenPathMiddle(repoPath, 40)}`))
+      } finally {
+        setPushingPath(null)
+      }
+    },
+    [scannedDir, doScan, entries]
+  )
+
+  const handleBatchPush = useCallback(async () => {
+    if (!entries || !scannedDir) return
+    const needPush = entries.filter(repoNeedsPush)
+    if (needPush.length === 0) return
+    setBatchPushing(true)
+    for (const e of needPush) {
+      // eslint-disable-next-line no-await-in-loop
+      await handlePush(e.path)
+    }
+    setBatchPushing(false)
+  }, [entries, scannedDir, handlePush])
+
   const handleFetchAll = useCallback(async () => {
     if (!entries || !scannedDir) return
     setFetchingAll(true)
@@ -432,37 +471,60 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
     }
   }, [outgoingCache, outgoingLoading])
 
-  const fetchWorkspaceIfNeeded = useCallback(async (repoPath: string) => {
-    if (workspaceCache[repoPath] || workspaceLoading) return
-    setWorkspaceLoading(repoPath)
-    try {
-      const ws: WorkspaceStatus = await invoke('get_workspace_status', { repoPath })
-      setWorkspaceCache((m) => ({ ...m, [repoPath]: ws }))
-      setEntries((prev) => (prev ? prev.map((e) => (e.path === repoPath ? { ...e, staged_count: ws.staged_files.length, unstaged_count: ws.unstaged_files.length, untracked_count: ws.untracked_files.length, conflicted_count: ws.conflicted_files?.length ?? 0 } : e)) : prev))
-    } catch {
-      setWorkspaceCache((m) => ({ ...m, [repoPath]: { staged_files: [], unstaged_files: [], untracked_files: [], conflicted_files: [] } as WorkspaceStatus }))
-    } finally {
-      setWorkspaceLoading(null)
-    }
-  }, [workspaceCache, workspaceLoading])
-
-  const refreshWorkspace = useCallback(async (repoPath: string) => {
-    setWorkspaceCache((m) => {
-      const c = { ...m }
-      delete c[repoPath]
-      return c
-    })
-    setWorkspaceLoading(repoPath)
-    try {
-      const ws: WorkspaceStatus = await invoke('get_workspace_status', { repoPath })
-      setWorkspaceCache((m) => ({ ...m, [repoPath]: ws }))
-      setEntries((prev) => (prev ? prev.map((e) => (e.path === repoPath ? { ...e, staged_count: ws.staged_files.length, unstaged_count: ws.unstaged_files.length, untracked_count: ws.untracked_files.length, conflicted_count: ws.conflicted_files?.length ?? 0 } : e)) : prev))
-    } catch {
-      setWorkspaceCache((m) => ({ ...m, [repoPath]: { staged_files: [], unstaged_files: [], untracked_files: [], conflicted_files: [] } as WorkspaceStatus }))
-    } finally {
-      setWorkspaceLoading(null)
-    }
+  const patchEntryWorkspaceCounts = useCallback((repoPath: string, ws: WorkspaceStatus) => {
+    setEntries((prev) =>
+      prev
+        ? prev.map((e) =>
+            e.path === repoPath
+              ? {
+                  ...e,
+                  staged_count: ws.staged_files.length,
+                  unstaged_count: ws.unstaged_files.length,
+                  untracked_count: ws.untracked_files.length,
+                  conflicted_count: ws.conflicted_files?.length ?? 0,
+                }
+              : e
+          )
+        : prev
+    )
   }, [])
+
+  const refreshWorkspace = useCallback(
+    async (repoPath: string, opts?: { silent?: boolean }) => {
+      const silent = opts?.silent === true
+      if (workspaceInFlightRef.current.has(repoPath)) return
+      workspaceInFlightRef.current.add(repoPath)
+      const gen = (workspaceFetchGenRef.current[repoPath] ?? 0) + 1
+      workspaceFetchGenRef.current[repoPath] = gen
+      const hadCache = !!workspaceCacheRef.current[repoPath]
+      const showLoading = !silent || !hadCache
+      if (showLoading) {
+        setWorkspaceLoading((prev) => (prev[repoPath] ? prev : { ...prev, [repoPath]: true }))
+      }
+      try {
+        const ws: WorkspaceStatus = await invoke('get_workspace_status', { repoPath })
+        if (workspaceFetchGenRef.current[repoPath] !== gen) return
+        setWorkspaceCache((m) => ({ ...m, [repoPath]: ws }))
+        patchEntryWorkspaceCounts(repoPath, ws)
+      } catch {
+        if (workspaceFetchGenRef.current[repoPath] !== gen) return
+        if (!hadCache) {
+          setWorkspaceCache((m) => ({ ...m, [repoPath]: EMPTY_WORKSPACE }))
+        }
+      } finally {
+        workspaceInFlightRef.current.delete(repoPath)
+        if (workspaceFetchGenRef.current[repoPath] === gen) {
+          setWorkspaceLoading((prev) => {
+            if (!prev[repoPath]) return prev
+            const next = { ...prev }
+            delete next[repoPath]
+            return next
+          })
+        }
+      }
+    },
+    [patchEntryWorkspaceCounts]
+  )
 
   const refreshRecent = useCallback(async (repoPath: string) => {
     setRecentCache((m) => {
@@ -559,40 +621,67 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
     }
   }, [recentCache, recentLoading])
 
-  const toggleIncoming = useCallback(
-    async (repoPath: string, behind: number) => {
+  const toggleDetail = useCallback(
+    (entry: DirectoryRepoEntry, forceTab?: 'incoming' | 'outgoing' | 'workspace' | 'recent') => {
+      const repoPath = entry.path
       const isSame = expandedPath === repoPath
-      if (isSame) {
+      if (isSame && !forceTab) {
         setDetailTabCache((m) => ({ ...m, [repoPath]: activeDetailTab }))
         setExpandedPath(null)
         return
       }
+      if (isSame && forceTab) {
+        if (activeDetailTab === forceTab) {
+          setDetailTabCache((m) => ({ ...m, [repoPath]: activeDetailTab }))
+          setExpandedPath(null)
+          return
+        }
+        setActiveDetailTab(forceTab)
+        setDetailTabCache((m) => ({ ...m, [repoPath]: forceTab }))
+        if (forceTab === 'incoming' && entry.behind > 0 && (!incomingCache[repoPath] || incomingCache[repoPath].length === 0)) {
+          void refreshIncoming(repoPath, entry.behind)
+        } else if (forceTab === 'outgoing') {
+          if (!outgoingCache[repoPath]) void fetchOutgoingIfNeeded(repoPath)
+          else if (entry.ahead > 0 && outgoingCache[repoPath].length === 0) void refreshOutgoing(repoPath)
+        } else if (forceTab === 'workspace') {
+          void refreshWorkspace(repoPath)
+        } else if (forceTab === 'recent') {
+          void fetchRecentIfNeeded(repoPath)
+        }
+        return
+      }
       const cached = detailTabCache[repoPath] as 'incoming' | 'outgoing' | 'workspace' | 'recent' | undefined
-      const targetTab = cached ?? 'incoming'
+      const fallback: 'incoming' | 'outgoing' | 'workspace' | 'recent' =
+        entry.behind > 0 ? 'incoming' : entry.ahead > 0 ? 'outgoing' : 'workspace'
+      const targetTab = forceTab ?? cached ?? fallback
       setExpandedPath(repoPath)
       setActiveDetailTab(targetTab)
-      if (targetTab === 'incoming' && behind > 0 && !incomingCache[repoPath]) {
-        setIncomingLoading(repoPath)
-        try {
-          const commits: CommitInfo[] = await invoke('get_repo_incoming_commits', {
-            repoPath,
-            clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
-          })
-          setIncomingCache((m) => ({ ...m, [repoPath]: commits }))
-        } catch {
-          setIncomingCache((m) => ({ ...m, [repoPath]: [] }))
-        } finally {
-          setIncomingLoading(null)
-        }
+      setDetailTabCache((m) => ({ ...m, [repoPath]: targetTab }))
+      if (targetTab === 'incoming' && entry.behind > 0 && !incomingCache[repoPath]) {
+        void refreshIncoming(repoPath, entry.behind)
       } else if (targetTab === 'outgoing' && !outgoingCache[repoPath]) {
         void fetchOutgoingIfNeeded(repoPath)
-      } else if (targetTab === 'workspace' && !workspaceCache[repoPath]) {
-        void fetchWorkspaceIfNeeded(repoPath)
+      } else if (targetTab === 'outgoing' && entry.ahead > 0 && outgoingCache[repoPath]?.length === 0) {
+        void refreshOutgoing(repoPath)
+      } else if (targetTab === 'workspace') {
+        void refreshWorkspace(repoPath)
       } else if (targetTab === 'recent' && !recentCache[repoPath]) {
         void fetchRecentIfNeeded(repoPath)
       }
     },
-    [expandedPath, activeDetailTab, incomingCache, outgoingCache, workspaceCache, recentCache, detailTabCache, fetchOutgoingIfNeeded, fetchWorkspaceIfNeeded, fetchRecentIfNeeded]
+    [
+      expandedPath,
+      activeDetailTab,
+      incomingCache,
+      outgoingCache,
+      recentCache,
+      detailTabCache,
+      fetchOutgoingIfNeeded,
+      refreshWorkspace,
+      fetchRecentIfNeeded,
+      refreshIncoming,
+      refreshOutgoing,
+    ]
   )
 
   const handleDetailTab = (tab: 'incoming' | 'outgoing' | 'workspace' | 'recent', entry: DirectoryRepoEntry) => {
@@ -603,18 +692,21 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
       // 已清缓存但 behind>0 时强制刷新，避免“角标1但列表空”
       if (entry.behind > 0 && incomingCache[entry.path]?.length === 0) void refreshIncoming(entry.path, entry.behind)
     }
-    if (tab === 'outgoing') void fetchOutgoingIfNeeded(entry.path)
-    if (tab === 'workspace') void fetchWorkspaceIfNeeded(entry.path)
+    if (tab === 'outgoing') {
+      if (!outgoingCache[entry.path]) void fetchOutgoingIfNeeded(entry.path)
+      if (entry.ahead > 0 && outgoingCache[entry.path]?.length === 0) void refreshOutgoing(entry.path)
+    }
+    if (tab === 'workspace') void refreshWorkspace(entry.path)
     if (tab === 'recent') void fetchRecentIfNeeded(entry.path)
   }
 
-  // 持久化恢复后自动拉取对应 tab 数据
+  // 持久化恢复 / 扫描清缓存后，补拉当前展开 tab
   useEffect(() => {
     if (!expandedPath || !entries) return
     const entry = entries.find((e) => e.path === expandedPath)
     if (!entry) return
-    if (activeDetailTab === 'workspace' && !workspaceCache[expandedPath] && workspaceLoading !== expandedPath) {
-      void fetchWorkspaceIfNeeded(expandedPath)
+    if (activeDetailTab === 'workspace' && !workspaceCache[expandedPath] && !workspaceLoading[expandedPath]) {
+      void refreshWorkspace(expandedPath)
     } else if (activeDetailTab === 'outgoing' && !outgoingCache[expandedPath] && outgoingLoading !== expandedPath) {
       void fetchOutgoingIfNeeded(expandedPath)
     } else if (activeDetailTab === 'recent' && !recentCache[expandedPath] && recentLoading !== expandedPath && !recentError[expandedPath]) {
@@ -635,7 +727,38 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
         }
       })()
     }
-  }, [expandedPath, activeDetailTab, entries, workspaceCache, outgoingCache, recentCache, incomingCache, workspaceLoading, outgoingLoading, recentLoading, recentError, fetchWorkspaceIfNeeded, fetchOutgoingIfNeeded, fetchRecentIfNeeded])
+  }, [expandedPath, activeDetailTab, entries, workspaceCache, outgoingCache, recentCache, incomingCache, workspaceLoading, outgoingLoading, recentLoading, recentError, refreshWorkspace, fetchOutgoingIfNeeded, fetchRecentIfNeeded])
+
+  // 回到前台时只刷新当前展开的工作区（IDE/终端改完文件后最常见）
+  useEffect(() => {
+    const maybeRefresh = () => {
+      if (document.visibilityState === 'hidden') return
+      if (!expandedPath || activeDetailTab !== 'workspace') return
+      const now = Date.now()
+      if (now - lastWorkspaceFocusRefreshRef.current < WORKSPACE_FOCUS_DEBOUNCE_MS) return
+      lastWorkspaceFocusRefreshRef.current = now
+      void refreshWorkspace(expandedPath, { silent: true })
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') maybeRefresh()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('focus', maybeRefresh)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('focus', maybeRefresh)
+    }
+  }, [expandedPath, activeDetailTab, refreshWorkspace])
+
+  // 工作区标签保持展开时静默轮询当前仓，覆盖左右分屏、窗口未失焦的情况
+  useEffect(() => {
+    if (!expandedPath || activeDetailTab !== 'workspace') return
+    const id = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') return
+      void refreshWorkspace(expandedPath, { silent: true })
+    }, WORKSPACE_POLL_MS)
+    return () => window.clearInterval(id)
+  }, [expandedPath, activeDetailTab, refreshWorkspace])
 
   // 多仓库提交历史右键回退（本地，不影响远端）
   useEffect(() => {
@@ -805,31 +928,9 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
       } else if (kind === 'unstaged') {
         diff = await invoke<string>('get_unstaged_file_diff', { repoPath, filePath })
       } else {
-        let content = ''
-        try {
-          content = await invoke<string>('get_file_content', { repoPath, filePath })
-        } catch {
-          try {
-            content = await invoke<string>('get_head_or_worktree_file_text', { repoPath, filePath })
-          } catch {
-            // 最后降级才用 diff 格式的接口，前端再剥掉头部
-            const diffText = await invoke<string>('get_untracked_file_content', { repoPath, filePath })
-            // 剥掉 diff 头，取 + 行
-            const lines = diffText.split('\n')
-            const atIdx = lines.findIndex((l) => l.startsWith('@@'))
-            if (atIdx >= 0) {
-              content = lines
-                .slice(atIdx + 1)
-                .map((l) => (l.startsWith('+') ? l.slice(1) : l))
-                .join('\n')
-            } else {
-              content = diffText
-            }
-          }
-        }
-        diff = content
-        console.log('[GitLite][wsDetail] untracked content', filePath, 'contentLen', content.length)
-        void invoke('append_gitlite_log', { level: 'INFO', message: `[wsDetail] untracked ${filePath} contentLen=${content.length}` }).catch(() => {})
+        diff = await invoke<string>('get_untracked_file_content', { repoPath, filePath })
+        console.log('[GitLite][wsDetail] untracked diff', filePath, 'diffLen', diff.length)
+        void invoke('append_gitlite_log', { level: 'INFO', message: `[wsDetail] untracked ${filePath} diffLen=${diff.length}` }).catch(() => {})
       }
       setWsDiff(diff)
     } catch (e) {
@@ -1103,7 +1204,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                   size="sm"
                   className="h-7 text-xs"
                   onClick={() => void handleFetchAll()}
-                  disabled={loading || batchPulling || fetchingAll}
+                  disabled={loading || batchPulling || batchPushing || fetchingAll}
                   title="对全部仓库执行 git fetch"
                 >
                   <RefreshCw className={`h-3.5 w-3.5 mr-1 ${fetchingAll ? 'animate-spin' : ''}`} />
@@ -1113,11 +1214,25 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                   size="sm"
                   className="h-7 text-xs"
                   onClick={() => void handleBatchPull()}
-                  disabled={batchPulling || loading || fetchingAll || !entries.some((e) => e.behind > 0)}
+                  disabled={batchPulling || batchPushing || loading || fetchingAll || !entries.some((e) => e.behind > 0)}
                   title={entries.some((e) => e.behind > 0) ? `拉取 ${entries.filter((e) => e.behind > 0).length} 个待拉仓库` : '暂无待拉仓库'}
                 >
                   {batchPulling ? <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1" /> : <Download className="h-3.5 w-3.5 mr-1" />}
                   {batchPulling ? '拉取中…' : `全部拉取${entries.filter((e) => e.behind > 0).length > 0 ? ` (${entries.filter((e) => e.behind > 0).length})` : ''}`}
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => void handleBatchPush()}
+                  disabled={batchPulling || batchPushing || loading || fetchingAll || !entries.some(repoNeedsPush)}
+                  title={
+                    entries.some(repoNeedsPush)
+                      ? `推送 ${entries.filter(repoNeedsPush).length} 个待推仓库`
+                      : '暂无待推仓库'
+                  }
+                >
+                  {batchPushing ? <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1" /> : <Upload className="h-3.5 w-3.5 mr-1" />}
+                  {batchPushing ? '推送中…' : `全部推送${entries.filter(repoNeedsPush).length > 0 ? ` (${entries.filter(repoNeedsPush).length})` : ''}`}
                 </Button>
               </div>
             </div>
@@ -1138,15 +1253,16 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                     const isDirty = hasChanges
                     const isExpanded = expandedPath === entry.path
                     const isFetchingThis = fetchingAll && fetchingPaths.has(entry.path)
+                    const isPushingThis = pushingPath === entry.path
                     return (
                       <React.Fragment key={entry.path}>
-                        <tr className={`group hover:bg-muted/30 transition-colors ${isDirty ? 'bg-amber-500/[0.02]' : ''} ${isExpanded ? 'bg-muted/20' : ''} ${isFetchingThis ? 'bg-primary/[0.06] ring-1 ring-inset ring-primary/20' : ''}`}>
+                        <tr className={`group hover:bg-muted/30 transition-colors ${isDirty ? 'bg-amber-500/[0.02]' : ''} ${isExpanded ? 'bg-muted/20' : ''} ${isFetchingThis || isPushingThis ? 'bg-primary/[0.06] ring-1 ring-inset ring-primary/20' : ''}`}>
                         
                         <td className="px-3 py-2.5 align-top">
                           <div className="flex flex-col gap-1 min-w-0">
                             <div className="flex items-center gap-2 min-w-0">
                               <button
-                                onClick={() => void toggleIncoming(entry.path, entry.behind)}
+                                onClick={() => toggleDetail(entry)}
                                 className="font-medium text-sm text-foreground truncate hover:text-primary text-left flex items-center gap-1 min-w-0"
                                 title="点击展开/折叠详情"
                               >
@@ -1178,7 +1294,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                             headShortId={entry.head_short_id}
                             branches={entry.branches ?? []}
                             loading={checkoutPath === entry.path}
-                            disabled={batchPulling || fetchingAll || pullingPath === entry.path}
+                            disabled={batchPulling || batchPushing || fetchingAll || pullingPath === entry.path || pushingPath === entry.path}
                             onSelect={(name) => void handleCheckoutBranch(entry.path, name)}
                             onNeedBranches={() => void refreshOneEntry(entry.path)}
                           />
@@ -1190,15 +1306,36 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                                 <RefreshCw className="h-3 w-3 animate-spin" /> 获取中
                               </span>
                             )}
+                            {isPushingThis && (
+                              <span className="inline-flex items-center gap-1 text-[11px] text-primary whitespace-nowrap">
+                                <RefreshCw className="h-3 w-3 animate-spin" /> 推送中
+                              </span>
+                            )}
                             {entry.ahead > 0 && (
-                              <Badge variant="default" className="inline-flex items-center gap-1 whitespace-nowrap text-[11px] px-2.5 py-0 h-6 shrink-0">
-                                <ArrowUp className="h-3 w-3 shrink-0" /> <span className="whitespace-nowrap">{entry.ahead} 待推</span>
-                              </Badge>
+                              <button
+                                type="button"
+                                onClick={() => toggleDetail(entry, 'outgoing')}
+                                title="点击查看待推送的提交详情"
+                                className="inline-flex whitespace-nowrap"
+                              >
+                                <Badge
+                                  variant="default"
+                                  className="inline-flex items-center gap-1 whitespace-nowrap text-[11px] px-2.5 py-0 h-6 cursor-pointer hover:bg-primary/90 shrink-0"
+                                >
+                                  <ArrowUp className="h-3 w-3 shrink-0" />
+                                  <span className="whitespace-nowrap">{entry.ahead} 待推</span>
+                                  {expandedPath === entry.path && activeDetailTab === 'outgoing' ? (
+                                    <ChevronUp className="h-3 w-3 shrink-0" />
+                                  ) : (
+                                    <ChevronDown className="h-3 w-3 shrink-0" />
+                                  )}
+                                </Badge>
+                              </button>
                             )}
                             {entry.behind > 0 && (
                               <button
                                 type="button"
-                                onClick={() => void toggleIncoming(entry.path, entry.behind)}
+                                onClick={() => toggleDetail(entry, 'incoming')}
                                 title="点击查看待拉取的提交详情"
                                 className="inline-flex whitespace-nowrap"
                               >
@@ -1227,14 +1364,18 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                             {!entry.has_upstream && entry.has_origin_remote && (
                               <Badge
                                 variant="outline"
+                                title="当前分支还没有对应的远程分支。新分支常见；首次推送即可在远程创建并关联。"
                                 className="inline-flex items-center gap-1 whitespace-nowrap border-amber-500/30 text-amber-700 dark:text-amber-400 bg-amber-500/10 h-6 shrink-0"
                               >
-                                <Unlink className="h-3 w-3 shrink-0" /> <span className="whitespace-nowrap">无上游</span>
+                                <Unlink className="h-3 w-3 shrink-0" /> <span className="whitespace-nowrap">未关联远程</span>
                               </Badge>
                             )}
                             {!entry.has_origin_remote && (
-                              <span className="inline-flex items-center gap-1 whitespace-nowrap text-[11px] text-muted-foreground shrink-0">
-                                <Unlink className="h-3 w-3 shrink-0" /> <span className="whitespace-nowrap">无远端</span>
+                              <span
+                                className="inline-flex items-center gap-1 whitespace-nowrap text-[11px] text-muted-foreground shrink-0"
+                                title="仓库还没有名为 origin 的远程地址"
+                              >
+                                <Unlink className="h-3 w-3 shrink-0" /> <span className="whitespace-nowrap">未配置远程</span>
                               </span>
                             )}
                           </div>
@@ -1268,7 +1409,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                                 size="sm"
                                 variant="secondary"
                                 className="h-7 px-2.5 text-xs bg-blue-600 text-white hover:bg-blue-700 border-blue-600"
-                                disabled={pullingPath === entry.path || batchPulling}
+                                disabled={pullingPath === entry.path || pushingPath === entry.path || batchPulling || batchPushing}
                                 onClick={() => void handlePull(entry.path)}
                                 title={`拉取 ${entry.behind} 个提交`}
                               >
@@ -1280,11 +1421,31 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                                 拉取
                               </Button>
                             )}
+                            {repoNeedsPush(entry) && (
+                              <Button
+                                size="sm"
+                                className="h-7 px-2.5 text-xs"
+                                disabled={pullingPath === entry.path || pushingPath === entry.path || batchPulling || batchPushing || fetchingAll}
+                                onClick={() => void handlePush(entry.path)}
+                                title={
+                                  entry.ahead > 0
+                                    ? `推送 ${entry.ahead} 个提交`
+                                    : '首次推送到 origin 并关联远程分支'
+                                }
+                              >
+                                {pushingPath === entry.path ? (
+                                  <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1" />
+                                ) : (
+                                  <Upload className="h-3.5 w-3.5 mr-1" />
+                                )}
+                                推送
+                              </Button>
+                            )}
                             <Button
                               size="sm"
                               variant={isExpanded ? 'secondary' : 'outline'}
                               className="h-7 px-2.5 text-xs shrink-0 border"
-                              onClick={() => void toggleIncoming(entry.path, entry.behind)}
+                              onClick={() => toggleDetail(entry)}
                               title={isExpanded ? '收起详情' : '查看待拉/待推/工作区/提交历史详情'}
                             >
                               {isExpanded ? <ChevronUp className="h-3.5 w-3.5 mr-1" /> : <ChevronDown className="h-3.5 w-3.5 mr-1" />}
@@ -1346,9 +1507,15 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                                 </button>
                                 <div className="ml-auto flex gap-1 items-center">
                                   {activeDetailTab === 'incoming' && entry.behind > 0 && (
-                                    <Button size="sm" className="h-6 text-xs px-2" disabled={pullingPath === entry.path} onClick={() => void handlePull(entry.path)}>
+                                    <Button size="sm" className="h-6 text-xs px-2" disabled={pullingPath === entry.path || pushingPath === entry.path || batchPulling || batchPushing} onClick={() => void handlePull(entry.path)}>
                                       {pullingPath === entry.path ? <RefreshCw className="h-3 w-3 animate-spin mr-1" /> : <Download className="h-3 w-3 mr-1" />}
                                       拉取
+                                    </Button>
+                                  )}
+                                  {activeDetailTab === 'outgoing' && repoNeedsPush(entry) && (
+                                    <Button size="sm" className="h-6 text-xs px-2" disabled={pullingPath === entry.path || pushingPath === entry.path || batchPulling || batchPushing} onClick={() => void handlePush(entry.path)}>
+                                      {pushingPath === entry.path ? <RefreshCw className="h-3 w-3 animate-spin mr-1" /> : <Upload className="h-3 w-3 mr-1" />}
+                                      推送
                                     </Button>
                                   )}
                                   <Button
@@ -1367,9 +1534,9 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                                       }
                                     }}
                                     title="刷新当前标签"
-                                    disabled={incomingLoading === entry.path || outgoingLoading === entry.path || workspaceLoading === entry.path || recentLoading === entry.path}
+                                    disabled={incomingLoading === entry.path || outgoingLoading === entry.path || !!workspaceLoading[entry.path] || recentLoading === entry.path}
                                   >
-                                    <RefreshCw className={`h-3 w-3 ${incomingLoading === entry.path || outgoingLoading === entry.path || workspaceLoading === entry.path || recentLoading === entry.path ? 'animate-spin' : ''}`} />
+                                    <RefreshCw className={`h-3 w-3 ${incomingLoading === entry.path || outgoingLoading === entry.path || !!workspaceLoading[entry.path] || recentLoading === entry.path ? 'animate-spin' : ''}`} />
                                   </Button>
                                   <Button variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={() => setExpandedPath(null)}>
                                     收起
@@ -1437,7 +1604,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                                   ))}
 
                                 {activeDetailTab === 'workspace' &&
-                                  (workspaceLoading === entry.path ? (
+                                  (workspaceLoading[entry.path] && !workspaceCache[entry.path] ? (
                                     <div className="flex items-center justify-center gap-2 px-3 py-8 text-xs text-muted-foreground">
                                       <RefreshCw className="h-4 w-4 animate-spin" />
                                       加载工作区中…
@@ -1688,17 +1855,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                   <RefreshCw className="h-4 w-4 animate-spin" /> 加载中…
                 </div>
               ) : wsDiff ? (
-                wsDetail?.kind === 'untracked' ? (
-                  <Editor
-                    height="100%"
-                    language={getMonacoLanguageFromPath(wsDetail?.filePath ?? '')}
-                    theme={isDark ? 'vs-dark' : 'vs'}
-                    value={wsDiff}
-                    options={{ readOnly: true, minimap: minimapOptions, scrollBeyondLastLine: false, fontSize: 13, wordWrap: 'on', automaticLayout: true }}
-                  />
-                ) : (
-                  <MonacoDiffEditor diff={wsDiff} filePath={wsDetail?.filePath} />
-                )
+                <MonacoDiffEditor diff={wsDiff} filePath={wsDetail?.filePath} />
               ) : (
                 <div className="p-8 text-center text-xs text-muted-foreground">无内容</div>
               )}
