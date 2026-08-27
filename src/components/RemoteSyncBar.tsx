@@ -1,6 +1,8 @@
 import { Button } from './ui/button'
 import { Download, GitPullRequest, RefreshCw, CheckCircle, AlertCircle, Upload } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { PendingCommitsPopover } from './PendingCommitsPopover'
+import type { CommitInfo } from '../types/git'
 
 export interface RemoteSyncBarProps {
   ahead?: number
@@ -20,6 +22,8 @@ export interface RemoteSyncBarProps {
   /** comfortable：工作区；compact：提交记录卡片内 */
   density?: 'comfortable' | 'compact'
   className?: string
+  repoPath?: string | null
+  onPendingCommitClick?: (commit: CommitInfo) => void
 }
 
 export function RemoteSyncBar({
@@ -35,7 +39,9 @@ export function RemoteSyncBar({
   onRefresh,
   refreshTitle = '刷新远程状态',
   density = 'comfortable',
-  className
+  className,
+  repoPath,
+  onPendingCommitClick,
 }: RemoteSyncBarProps) {
   const aheadN = ahead ?? 0
   const behindN = behind ?? 0
@@ -63,41 +69,67 @@ export function RemoteSyncBar({
         )}
       >
         {behindN > 0 && (
-          <div className="flex items-center gap-1.5">
-            <AlertCircle
-              className={cn(
-                'h-3.5 w-3.5 text-amber-600 dark:text-amber-400',
-                compact && 'shrink-0'
-              )}
-            />
-            <span className="text-amber-700 dark:text-amber-300">
-              <span className="font-medium">{behindN}</span> 待拉取
-            </span>
-          </div>
+          <PendingCommitsPopover
+            kind="incoming"
+            repoPath={repoPath}
+            count={behindN}
+            onCommitClick={onPendingCommitClick}
+          >
+            <button
+              type="button"
+              className="flex items-center gap-1.5 rounded-sm hover:bg-amber-500/10"
+              title="点击查看待拉取的提交"
+            >
+              <AlertCircle
+                className={cn(
+                  'h-3.5 w-3.5 text-amber-600 dark:text-amber-400',
+                  compact && 'shrink-0'
+                )}
+              />
+              <span className="text-amber-700 dark:text-amber-300">
+                <span className="font-medium">{behindN}</span> 待拉取
+              </span>
+            </button>
+          </PendingCommitsPopover>
         )}
         {aheadN > 0 && (
-          <div className="flex items-center gap-1.5">
-            <CheckCircle
-              className={cn(
-                'h-3.5 w-3.5 text-blue-600 dark:text-blue-400',
-                compact && 'shrink-0'
-              )}
-            />
-            <span className="text-blue-700 dark:text-blue-300">
-              <span className="font-medium">{aheadN}</span> 待推送
-            </span>
-          </div>
+          <PendingCommitsPopover
+            kind="outgoing"
+            repoPath={repoPath}
+            count={aheadN}
+            onCommitClick={onPendingCommitClick}
+          >
+            <button
+              type="button"
+              className="flex items-center gap-1.5 rounded-sm hover:bg-blue-500/10"
+              title="点击查看待推送的提交"
+            >
+              <CheckCircle
+                className={cn(
+                  'h-3.5 w-3.5 text-blue-600 dark:text-blue-400',
+                  compact && 'shrink-0'
+                )}
+              />
+              <span className="text-blue-700 dark:text-blue-300">
+                <span className="font-medium">{aheadN}</span> 待推送
+              </span>
+            </button>
+          </PendingCommitsPopover>
         )}
         {!hasOriginRemote && (
           <div className="flex items-center gap-1.5 text-amber-700 dark:text-amber-300">
             <AlertCircle className={cn('h-3.5 w-3.5 shrink-0')} />
-            <span title="同步与推送依赖名为 origin 的远程">未配置 origin 远程</span>
+            <span title="仓库还没有名为 origin 的远程地址，无法获取、拉取或推送">未配置远程仓库</span>
           </div>
         )}
         {hasOriginRemote && showUpstreamHint && (
           <div className="flex items-center gap-1.5 text-amber-700 dark:text-amber-300">
             <AlertCircle className={cn('h-3.5 w-3.5 shrink-0')} />
-            <span title="请 git push -u 或设置 branch.*.merge 后再查看准确的待拉取 / 待推送">未设置上游分支</span>
+            <span
+              title="新开的本地分支默认只在本机。第一次点「推送」会在远程创建同名分支并关联；关联后才能显示待拉取 / 待推送。"
+            >
+              {compact ? '未关联远程' : '还没有对应的远程分支'}
+            </span>
           </div>
         )}
         {hasOriginRemote && showSynced && (
@@ -140,7 +172,11 @@ export function RemoteSyncBar({
             onClick={onPullChanges}
             disabled={remoteDisabled}
             className={cn('px-2 text-xs', compact ? 'h-6' : 'h-7')}
-            title="拉取远程更改（即使没有待拉取的提交）"
+            title={
+              hasUpstream
+                ? '拉取远程更改（即使没有待拉取的提交）'
+                : '当前分支还没有对应的远程分支，拉取可能没有目标；可先推送以创建并关联'
+            }
           >
             <GitPullRequest className="h-3.5 w-3.5 mr-1" />
             拉取
@@ -152,7 +188,11 @@ export function RemoteSyncBar({
             onClick={onPushChanges}
             disabled={remoteDisabled}
             className={cn('px-2 text-xs', compact ? 'h-6' : 'h-7')}
-            title="将本地提交推送到远程仓库"
+            title={
+              hasUpstream
+                ? '将本地提交推送到远程仓库'
+                : '将本地提交推送到远程，并关联为当前分支的对应远程分支'
+            }
           >
             <Upload className="h-3.5 w-3.5 mr-1" />
             推送 ({aheadN})
@@ -165,7 +205,11 @@ export function RemoteSyncBar({
             onClick={onPushChanges}
             disabled={remoteDisabled}
             className={cn('px-2 text-xs', compact ? 'h-6' : 'h-7')}
-            title="推送当前分支（即使没有待推送的提交）"
+            title={
+              hasUpstream
+                ? '推送当前分支（即使没有待推送的提交）'
+                : '首次推送会在远程创建同名分支并关联，之后即可正常拉取 / 推送'
+            }
           >
             <Upload className="h-3.5 w-3.5 mr-1" />
             推送

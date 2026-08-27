@@ -4,14 +4,12 @@ import {
   useRef,
   useMemo,
   useCallback,
-  type KeyboardEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
 } from 'react'
 import { Button } from './ui/button'
 import {
   Clock,
-  GitBranch,
   FileText,
-  Settings,
   FolderOpen,
   FolderPlus,
   Download,
@@ -22,8 +20,11 @@ import {
   Search,
   Trash2,
   Loader2,
-  Layers,
+  MoreHorizontal,
+  Moon,
+  Sun,
 } from 'lucide-react'
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 import { RecentRepo } from '../types/git'
 import { cn, shortenPathMiddle } from '../lib/utils'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
@@ -75,7 +76,11 @@ interface MenuToolbarProps {
   onOpenProxyConfig?: () => void
   onOpenAiConfig?: () => void
   onOpenReliabilityPanel?: () => void
-  onOpenMultiRepoPage?: () => void
+  isMultiRepo?: boolean
+  onSelectSingleRepo?: () => void
+  onSelectMultiRepo?: () => void
+  isDark?: boolean
+  onToggleDarkMode?: () => void
 }
 
 export function MenuToolbar({
@@ -93,7 +98,11 @@ export function MenuToolbar({
   onOpenProxyConfig,
   onOpenAiConfig,
   onOpenReliabilityPanel,
-  onOpenMultiRepoPage
+  isMultiRepo = false,
+  onSelectSingleRepo,
+  onSelectMultiRepo,
+  isDark,
+  onToggleDarkMode,
 }: MenuToolbarProps) {
   const [contextMenu, setContextMenu] = useState<{
     x: number
@@ -117,6 +126,7 @@ export function MenuToolbar({
   const [cloning, setCloning] = useState(false)
   const [cloneProgress, setCloneProgress] = useState<string[]>([])
   const cloneProgressRef = useRef<string[]>([])
+  const [moreOpen, setMoreOpen] = useState(false)
 
   useEffect(() => {
     if (!editTarget) return
@@ -279,7 +289,7 @@ export function MenuToolbar({
     }
   }
 
-  const handleRecentSearchKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+  const handleRecentSearchKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
     if (e.key !== 'Enter') return
     e.preventDefault()
     const query = normalizePastedPath(recentSearch)
@@ -356,36 +366,18 @@ export function MenuToolbar({
   }
 
   return (
-    <div className="flex min-h-[2.5rem] items-center gap-2 bg-muted/30 border-b px-4 py-2 text-sm">
-      {/* 左侧：应用信息 */}
-      <div className="flex shrink-0 items-center gap-4">
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 bg-primary rounded-sm flex items-center justify-center">
-            <span className="text-primary-foreground text-xs font-bold">G</span>
-          </div>
-          <span className="font-medium">GitLite</span>
+    <div className="flex h-9 items-center gap-2 border-b bg-muted/25 px-3 text-sm">
+      <div className="flex shrink-0 items-center gap-1.5">
+        <div className="flex h-4 w-4 items-center justify-center rounded-sm bg-primary">
+          <span className="text-[10px] font-bold leading-none text-primary-foreground">G</span>
         </div>
-        
-        {/* 当前仓库信息 */}
-        {repoInfo && (
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <GitBranch className="h-3 w-3" />
-            <span>{repoInfo.current_branch}</span>
-            {typeof repoInfo.ahead === 'number' && repoInfo.ahead > 0 && (
-              <>
-                <span>•</span>
-                <span className="text-blue-600">{repoInfo.ahead} 待推送</span>
-              </>
-            )}
-          </div>
-        )}
+        <span className="text-sm font-semibold tracking-tight">GitLite</span>
       </div>
 
       {/* 中间：最近仓库 — 顶部固定展示最近 5 个，完整列表进入弹窗 */}
       {recentRepos.length > 0 && (
         <div className="relative flex w-full min-w-0 flex-1 items-center gap-1.5 px-1">
-          <Clock className="h-3 w-3 shrink-0 text-muted-foreground" />
-          <span className="shrink-0 text-muted-foreground">最近:</span>
+          <Clock className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />
           <div
             className="flex min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-hidden"
             role="list"
@@ -735,123 +727,169 @@ export function MenuToolbar({
         </DialogContent>
       </Dialog>
 
-      {/* 右侧：操作按钮（打开仓库在主工具栏，此处仅保留快捷功能） */}
-      <div className="ml-auto flex shrink-0 items-center gap-2">
+      <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        {(onSelectSingleRepo || onSelectMultiRepo) && (
+          <div className="inline-flex rounded-full border border-border/70 bg-background p-0.5">
+            <button
+              type="button"
+              onClick={() => onSelectSingleRepo?.()}
+              className={cn(
+                'rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors',
+                !isMultiRepo
+                  ? 'bg-primary text-primary-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              单仓库
+            </button>
+            <button
+              type="button"
+              onClick={() => onSelectMultiRepo?.()}
+              className={cn(
+                'rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors',
+                isMultiRepo
+                  ? 'bg-primary text-primary-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              多仓库
+            </button>
+          </div>
+        )}
+
+        {onToggleDarkMode && (
+          <Button
+            type="button"
+            onClick={onToggleDarkMode}
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0"
+            title={isDark ? '切换到亮色模式' : '切换到暗色模式'}
+          >
+            {isDark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+          </Button>
+        )}
+
         <Button
           variant="ghost"
           size="sm"
           onClick={onOpenRepository}
           disabled={loading}
-          className="h-6 w-6 p-0"
+          className="h-7 w-7 p-0"
           title="打开仓库"
         >
-          <FolderOpen className="h-3 w-3" />
+          <FolderOpen className="h-3.5 w-3.5" />
         </Button>
 
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-6 px-2 text-xs"
-          onClick={() => onOpenMultiRepoPage?.()}
-          title="多仓库 — 扫描目录并同时查看子仓库状态（独立页面）"
-        >
-          <Layers className="h-3 w-3 mr-1" />
-          多仓库
-        </Button>
-
-        {onInitRepository && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 px-2 text-xs"
-            onClick={() => setInitDialogOpen(true)}
-            disabled={loading}
-            title="初始化新仓库"
-          >
-            <FolderPlus className="h-3 w-3 mr-1" />
-            Init
-          </Button>
-        )}
-
-        {onCloneRepository && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 px-2 text-xs"
-            onClick={() => setCloneDialogOpen(true)}
-            disabled={loading}
-            title="克隆远程仓库"
-          >
-            <Download className="h-3 w-3 mr-1" />
-            Clone
-          </Button>
-        )}
-
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-6 px-2 text-xs"
-          onClick={async () => {
-            const { invoke } = await import('@tauri-apps/api/tauri')
-            try {
-              await invoke('open_log_dir')
-            } catch (err) {
-              console.error('打开日志失败', err)
-            }
-          }}
-        >
-          <FileText className="h-3 w-3 mr-1" />
-          日志
-        </Button>
-
-        {onOpenAiConfig && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onOpenAiConfig}
-            className="h-6 px-2 text-xs"
-          >
-            <Sparkles className="h-3 w-3 mr-1" />
-            AI
-          </Button>
-        )}
-
-        {onOpenReliabilityPanel && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onOpenReliabilityPanel}
-            className="h-6 px-2 text-xs"
-          >
-            <ShieldCheck className="h-3 w-3 mr-1" />
-            可靠性
-          </Button>
-        )}
-
-        {onOpenProxyConfig && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onOpenProxyConfig}
-            className="h-6 px-2 text-xs"
-          >
-            <Network className="h-3 w-3 mr-1" />
-            代理
-          </Button>
-        )}
-
-        <div className="flex items-center gap-1">
-          <Settings className="h-3 w-3 text-muted-foreground" />
-          <label className="flex items-center gap-1 cursor-pointer text-xs">
-            <input
-              type="checkbox"
-              checked={autoOpenEnabled}
-              onChange={(e) => onToggleAutoOpen(e.target.checked)}
-              className="rounded w-3 h-3"
-            />
-            自动打开
-          </label>
-        </div>
+        <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 p-0"
+              title="更多"
+              aria-label="更多"
+            >
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-48 p-1">
+            {onInitRepository && (
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent"
+                disabled={loading}
+                onClick={() => {
+                  setMoreOpen(false)
+                  setInitDialogOpen(true)
+                }}
+              >
+                <FolderPlus className="h-3.5 w-3.5 text-muted-foreground" />
+                初始化仓库
+              </button>
+            )}
+            {onCloneRepository && (
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent"
+                disabled={loading}
+                onClick={() => {
+                  setMoreOpen(false)
+                  setCloneDialogOpen(true)
+                }}
+              >
+                <Download className="h-3.5 w-3.5 text-muted-foreground" />
+                克隆仓库
+              </button>
+            )}
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent"
+              onClick={async () => {
+                setMoreOpen(false)
+                const { invoke } = await import('@tauri-apps/api/tauri')
+                try {
+                  await invoke('open_log_dir')
+                } catch (err) {
+                  console.error('打开日志失败', err)
+                }
+              }}
+            >
+              <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+              打开日志目录
+            </button>
+            {onOpenAiConfig && (
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent"
+                onClick={() => {
+                  setMoreOpen(false)
+                  onOpenAiConfig()
+                }}
+              >
+                <Sparkles className="h-3.5 w-3.5 text-muted-foreground" />
+                AI 配置
+              </button>
+            )}
+            {onOpenReliabilityPanel && (
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent"
+                onClick={() => {
+                  setMoreOpen(false)
+                  onOpenReliabilityPanel()
+                }}
+              >
+                <ShieldCheck className="h-3.5 w-3.5 text-muted-foreground" />
+                可靠性
+              </button>
+            )}
+            {onOpenProxyConfig && (
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent"
+                onClick={() => {
+                  setMoreOpen(false)
+                  onOpenProxyConfig()
+                }}
+              >
+                <Network className="h-3.5 w-3.5 text-muted-foreground" />
+                代理
+              </button>
+            )}
+            <div className="my-1 border-t border-border/60" />
+            <label className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-accent">
+              <input
+                type="checkbox"
+                checked={autoOpenEnabled}
+                onChange={(e) => onToggleAutoOpen(e.target.checked)}
+                className="h-3 w-3 rounded"
+              />
+              启动时自动打开
+            </label>
+          </PopoverContent>
+        </Popover>
       </div>
 
       <Dialog open={initDialogOpen} onOpenChange={setInitDialogOpen}>

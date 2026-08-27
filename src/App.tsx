@@ -958,7 +958,13 @@ function App() {
         onOpenProxyConfig={() => setProxyConfigOpen(true)}
         onOpenAiConfig={() => setAiConfigOpen(true)}
         onOpenReliabilityPanel={() => setReliabilityOpen(true)}
-        onOpenMultiRepoPage={() => setActiveTab('multi')}
+        isMultiRepo={activeTab === 'multi'}
+        onSelectSingleRepo={() =>
+          setActiveTab((prev) => (prev === 'multi' ? 'workspace' : prev))
+        }
+        onSelectMultiRepo={() => setActiveTab('multi')}
+        isDark={isDark}
+        onToggleDarkMode={toggleDarkMode}
       />
 
       {activeTab !== 'multi' && (
@@ -970,93 +976,42 @@ function App() {
           onMergeBranch={handleMergeBranch}
           onOpenRemoteRepository={handleOpenRemoteRepository}
           onOpenRemoteManage={() => setRemoteManageOpen(true)}
-          onPullChanges={handlePullChanges}
+          onPendingCommitClick={(commit) =>
+            handleStatsCommitJump({ commit, scope: 'head', rev: null })
+          }
           loading={loading}
           repoInfo={repoInfo}
-          isDark={isDark}
-          onToggleDarkMode={toggleDarkMode}
-        />
+        >
+          <nav className="flex shrink-0 items-center gap-0.5" aria-label="单仓库页面">
+            {(
+              [
+                ['workspace', '工作区'],
+                ['commits', '提交'],
+                ['files', '文件树'],
+                ['stats', '统计'],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                className={`rounded-md px-2.5 py-1 text-sm font-medium transition-colors ${
+                  activeTab === id
+                    ? 'bg-primary text-primary-foreground shadow-sm'
+                    : 'text-muted-foreground hover:bg-muted/70 hover:text-foreground'
+                }`}
+                onClick={() => setActiveTab(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </nav>
+        </TopToolbar>
       )}
 
       <div className="flex-1 flex flex-col min-h-0">
         {error && (
           <div className="mb-6 p-4 bg-destructive/10 border border-destructive/20 rounded-lg">
             <p className="text-destructive">{error}</p>
-          </div>
-        )}
-
-        {/* 全局模式切换 - 与标题栏轻量级 Git GUI 客户端同级，单/多仓库为顶层 */}
-        <div className="flex shrink-0 items-center justify-between border-b border-border/40 bg-muted/20 px-4 py-1.5">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="hidden sm:inline">轻量级 Git GUI 客户端</span>
-            <span className="sm:hidden">GitLite</span>
-          </div>
-          <div className="inline-flex rounded-full border bg-background p-0.5 shadow-sm">
-            <button
-              type="button"
-              onClick={() => setActiveTab((prev) => (prev === 'multi' ? 'workspace' : prev))}
-              className={`rounded-full px-4 py-1 text-xs font-medium transition-colors ${activeTab !== 'multi' ? 'bg-primary text-primary-foreground shadow' : 'text-muted-foreground hover:text-foreground'}`}
-            >
-              单仓库
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('multi')}
-              className={`rounded-full px-4 py-1 text-xs font-medium transition-colors ${activeTab === 'multi' ? 'bg-primary text-primary-foreground shadow' : 'text-muted-foreground hover:text-foreground'}`}
-            >
-              多仓库
-            </button>
-          </div>
-          <div className="hidden sm:block text-[11px] text-muted-foreground">{activeTab === 'multi' ? '聚合扫描' : repoInfo ? repoInfo.current_branch : '未打开仓库'}</div>
-        </div>
-
-        {/* 单仓库子 Tab - 仅单仓库模式可见 */}
-        {activeTab !== 'multi' && (
-          <div className="flex-shrink-0 px-4 pt-2 border-b border-border flex items-center gap-1">
-            <button
-              type="button"
-              className={`px-4 py-2.5 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
-                activeTab === 'workspace'
-                  ? 'border-primary text-primary bg-background'
-                  : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'
-              }`}
-              onClick={() => setActiveTab('workspace')}
-            >
-              工作区
-            </button>
-            <button
-              type="button"
-              className={`px-4 py-2.5 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
-                activeTab === 'commits'
-                  ? 'border-primary text-primary bg-background'
-                  : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'
-              }`}
-              onClick={() => setActiveTab('commits')}
-            >
-              提交
-            </button>
-            <button
-              type="button"
-              className={`px-4 py-2.5 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
-                activeTab === 'files'
-                  ? 'border-primary text-primary bg-background'
-                  : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'
-              }`}
-              onClick={() => setActiveTab('files')}
-            >
-              文件树
-            </button>
-            <button
-              type="button"
-              className={`px-4 py-2.5 text-sm font-medium rounded-t-lg border-b-2 -mb-px transition-colors ${
-                activeTab === 'stats'
-                  ? 'border-primary text-primary bg-background'
-                  : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'
-              }`}
-              onClick={() => setActiveTab('stats')}
-            >
-              统计
-            </button>
           </div>
         )}
 
@@ -1071,7 +1026,7 @@ function App() {
             />
           </div>
         ) : activeTab === 'workspace' ? (
-          <div className="flex-1 flex flex-col min-h-0 px-4">
+          <div className="flex min-h-0 flex-1 flex-col px-2 pb-2 pt-1.5 sm:px-3">
             <OperationsPanel
               repoInfo={repoInfo}
               onRefresh={handleRefresh}
@@ -1089,10 +1044,13 @@ function App() {
                     }
                   : undefined
               }
+              onJumpToCommit={(commit) =>
+                handleStatsCommitJump({ commit, scope: 'head', rev: null })
+              }
             />
           </div>
         ) : activeTab === 'files' ? (
-          <div className="flex min-h-0 flex-1 flex-col px-4 pb-2 pt-1">
+          <div className="flex min-h-0 flex-1 flex-col px-2 pb-2 pt-1.5 sm:px-3">
             {repoInfo ? (
               <RepoFileTree repoPath={repoInfo.path} />
             ) : (
@@ -1102,7 +1060,7 @@ function App() {
             )}
           </div>
         ) : activeTab === 'stats' ? (
-          <div className="flex min-h-0 flex-1 flex-col px-2 sm:px-4">
+          <div className="flex min-h-0 flex-1 flex-col px-2 pt-1.5 sm:px-3">
             <AuthorStatsPanel
               repoPath={repoInfo?.path}
               branchNames={repoInfo?.branches.map((b) => b.name) ?? []}
@@ -1119,7 +1077,7 @@ function App() {
             />
           </div>
         ) : (
-          <div className="flex min-h-0 flex-1 flex-col px-2 sm:px-4">
+          <div className="flex min-h-0 flex-1 flex-col px-2 pt-1.5 sm:px-3">
             {repoInfo ? (
               <UnifiedCommitView
                 commits={mergedCommitsForViewDeduped}

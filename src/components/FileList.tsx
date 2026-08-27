@@ -59,45 +59,15 @@ export function FileList({ files, selectedFile, onFileSelect }: FileListProps) {
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'added':
-        return <Plus className="h-4 w-4 text-green-600 dark:text-green-400" />
+        return <Plus className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
       case 'modified':
-        return <Edit className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+        return <Edit className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
       case 'deleted':
-        return <Trash2 className="h-4 w-4 text-red-600 dark:text-red-400" />
+        return <Trash2 className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />
       case 'renamed':
-        return <GitBranch className="h-4 w-4 text-yellow-600 dark:text-yellow-400" />
+        return <GitBranch className="h-3.5 w-3.5 text-yellow-600 dark:text-yellow-400" />
       default:
-        return <FileText className="h-4 w-4 text-gray-600 dark:text-gray-400" />
-    }
-  }
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'added':
-        return 'bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-300 dark:border-green-700'
-      case 'modified':
-        return 'bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-700'
-      case 'deleted':
-        return 'bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-300 dark:border-red-700'
-      case 'renamed':
-        return 'bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-300 dark:border-yellow-700'
-      default:
-        return 'bg-gray-100 text-gray-800 border-gray-200 dark:bg-gray-800/50 dark:text-gray-300 dark:border-gray-600'
-    }
-  }
-
-  const getStatusText = (status: string) => {
-    switch (status) {
-      case 'added':
-        return '新增'
-      case 'modified':
-        return '修改'
-      case 'deleted':
-        return '删除'
-      case 'renamed':
-        return '重命名'
-      default:
-        return status
+        return <FileText className="h-3.5 w-3.5 text-gray-600 dark:text-gray-400" />
     }
   }
 
@@ -131,7 +101,7 @@ export function FileList({ files, selectedFile, onFileSelect }: FileListProps) {
           role="listbox"
           aria-label="变更文件列表，↑/↓ 移动"
           onKeyDown={handleKeyDown}
-          className="space-y-1 overflow-y-auto outline-none"
+          className="space-y-px overflow-y-auto outline-none"
         >
           {files.map((file) => {
             const { dir, base } = splitRepoPath(file.path)
@@ -142,10 +112,10 @@ export function FileList({ files, selectedFile, onFileSelect }: FileListProps) {
                 role="option"
                 aria-selected={selectedFile === file.path}
                 className={cn(
-                  'cursor-pointer rounded-md border px-2 py-1.5 transition-colors',
+                  'flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-1 transition-colors',
                   selectedFile === file.path
-                    ? 'border-primary bg-accent shadow-sm ring-1 ring-primary/20'
-                    : 'border-border/35 hover:border-border/50 hover:bg-accent/50'
+                    ? 'bg-accent ring-1 ring-inset ring-primary/25'
+                    : 'hover:bg-accent/55'
                 )}
                 onClick={() => {
                   onFileSelect(file.path)
@@ -153,41 +123,22 @@ export function FileList({ files, selectedFile, onFileSelect }: FileListProps) {
                 }}
                 title={file.path}
               >
-                <div className="flex gap-2">
-                  <div className="shrink-0 pt-0.5">{getStatusIcon(file.status)}</div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex min-w-0 items-start justify-between gap-2">
-                      <p className="min-w-0 truncate text-sm font-medium leading-tight" title={file.path}>
-                        {base}
-                      </p>
-                      <div className="flex shrink-0 items-center gap-1.5">
-                        <span
-                          className={cn(
-                            'inline-flex whitespace-nowrap rounded border px-1 py-0.5 text-[10px] font-semibold leading-none',
-                            getStatusColor(file.status)
-                          )}
-                        >
-                          {getStatusText(file.status)}
-                        </span>
-                        {(file.additions > 0 || file.deletions > 0) && (
-                          <span className="tabular-nums text-[11px]">
-                            <span className="text-green-700 dark:text-green-400">+{file.additions}</span>
-                            <span className="text-muted-foreground"> </span>
-                            <span className="text-red-700 dark:text-red-400">-{file.deletions}</span>
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    {dir ? (
-                      <p
-                        className="mt-1 block min-h-[14px] truncate text-[11px] leading-snug text-muted-foreground"
-                        title={file.path}
-                      >
-                        {dir}
-                      </p>
-                    ) : null}
-                  </div>
-                </div>
+                <div className="shrink-0">{getStatusIcon(file.status)}</div>
+                <p className="min-w-0 flex-1 truncate text-[13px] font-medium leading-tight" title={file.path}>
+                  {base}
+                  {dir ? (
+                    <span className="ml-1.5 font-normal text-[11px] text-muted-foreground">
+                      {dir}
+                    </span>
+                  ) : null}
+                </p>
+                {(file.additions > 0 || file.deletions > 0) && (
+                  <span className="shrink-0 tabular-nums text-[11px]">
+                    <span className="text-green-700 dark:text-green-400">+{file.additions}</span>
+                    <span className="text-muted-foreground"> </span>
+                    <span className="text-red-700 dark:text-red-400">-{file.deletions}</span>
+                  </span>
+                )}
               </div>
             )
           })}

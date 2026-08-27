@@ -173,7 +173,7 @@ function CommitDetailStrip({ commit }: { commit: CommitInfo }) {
       <div className="flex items-start gap-1.5 px-2 py-1.5 sm:gap-2 sm:px-3">
         <div className="min-w-0 flex-1">
           <p
-            className="line-clamp-2 text-sm font-semibold leading-snug tracking-tight text-foreground"
+            className="line-clamp-1 text-sm font-semibold leading-snug tracking-tight text-foreground"
             title={messageBody || undefined}
           >
             {messageBody || '（无提交说明）'}
@@ -576,6 +576,24 @@ export function UnifiedCommitView({
   const setRightPanelCollapsed = useCallback((collapsed: boolean) => {
     setRightPanelCollapsedState(collapsed)
     saveRightPanelCollapsed(collapsed)
+    if (collapsed) return
+    // 展开时立刻给右栏留宽，避免仅列表时 list 仍是整窗宽度、详情被挤成 0
+    setPanes((prev) => {
+      const root = rootRef.current
+      if (!root) return prev
+      const cw = root.clientWidth
+      if (cw <= 0) return prev
+      const s = SPLITTER_PX
+      const minRight = diffPanelCollapsedRef.current
+        ? MIN_FILE_W
+        : MIN_FILE_W + s + MIN_DIFF_W
+      const maxList = Math.max(MIN_LIST_W, cw - s - minRight)
+      const list = Math.max(MIN_LIST_W, Math.min(prev.list, maxList))
+      if (list === prev.list) return prev
+      const next = { list, file: prev.file }
+      queueMicrotask(() => savePanes(next))
+      return next
+    })
   }, [])
 
   const persistPanes = useCallback(() => {
@@ -1478,7 +1496,12 @@ export function UnifiedCommitView({
   // 处理提交选择 - 使用 useCallback 优化
   const handleCommitSelect = useCallback(
     async (commit: CommitInfo, options?: { scrollIntoView?: boolean }) => {
-    // 如果已经是当前选中的提交，直接返回
+    // 仅列表时点提交 = 要看详情（与多库弹窗一致），先展开右栏
+    if (rightPanelCollapsedRef.current) {
+      setRightPanelCollapsed(false)
+    }
+
+    // 如果已经是当前选中的提交，直接返回（右栏已在上方展开）
     if (selectedCommitRef.current?.id === commit.id) return
 
     scrollSelectedCommitAfterLayoutRef.current = options?.scrollIntoView !== false
@@ -1497,7 +1520,7 @@ export function UnifiedCommitView({
       setLoadingFiles(false)
     }
   },
-  [onGetCommitFiles])
+  [onGetCommitFiles, setRightPanelCollapsed])
 
   const filteredCommitIdsKey = useMemo(
     () => filteredCommits.map((c) => c.id).join(','),
@@ -1892,51 +1915,24 @@ export function UnifiedCommitView({
   const getStatusIcon = useCallback((status: string) => {
     switch (status) {
       case 'added':
-        return <Plus className="h-4 w-4 text-green-600 dark:text-green-400" />
+        return <Plus className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
       case 'modified':
-        return <Edit className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+        return <Edit className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
       case 'deleted':
-        return <Trash2 className="h-4 w-4 text-red-600 dark:text-red-400" />
+        return <Trash2 className="h-3.5 w-3.5 text-red-600 dark:text-red-400" />
       case 'renamed':
-        return <GitBranch className="h-4 w-4 text-yellow-600 dark:text-yellow-400" />
+        return <GitBranch className="h-3.5 w-3.5 text-yellow-600 dark:text-yellow-400" />
       default:
-        return <FileText className="h-4 w-4 text-gray-600 dark:text-gray-400" />
+        return <FileText className="h-3.5 w-3.5 text-gray-600 dark:text-gray-400" />
     }
   }, [])
 
-  const getStatusColor = useCallback((status: string) => {
-    switch (status) {
-      case 'added':
-        return 'bg-green-100 text-green-800 border-green-200 dark:bg-green-900/30 dark:text-green-300 dark:border-green-700'
-      case 'modified':
-        return 'bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-700'
-      case 'deleted':
-        return 'bg-red-100 text-red-800 border-red-200 dark:bg-red-900/30 dark:text-red-300 dark:border-red-700'
-      case 'renamed':
-        return 'bg-yellow-100 text-yellow-800 border-yellow-200 dark:bg-yellow-900/30 dark:text-yellow-300 dark:border-yellow-700'
-      default:
-        return 'bg-gray-100 text-gray-800 border-gray-200 dark:bg-gray-800/50 dark:text-gray-300 dark:border-gray-600'
-    }
-  }, [])
-
-  const getStatusText = useCallback((status: string) => {
-    switch (status) {
-      case 'added': return '新增'
-      case 'modified': return '修改'
-      case 'deleted': return '删除'
-      case 'renamed': return '重命名'
-      default: return status
-    }
-  }, [])
-
-  // 文件项：首行文件名 + 状态/增删，次行目录路径，减少单行截断与卡片高度
-  const FileItem = memo(({ file, isSelected, onSelect, getStatusIcon, getStatusColor, getStatusText }: {
+  // 文件项：文件名为主、目录为辅；状态靠图标颜色区分，避免每行再占一块徽章
+  const FileItem = memo(({ file, isSelected, onSelect, getStatusIcon }: {
     file: FileChange
     isSelected: boolean
     onSelect: (filePath: string) => void
     getStatusIcon: (status: string) => React.ReactNode
-    getStatusColor: (status: string) => string
-    getStatusText: (status: string) => string
   }) => {
     const handleClick = useCallback(() => {
       onSelect(file.path)
@@ -1950,56 +1946,35 @@ export function UnifiedCommitView({
         role="option"
         aria-selected={isSelected}
         className={cn(
-          'cursor-pointer rounded-md border px-2 py-1.5 transition-colors',
+          'flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-1 transition-colors',
           isSelected
-            ? 'border-primary bg-accent shadow-sm ring-1 ring-primary/20'
-            : 'border-border/35 hover:border-border/50 hover:bg-accent/50'
+            ? 'bg-accent ring-1 ring-inset ring-primary/25'
+            : 'hover:bg-accent/55'
         )}
         onClick={handleClick}
         title={file.path}
       >
-        <div className="flex gap-2">
-          <div className="shrink-0 pt-0.5">{getStatusIcon(file.status)}</div>
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-start justify-between gap-2">
-              <p
-                className="min-w-0 truncate text-sm font-medium leading-tight text-foreground"
-                title={file.path}
-              >
-                {base}
-              </p>
-              <div className="flex shrink-0 items-center gap-1.5">
-                <span
-                  className={cn(
-                    'inline-flex whitespace-nowrap rounded border px-1 py-0.5 text-[10px] font-semibold leading-none',
-                    getStatusColor(file.status)
-                  )}
-                >
-                  {getStatusText(file.status)}
-                </span>
-                {(file.additions > 0 || file.deletions > 0) && (
-                  <span className="tabular-nums text-[11px]">
-                    <span className="text-green-700 dark:text-green-400">+{file.additions}</span>
-                    <span className="text-muted-foreground"> </span>
-                    <span className="text-red-700 dark:text-red-400">-{file.deletions}</span>
-                  </span>
-                )}
-              </div>
-            </div>
+        <div className="shrink-0">{getStatusIcon(file.status)}</div>
+        <div className="min-w-0 flex-1 leading-tight">
+          <p className="truncate text-[13px] font-medium text-foreground" title={file.path}>
+            {base}
             {dir ? (
-              <p
-                className="mt-1 block min-h-[14px] truncate text-[11px] leading-snug text-muted-foreground"
-                title={file.path}
-              >
+              <span className="ml-1.5 font-normal text-[11px] text-muted-foreground">
                 {dir}
-              </p>
+              </span>
             ) : null}
-          </div>
+          </p>
         </div>
+        {(file.additions > 0 || file.deletions > 0) && (
+          <span className="shrink-0 tabular-nums text-[11px]">
+            <span className="text-green-700 dark:text-green-400">+{file.additions}</span>
+            <span className="text-muted-foreground"> </span>
+            <span className="text-red-700 dark:text-red-400">-{file.deletions}</span>
+          </span>
+        )}
       </div>
     )
   }, (prevProps, nextProps) => {
-    // 自定义比较函数，只在关键属性变化时重新渲染
     return (
       prevProps.file.path === nextProps.file.path &&
       prevProps.file.status === nextProps.file.status &&
@@ -2034,7 +2009,7 @@ export function UnifiedCommitView({
         )}
       >
         <Card className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border-border/45 bg-card shadow-none dark:border-white/[0.07] dark:bg-zinc-950/40">
-          <CardHeader className="space-y-1.5 border-b border-border/35 bg-muted/15 px-2.5 py-2 sm:px-3 dark:bg-muted/5">
+          <CardHeader className="space-y-1 border-b border-border/35 bg-muted/15 px-2.5 py-1.5 sm:px-3 dark:bg-muted/5">
             {/* 标题单独一行，避免与多行筛选区并排时 items-center 把标题挤到日期行中间造成重叠 */}
             <div className="flex min-w-0 items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
@@ -2305,6 +2280,10 @@ export function UnifiedCommitView({
               refreshTitle="刷新仓库与提交列表"
               density="compact"
               className="mt-0 border-0 bg-transparent"
+              repoPath={repoPath}
+              onPendingCommitClick={(commit) => {
+                void handleCommitSelect(commit, { scrollIntoView: true })
+              }}
             />
             <p
               className="px-0.5 pb-0 pt-1 text-[10px] leading-snug text-muted-foreground/80 dark:text-muted-foreground/90"
@@ -2498,7 +2477,7 @@ export function UnifiedCommitView({
                     commitRowElsRef.current[i] = el
                   }}
                   className={cn(
-                    'group relative flex min-h-[2.65rem] shrink-0 cursor-pointer flex-col justify-center border-b border-border/25 transition-colors duration-100 last:border-b-0',
+                    'group relative flex min-h-[2.4rem] shrink-0 cursor-pointer flex-col justify-center border-b border-border/25 transition-colors duration-100 last:border-b-0',
                     atHead &&
                       'bg-emerald-500/[0.07] before:absolute before:left-0 before:top-2 before:bottom-2 before:w-[3px] before:rounded-full before:bg-emerald-500/85 before:content-[""] dark:bg-emerald-500/[0.09] dark:before:bg-emerald-400/80',
                     !atHead && isRowSelected && 'bg-primary/[0.09] ring-1 ring-inset ring-primary/18 dark:bg-primary/[0.12]',
@@ -2727,7 +2706,7 @@ export function UnifiedCommitView({
               )}
             >
               <Card className="flex h-full min-h-0 flex-col border-border/45 dark:border-white/[0.07]">
-                <CardHeader className="flex-shrink-0 border-b border-border/35 py-2 pl-2.5 pr-2 sm:pl-3">
+                <CardHeader className="flex-shrink-0 border-b border-border/35 py-1.5 pl-2.5 pr-2 sm:pl-3">
                   <div className="flex min-w-0 items-center justify-between gap-2">
                     <CardTitle className="flex min-w-0 items-center gap-2 text-sm font-semibold">
                       <FileText className="h-3.5 w-3.5 shrink-0 opacity-80" aria-hidden />
@@ -2753,7 +2732,7 @@ export function UnifiedCommitView({
                     )}
                   </div>
                 </CardHeader>
-                <CardContent className="min-h-0 flex-1 overflow-hidden px-2 py-1.5 sm:px-2.5">
+                <CardContent className="min-h-0 flex-1 overflow-hidden px-1.5 py-1 sm:px-2">
                   {loadingFiles ? (
                     <div className="flex items-center justify-center py-8">
                       <Loader2 className="h-6 w-6 animate-spin" />
@@ -2770,7 +2749,7 @@ export function UnifiedCommitView({
                       role="listbox"
                       aria-label="变更文件列表，↑/↓ 移动，Home/End 跳转，回车选中"
                       onKeyDown={handleFileListKeyDown}
-                      className="scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent h-full space-y-1 overflow-y-auto outline-none"
+                      className="scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent h-full space-y-px overflow-y-auto outline-none"
                     >
                       {commitFiles.map((file) => (
                         <FileItem
@@ -2779,8 +2758,6 @@ export function UnifiedCommitView({
                           isSelected={selectedFile === file.path}
                           onSelect={handleFileSelect}
                           getStatusIcon={getStatusIcon}
-                          getStatusColor={getStatusColor}
-                          getStatusText={getStatusText}
                         />
                       ))}
                     </div>

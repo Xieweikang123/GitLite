@@ -19,6 +19,7 @@ interface WorkspaceStatusProps {
   onPullChanges?: () => void
   onFetchChanges?: () => void
   gitActions?: WorkspaceGitActions
+  onJumpToCommit?: (commit: import('../types/git').CommitInfo) => void
 }
 
 interface WorkspaceStatusData {
@@ -61,6 +62,7 @@ export function WorkspaceStatus({
   onPullChanges,
   onFetchChanges,
   gitActions,
+  onJumpToCommit,
 }: WorkspaceStatusProps) {
   const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatusData | null>(null)
   const [commitMessage, setCommitMessage] = useState('')
@@ -1055,6 +1057,8 @@ export function WorkspaceStatus({
           onPullChanges={onPullChanges}
           onRefresh={handleManualRefresh}
           refreshTitle="刷新远程状态与工作区文件"
+          repoPath={repoInfo.path}
+          onPendingCommitClick={onJumpToCommit}
         />
       )}
 
