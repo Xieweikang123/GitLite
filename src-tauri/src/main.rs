@@ -3183,10 +3183,15 @@ async fn open_repository(
     Ok(repo_info)
 }
 
-fn collect_local_branch_infos(repo: &Repository, current_branch: &str) -> Vec<BranchInfo> {
-    let mut branches = Vec::new();
-    let Ok(iter) = repo.branches(Some(git2::BranchType::Local)) else {
-        return branches;
+fn push_branch_infos(
+    repo: &Repository,
+    current_branch: &str,
+    branch_type: git2::BranchType,
+    is_remote: bool,
+    branches: &mut Vec<BranchInfo>,
+) {
+    let Ok(iter) = repo.branches(Some(branch_type)) else {
+        return;
     };
     for item in iter {
         let Ok((branch, _)) = item else { continue };
@@ -3194,14 +3199,78 @@ fn collect_local_branch_infos(repo: &Repository, current_branch: &str) -> Vec<Br
             Ok(Some(n)) => n.to_string(),
             _ => continue,
         };
+        if is_remote && name.rsplit('/').next().is_some_and(|s| s.eq_ignore_ascii_case("HEAD")) {
+            continue;
+        }
         branches.push(BranchInfo {
-            is_current: name == current_branch,
+            is_current: !is_remote && name == current_branch,
             name,
-            is_remote: false,
+            is_remote,
         });
     }
-    branches.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+}
+
+fn collect_branch_infos(repo: &Repository, current_branch: &str, include_remotes: bool) -> Vec<BranchInfo> {
+    let mut branches = Vec::new();
+    push_branch_infos(
+        repo,
+        current_branch,
+        git2::BranchType::Local,
+        false,
+        &mut branches,
+    );
+    if include_remotes {
+        push_branch_infos(
+            repo,
+            current_branch,
+            git2::BranchType::Remote,
+            true,
+            &mut branches,
+        );
+    }
+    branches.sort_by(|a, b| match (a.is_remote, b.is_remote) {
+        (false, true) => std::cmp::Ordering::Less,
+        (true, false) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
     branches
+}
+
+fn collect_local_branch_infos(repo: &Repository, current_branch: &str) -> Vec<BranchInfo> {
+    collect_branch_infos(repo, current_branch, false)
+}
+
+/// 检出远程跟踪分支时切到同名本地分支；本地没有则创建并设置上游，避免进入游离 HEAD。
+fn checkout_target_branch_name(repo: &Repository, requested: &str) -> Result<String, String> {
+    let name = requested.trim();
+    if name.is_empty() {
+        return Err("分支名不能为空".to_string());
+    }
+    if repo.find_branch(name, git2::BranchType::Local).is_ok() {
+        return Ok(name.to_string());
+    }
+    if repo.find_branch(name, git2::BranchType::Remote).is_ok() {
+        let local_name = name
+            .split_once('/')
+            .map(|(_, rest)| rest)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("无法从远程引用「{}」解析本地分支名", name))?;
+        if repo.find_branch(local_name, git2::BranchType::Local).is_ok() {
+            return Ok(local_name.to_string());
+        }
+        let commit = repo
+            .revparse_single(name)
+            .map_err(|e| format!("无法解析远程分支「{}」: {}", name, e.message()))?
+            .peel_to_commit()
+            .map_err(|e| format!("远程分支「{}」不是提交: {}", name, e.message()))?;
+        repo.branch(local_name, &commit, false)
+            .map_err(|e| format!("从远程创建本地分支失败: {}", e.message()))?;
+        if let Ok(mut local) = repo.find_branch(local_name, git2::BranchType::Local) {
+            let _ = local.set_upstream(Some(name));
+        }
+        return Ok(local_name.to_string());
+    }
+    Ok(name.to_string())
 }
 
 /// 尝试为给定路径收集 DirectoryRepoEntry，成功则返回 Some，路径非仓库则返回 None
@@ -3739,12 +3808,12 @@ async fn set_branch_upstream(
 
     branch
         .set_upstream(normalized_upstream.as_deref())
-        .map_err(|e| format!("设置上游失败: {}", e.message()))?;
+        .map_err(|e| format!("关联远程分支失败: {}", e.message()))?;
 
     if let Some(up) = normalized_upstream {
-        Ok(format!("已将 {} 的上游设置为 {}", name, up))
+        Ok(format!("已将本地分支 {} 关联到远程 {}", name, up))
     } else {
-        Ok(format!("已清除 {} 的上游分支", name))
+        Ok(format!("已取消 {} 与远程分支的关联", name))
     }
 }
 
@@ -3766,28 +3835,8 @@ fn get_repository_info(
         }
     });
     
-    // 获取分支列表
-    let mut branches = Vec::new();
-    let branch_iter = repo.branches(Some(git2::BranchType::Local))
-        .map_err(|e| anyhow::anyhow!("Failed to get branches: {}", e))?;
-    
-    for branch_result in branch_iter {
-        let (branch, _branch_type) = branch_result
-            .map_err(|e| anyhow::anyhow!("Failed to iterate branch: {}", e))?;
-        
-        let branch_name = branch.name()
-            .map_err(|e| anyhow::anyhow!("Failed to get branch name: {}", e))?
-            .unwrap_or("unknown")
-            .to_string();
-        
-        let is_current = branch_name == current_branch;
-        
-        branches.push(BranchInfo {
-            name: branch_name,
-            is_current,
-            is_remote: false,
-        });
-    }
+    // 本地分支 + 远程跟踪分支（fetch 之后会出现 origin/…）
+    let branches = collect_branch_infos(repo, &current_branch, true);
     
     // 获取提交历史
     let commits = get_commit_history(repo, client_calendar_offset_east_minutes)?;
@@ -4922,6 +4971,8 @@ async fn checkout_branch(repo_path: String, branch_name: String) -> Result<Strin
     let repo = Repository::open(&repo_path)
         .map_err(|e| format!("无法打开仓库: {}", e))?;
 
+    let branch_name = checkout_target_branch_name(&repo, &branch_name)?;
+
     let (object, reference) = repo.revparse_ext(&branch_name)
         .map_err(|e| {
             let msg = e.message();
@@ -4983,9 +5034,10 @@ async fn create_branch(
     }
 
     let commit = if let Some(start) = start_point.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        let oid = Oid::from_str(start).map_err(|e| format!("无效的起点提交 ID: {}", e))?;
-        repo.find_commit(oid)
-            .map_err(|e| format!("找不到起点提交「{}」: {}", start, e))?
+        repo.revparse_single(start)
+            .map_err(|e| format!("找不到起点「{}」: {}", start, e.message()))?
+            .peel_to_commit()
+            .map_err(|e| format!("起点「{}」不是提交: {}", start, e.message()))?
     } else {
         let head = repo.head().map_err(|e| format!("无法获取 HEAD: {}", e))?;
         head.peel_to_commit()
@@ -5104,8 +5156,12 @@ async fn merge_branch(repo_path: String, source_branch: String, ff_only: bool) -
         return Err("不能将当前分支合并到自身".to_string());
     }
 
-    repo.find_branch(source, git2::BranchType::Local)
-        .map_err(|_| format!("未找到本地分支「{}」", source))?;
+    let source_exists = repo.find_branch(source, git2::BranchType::Local).is_ok()
+        || repo.find_branch(source, git2::BranchType::Remote).is_ok()
+        || repo.revparse_single(source).is_ok();
+    if !source_exists {
+        return Err(format!("未找到分支「{}」", source));
+    }
 
     let args: Vec<&str> = if ff_only {
         vec!["merge", "--ff-only", source]
@@ -6799,7 +6855,7 @@ async fn push_changes_with_realtime_logs(
         emit_push_log(&app_handle, serde_json::json!({
             "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
             "level": "INFO",
-            "message": "正在检查上游分支设置..."
+            "message": "正在确认是否已关联远程分支..."
         }));
 
         if let Ok(mut branch) = repo.find_branch(&branch_name, git2::BranchType::Local) {
@@ -6808,20 +6864,20 @@ async fn push_changes_with_realtime_logs(
                     emit_push_log(&app_handle, serde_json::json!({
                         "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                         "level": "WARN",
-                        "message": format!("设置上游分支失败: {}", e)
+                        "message": format!("关联远程分支失败: {}", e)
                     }));
                 } else {
                     emit_push_log(&app_handle, serde_json::json!({
                         "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                         "level": "SUCCESS",
-                        "message": format!("已设置上游分支: origin/{}", branch_name)
+                        "message": format!("已关联远程分支 origin/{}", branch_name)
                     }));
                 }
             } else {
                 emit_push_log(&app_handle, serde_json::json!({
                     "timestamp": chrono::Local::now().format("%H:%M:%S%.3f").to_string(),
                     "level": "INFO",
-                    "message": "上游分支已存在"
+                    "message": "当前分支已关联远程"
                 }));
             }
         }
@@ -6962,20 +7018,20 @@ async fn push_changes_with_logs(repo_path: String) -> Result<Vec<(String, String
     logs.push((timestamp, "INFO".to_string(), "推送成功！".to_string()));
 
     let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-    logs.push((timestamp, "INFO".to_string(), "正在检查上游分支设置...".to_string()));
+    logs.push((timestamp, "INFO".to_string(), "正在确认是否已关联远程分支...".to_string()));
 
     if let Ok(mut branch) = repo.find_branch(&branch_name, git2::BranchType::Local) {
         if branch.upstream().is_err() {
             if let Err(e) = branch.set_upstream(Some(&format!("origin/{}", branch_name))) {
                 let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "WARN".to_string(), format!("设置上游分支失败: {}", e)));
+                logs.push((timestamp, "WARN".to_string(), format!("关联远程分支失败: {}", e)));
             } else {
                 let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                logs.push((timestamp, "INFO".to_string(), format!("已设置上游分支: origin/{}", branch_name)));
+                logs.push((timestamp, "INFO".to_string(), format!("已关联远程分支 origin/{}", branch_name)));
             }
         } else {
             let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-            logs.push((timestamp, "INFO".to_string(), "上游分支已存在".to_string()));
+            logs.push((timestamp, "INFO".to_string(), "当前分支已关联远程".to_string()));
         }
     }
 
@@ -7081,7 +7137,11 @@ async fn git_diagnostics(repo_path: String) -> Result<Vec<(String, String, Strin
                     },
                     Err(_) => {
                         let timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
-                        logs.push((timestamp, "WARN".to_string(), "未设置上游分支".to_string()));
+                        logs.push((
+                            timestamp,
+                            "WARN".to_string(),
+                            "当前分支还没有对应的远程分支（新分支常见；首次推送即可关联）".to_string(),
+                        ));
                     }
                 }
             }
