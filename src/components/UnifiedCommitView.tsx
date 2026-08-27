@@ -32,6 +32,8 @@ import {
   ChevronUp,
   ChevronLeft,
   ChevronRight,
+  Info,
+  X,
 } from 'lucide-react'
 import {
   CommitInfo,
@@ -51,9 +53,17 @@ import { CommitDatePickerButton } from './CommitDatePickerButton'
 import { formatLocalYmd } from '../utils/dateYmd'
 import { branchBadgeClassName, branchRevSpec, shortBranchRef } from '../utils/branchDisplayName'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 import { Label } from './ui/label'
 import { formatTauriInvokeError } from '../utils/tauriError'
 import { splitRepoPath } from '../utils/splitRepoPath'
+import {
+  FileChangeFilterBar,
+  countFileChangeStatuses,
+  filterFileChanges,
+  isFileFilterActive,
+  type FileStatusFilter,
+} from './FileChangeFilterBar'
 import { CommitGraphStrip, COMMIT_GRAPH_ROW_HEIGHT } from './CommitGraphStrip'
 
 /** 提交页分栏：左侧提交列表宽度 list；右侧内「文件列表 | diff」中文件列宽度 file */
@@ -555,6 +565,17 @@ export function UnifiedCommitView({
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [diff, setDiff] = useState<string>('')
   const [loadingFiles, setLoadingFiles] = useState(false)
+  const [fileQuery, setFileQuery] = useState('')
+  const [fileStatusFilter, setFileStatusFilter] = useState<FileStatusFilter>('all')
+  const visibleCommitFiles = useMemo(
+    () => filterFileChanges(commitFiles, fileQuery, fileStatusFilter),
+    [commitFiles, fileQuery, fileStatusFilter]
+  )
+  const fileStatusBuckets = useMemo(
+    () => countFileChangeStatuses(commitFiles),
+    [commitFiles]
+  )
+  const fileFilterActive = isFileFilterActive(fileQuery, fileStatusFilter)
   const [loadingDiff, setLoadingDiff] = useState(false)
   const loadingTimeoutRef = useRef<number | null>(null)
   const currentLoadingFileRef = useRef<string | null>(null)
@@ -917,6 +938,35 @@ export function UnifiedCommitView({
     setGraphRailBranchFilter(null)
     onClearSearchMode?.()
   }, [onClearSearchMode])
+
+  const applyDateRange = useCallback((start: string, end: string) => {
+    setPendingStart(start)
+    setPendingEnd(end)
+    setAppliedStart(start)
+    setAppliedEnd(end)
+    setAppliedSearch(pendingSearch)
+  }, [pendingSearch])
+
+  const commitListCountLabel = isSearchMode
+    ? `搜索 ${commits.length}`
+    : `${commits.length}${hasMore ? '+' : ''}`
+
+  const commitListTotalLabel = headCommitTotalLoading
+    ? '统计中…'
+    : headCommitTotal == null
+      ? null
+      : commitLogScope === 'all'
+        ? `全部 ${headCommitTotal}`
+        : commitLogRev
+          ? `${shortBranchRef(commitLogRev)} ${headCommitTotal}`
+          : `当前分支 ${headCommitTotal}`
+
+  const commitListMetaTitle =
+    commitLogScope === 'all'
+      ? '「已加载」为当前列表条数，可继续加载。总数为所有本地分支、远程跟踪与标签可达的去重提交数（与 git log --all 类似）。'
+      : commitLogRev
+        ? `「已加载」为当前列表条数。所选分支「${shortBranchRef(commitLogRev)}」的可达提交总数与 git rev-list --count ${commitLogRev} 一致。`
+        : '「已加载」为当前列表中的条数，可向下滚动继续加载。「当前分支」总数为 HEAD 可达提交数（与 git rev-list --count HEAD 一致），含合并带来的历史。'
 
   const onGraphBranchRailClick = useCallback((branchName: string) => {
     setGraphRailBranchFilter((prev) => (prev === branchName ? null : branchName))
@@ -1585,7 +1635,9 @@ export function UnifiedCommitView({
     setSelectedCommit(commit)
     setSelectedFile(null)
     setDiff('')
-    
+    setFileQuery('')
+    setFileStatusFilter('all')
+
     try {
       setLoadingFiles(true)
       const files = await onGetCommitFiles(commit.id)
@@ -1941,33 +1993,33 @@ export function UnifiedCommitView({
   const handleFileListKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
       if (isTypingTarget(e.target)) return
-      if (commitFiles.length === 0) return
+      if (visibleCommitFiles.length === 0) return
       const key = e.key
       if (key !== 'ArrowUp' && key !== 'ArrowDown' && key !== 'Home' && key !== 'End' && key !== 'Enter') return
       e.preventDefault()
       const curPath = selectedFile ?? null
-      let idx = curPath ? commitFiles.findIndex((f) => f.path === curPath) : -1
+      let idx = curPath ? visibleCommitFiles.findIndex((f) => f.path === curPath) : -1
       if (key === 'ArrowDown') {
         if (idx === -1) idx = 0
-        else idx = Math.min(idx + 1, commitFiles.length - 1)
-        const next = commitFiles[idx]
+        else idx = Math.min(idx + 1, visibleCommitFiles.length - 1)
+        const next = visibleCommitFiles[idx]
         if (next) void handleFileSelect(next.path)
       } else if (key === 'ArrowUp') {
-        if (idx === -1) idx = commitFiles.length - 1
+        if (idx === -1) idx = visibleCommitFiles.length - 1
         else idx = Math.max(idx - 1, 0)
-        const next = commitFiles[idx]
+        const next = visibleCommitFiles[idx]
         if (next) void handleFileSelect(next.path)
       } else if (key === 'Home') {
-        const next = commitFiles[0]
+        const next = visibleCommitFiles[0]
         if (next) void handleFileSelect(next.path)
       } else if (key === 'End') {
-        const next = commitFiles[commitFiles.length - 1]
+        const next = visibleCommitFiles[visibleCommitFiles.length - 1]
         if (next) void handleFileSelect(next.path)
       } else if (key === 'Enter') {
         if (curPath) void handleFileSelect(curPath)
       }
     },
-    [commitFiles, selectedFile, handleFileSelect, isTypingTarget]
+    [visibleCommitFiles, selectedFile, handleFileSelect, isTypingTarget]
   )
 
   // 清理定时器
@@ -2085,10 +2137,9 @@ export function UnifiedCommitView({
         )}
       >
         <Card className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border-border/45 bg-card shadow-none dark:border-white/[0.07] dark:bg-zinc-950/40">
-          <CardHeader className="space-y-1 border-b border-border/35 bg-muted/15 px-2.5 py-1.5 sm:px-3 dark:bg-muted/5">
-            {/* 标题单独一行，避免与多行筛选区并排时 items-center 把标题挤到日期行中间造成重叠 */}
-            <div className="flex min-w-0 items-center justify-between gap-2">
-              <div className="flex min-w-0 items-center gap-2">
+          <CardHeader className="flex flex-col gap-1.5 space-y-0 border-b border-border/35 bg-muted/15 px-2.5 py-2 sm:px-3 dark:bg-muted/5">
+            <div className="flex min-w-0 items-center gap-2">
+              <div className="flex min-w-0 flex-1 items-center gap-1.5">
                 <CardTitle className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                   提交记录
                 </CardTitle>
@@ -2126,12 +2177,32 @@ export function UnifiedCommitView({
                     </button>
                   </div>
                 )}
+                {commitLogScope === 'all' && (
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
+                        title="关于全部分支"
+                        aria-label="关于全部分支"
+                      >
+                        <Info className="h-3.5 w-3.5" aria-hidden />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="max-w-xs p-3 text-xs leading-relaxed text-muted-foreground" align="start">
+                      历史范围为各本地分支、远程跟踪与标签可达的合并历史。提交旁徽章为引用当前指向的提交（本地
+                      master、远程 origin/master 等）；虚线边框为远程跟踪。
+                    </PopoverContent>
+                  </Popover>
+                )}
                 {commitLogScope === 'head' &&
                   onCommitLogRevChange &&
                   branchesSorted.length > 0 &&
                   checkoutHeadRef != null && (
                     <select
-                      className="h-6 max-w-[11rem] shrink rounded-md border border-input bg-background px-1.5 text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="h-6 max-w-[11rem] min-w-0 shrink rounded-md border border-input bg-background px-1.5 text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       value={commitLogBranchSelectValue}
                       onChange={(e) => {
                         const v = e.target.value.trim()
@@ -2155,15 +2226,29 @@ export function UnifiedCommitView({
                     </select>
                   )}
               </div>
-              <div className="flex shrink-0 items-center gap-1">
+              <div className="flex shrink-0 items-center gap-0.5">
+                {hasActiveFilters && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 shrink-0 gap-0.5 px-1.5 text-xs text-muted-foreground hover:text-foreground"
+                    onClick={clearAllFilters}
+                    title="清空日期、关键词与分支筛选"
+                  >
+                    <X className="h-3 w-3" aria-hidden />
+                    清空
+                  </Button>
+                )}
                 {!rightPanelCollapsed ? (
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-6 shrink-0 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+                    className="h-6 w-6 shrink-0 p-0 text-muted-foreground hover:text-foreground sm:w-auto sm:gap-1 sm:px-2"
                     onClick={() => setRightPanelCollapsed(true)}
                     title="隐藏右侧（提交摘要、文件列表、差异），仅保留本列表"
+                    aria-label="仅列表"
                   >
                     <ChevronRight className="h-3.5 w-3.5" aria-hidden />
                     <span className="hidden sm:inline">仅列表</span>
@@ -2173,292 +2258,189 @@ export function UnifiedCommitView({
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="h-6 shrink-0 gap-1 px-2 text-xs"
+                    className="h-6 w-6 shrink-0 p-0 sm:w-auto sm:gap-1 sm:px-2 sm:text-xs"
                     onClick={() => setRightPanelCollapsed(false)}
                     title="恢复右侧提交详情与变更"
+                    aria-label="显示详情"
                   >
                     <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
                     <span className="hidden sm:inline">显示详情</span>
                   </Button>
                 )}
-                {hasActiveFilters && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 shrink-0 px-2 text-xs text-muted-foreground hover:text-foreground"
-                    onClick={clearAllFilters}
-                  >
-                    清空筛选
-                  </Button>
-                )}
               </div>
             </div>
-            {commitLogScope === 'all' && (
-              <details className="text-[10px] leading-tight text-muted-foreground">
-                <summary className="cursor-pointer select-none list-none rounded-sm px-0 py-0 [&::-webkit-details-marker]:hidden hover:text-foreground">
-                  <span className="font-medium text-foreground/85">全部分支</span>
-                  <span className="opacity-90"> 提交旁徽章为引用当前指向的提交</span>
-                  <span className="text-primary/70"> · 展开说明</span>
-                </summary>
-                <p className="mt-0.5 pl-0 text-[10px] text-muted-foreground">
-                  历史范围为各本地分支、远程跟踪与标签可达的合并历史。行内徽章只标出引用 tip（本地
-                  master、远程 origin/master 等），虚线边框为远程跟踪，便于看出远端当前所在节点。
-                </p>
-              </details>
-            )}
-            <div className="flex min-w-0 flex-nowrap items-center gap-x-1 gap-y-0 overflow-x-auto overflow-y-hidden rounded-md border border-border/40 bg-background/55 py-0.5 pl-1 pr-0.5 scrollbar-thin scrollbar-thumb-muted-foreground/25 scrollbar-track-transparent dark:border-white/[0.06] dark:bg-background/25 dark:scrollbar-thumb-muted-foreground/30">
-              <span className="flex shrink-0 items-center gap-0.5 text-[10px] font-medium text-muted-foreground">
-                <Calendar className="h-3 w-3 shrink-0" aria-hidden />
-                日期
-              </span>
-              <div className="grid w-[9.5rem] shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-0.5 sm:w-[10.5rem]">
+
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              <div className="relative min-w-[8rem] flex-1">
+                <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  placeholder="筛选提交"
+                  value={pendingSearch}
+                  onChange={(e) => setPendingSearch(e.target.value)}
+                  aria-label="按关键词筛选已加载的提交"
+                  className="h-6 w-full min-w-0 border-border/70 bg-background py-0 pl-7 pr-2 text-xs"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && canApplyFilters) {
+                      e.preventDefault()
+                      applyFilters()
+                    }
+                  }}
+                />
+              </div>
+              {pendingSearch.trim() && !isSearchMode && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="h-6 shrink-0 px-2 text-xs"
+                  disabled={searchLoading}
+                  onClick={() => onSearchFullRepo?.(pendingSearch.trim())}
+                  title="在整个仓库历史中搜索关键词"
+                >
+                  {searchLoading ? (
+                    <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                  ) : (
+                    '全库'
+                  )}
+                </Button>
+              )}
+              {isSearchMode && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 shrink-0 px-2 text-xs"
+                  onClick={() => {
+                    setPendingSearch('')
+                    onClearSearchMode?.()
+                  }}
+                  title="退出全库搜索，回到当前列表"
+                >
+                  恢复列表
+                </Button>
+              )}
+              <div className="flex shrink-0 items-center gap-1">
+                <Calendar className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />
                 <CommitDatePickerButton
                   value={pendingStart}
                   onChange={setPendingStart}
                   placeholder="开始"
                   title="开始日期"
-                  className="h-6 min-w-0 w-full max-w-none justify-start px-1.5 text-xs"
+                  className="h-6 w-[6.75rem] max-w-none justify-start px-1.5 text-xs"
                 />
-                <span className="shrink-0 px-0 text-center text-[10px] text-muted-foreground">
-                  至
-                </span>
+                <span className="shrink-0 text-[10px] text-muted-foreground/70">–</span>
                 <CommitDatePickerButton
                   value={pendingEnd}
                   onChange={setPendingEnd}
                   placeholder="结束"
                   title="结束日期"
-                  className="h-6 min-w-0 w-full max-w-none justify-start px-1.5 text-xs"
+                  className="h-6 w-[6.75rem] max-w-none justify-start px-1.5 text-xs"
                 />
               </div>
-              <span className="shrink-0 text-[10px] font-medium text-muted-foreground">关键词</span>
-              <div className="relative min-h-6 min-w-[5rem] flex-1">
-                  <Search className="pointer-events-none absolute left-1.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    placeholder="已加载列表内筛选，Enter"
-                    value={pendingSearch}
-                    onChange={(e) => setPendingSearch(e.target.value)}
-                    className="h-6 w-full min-w-0 border-border/70 bg-background/80 py-0 pl-6 pr-1 text-xs"
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && canApplyFilters) {
-                        e.preventDefault()
-                        applyFilters()
-                      }
-                    }}
-                  />
-                </div>
-                {pendingSearch.trim() && !isSearchMode && (
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    className="h-6 shrink-0 px-1.5 text-[10px] sm:px-2 sm:text-xs"
-                    disabled={searchLoading}
-                    onClick={() => onSearchFullRepo?.(pendingSearch.trim())}
-                    title="在整个仓库历史中搜索关键词"
-                  >
-                    {searchLoading ? (
-                      <>
-                        <Loader2 className="mr-1 h-3 w-3 shrink-0 animate-spin" />
-                        <span className="hidden sm:inline">搜索中</span>
-                      </>
-                    ) : (
-                      '全库'
-                    )}
-                  </Button>
-                )}
-                {isSearchMode && (
-                  <>
-                    <span className="shrink-0 whitespace-nowrap text-[10px] text-muted-foreground">全库</span>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 shrink-0 px-1.5 text-[10px] sm:text-xs"
-                      onClick={() => {
-                        setPendingSearch('')
-                        onClearSearchMode?.()
-                      }}
-                    >
-                      恢复
-                    </Button>
-                  </>
-                )}
-              <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-0.5">
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    className="h-6 shrink-0 px-1.5 text-[10px] sm:px-2 sm:text-xs"
-                    onClick={() => {
-                      const ymd = formatLocalYmd(new Date())
-                      setPendingStart(ymd)
-                      setPendingEnd(ymd)
-                      setAppliedStart(ymd)
-                      setAppliedEnd(ymd)
-                      setAppliedSearch(pendingSearch)
-                    }}
-                    title="开始与结束均设为今天并立即筛选"
-                  >
-                    今日
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    className="h-6 shrink-0 px-1.5 text-[10px] sm:px-2 sm:text-xs"
-                    onClick={() => {
-                      const end = new Date()
-                      const start = new Date(end)
-                      start.setDate(start.getDate() - 6)
-                      setPendingStart(formatLocalYmd(start))
-                      setPendingEnd(formatLocalYmd(end))
-                    }}
-                    title="含今日共 7 个自然日"
-                  >
-                    7天
-                  </Button>
+              <div className="flex shrink-0 items-center gap-0.5">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 shrink-0 px-1.5 text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => {
+                    const ymd = formatLocalYmd(new Date())
+                    applyDateRange(ymd, ymd)
+                  }}
+                  title="开始与结束均设为今天并立即筛选"
+                >
+                  今日
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 shrink-0 px-1.5 text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => {
+                    const end = new Date()
+                    const start = new Date(end)
+                    start.setDate(start.getDate() - 6)
+                    applyDateRange(formatLocalYmd(start), formatLocalYmd(end))
+                  }}
+                  title="含今日共 7 个自然日，立即筛选"
+                >
+                  7天
+                </Button>
+                {canApplyFilters && (
                   <Button
                     type="button"
                     size="sm"
-                    className="h-6 shrink-0 px-1.5 text-[10px] sm:px-2 sm:text-xs"
-                    disabled={!canApplyFilters}
+                    className="h-6 shrink-0 px-2 text-xs"
                     onClick={applyFilters}
                     title="将当前日期与关键词应用到列表筛选"
                   >
                     查询
                   </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
-                    disabled={filteredCommits.length === 0}
-                    onClick={openCommitListDialog}
-                    title="列出当前筛选下已加载的全部提交（时间升序），便于复制"
-                    aria-label="提交列表"
-                  >
-                    <ClipboardList className="h-3.5 w-3.5" />
-                  </Button>
+                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
+                  disabled={filteredCommits.length === 0}
+                  onClick={openCommitListDialog}
+                  title="列出当前筛选下已加载的全部提交（时间升序），便于复制"
+                  aria-label="提交列表"
+                >
+                  <ClipboardList className="h-3.5 w-3.5" />
+                </Button>
               </div>
             </div>
+
             {listError && (
-              <p className="mb-1 rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+              <p className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
                 {listError}
               </p>
             )}
-            <RemoteSyncBar
-              ahead={aheadCount}
-              behind={behindCount}
-              hasUpstream={hasUpstream}
-              hasOriginRemote={hasOriginRemote}
-              disabled={syncBusy}
-              onFetchChanges={onFetchChanges}
-              onPullChanges={onPullChanges}
-              onPushChanges={onPushChanges}
-              onRefresh={onRefreshRepo}
-              refreshTitle="刷新仓库与提交列表"
-              density="compact"
-              className="mt-0 border-0 bg-transparent"
-              repoPath={repoPath}
-              onPendingCommitClick={(commit) => {
-                void handleCommitSelect(commit, { scrollIntoView: true })
-              }}
-            />
-            <p
-              className="px-0.5 pb-0 pt-1 text-[10px] leading-snug text-muted-foreground/80 dark:text-muted-foreground/90"
-              title={
-                commitLogScope === 'all'
-                  ? '「已加载」为当前列表条数，可继续加载。总数为所有本地分支、远程跟踪与标签可达的去重提交数（与 git log --all 类似）。'
-                  : commitLogRev
-                    ? `「已加载」为当前列表条数。所选分支「${shortBranchRef(commitLogRev)}」的可达提交总数与 git rev-list --count ${commitLogRev} 一致。`
-                    : '「已加载」为当前列表中的条数，可向下滚动继续加载。「当前分支」总数为 HEAD 可达提交数（与 git rev-list --count HEAD 一致），含合并带来的历史。'
-              }
-            >
-              {isSearchMode ? (
-                <>
-                  全仓库搜索到 {commits.length} 条
-                  {headCommitTotalLoading && ' · 统计分支总数中…'}
-                  {!headCommitTotalLoading && headCommitTotal !== null && (
-                    <>
-                      {' '}
-                      ·{' '}
-                      {commitLogScope === 'all'
-                        ? `全部引用共 ${headCommitTotal} 个提交`
-                        : commitLogRev
-                          ? `分支「${shortBranchRef(commitLogRev)}」共 ${headCommitTotal} 个提交`
-                          : `当前分支共 ${headCommitTotal} 个提交`}
-                    </>
-                  )}
-                  {graphRailBranchFilter && (
-                    <>
-                      {' '}
-                      · 仅看分支{' '}
-                      <button
-                        type="button"
-                        className="inline-block max-w-[min(11rem,40vw)] truncate align-bottom font-mono text-[10px] text-foreground underline decoration-dotted underline-offset-2 hover:text-primary"
-                        title={`${graphRailBranchFilter}\n点击清除分支筛选`}
-                        onClick={() => setGraphRailBranchFilter(null)}
-                      >
-                        {graphRailBranchFilter}
-                      </button>
-                    </>
-                  )}
-                  {headShortNormalized && (
-                    <>
-                      {' '}
-                      · 当前检出{' '}
-                      <span className="font-mono text-foreground" title="工作区基于此提交（HEAD）">
-                        HEAD {headShortId?.trim()}
-                      </span>
-                    </>
-                  )}
-                </>
-              ) : (
-                <>
-                  已加载 {commits.length} 条
-                  {hasMore && '（列表可继续下拉加载）'}
-                  {headCommitTotalLoading && ' · 统计分支总数中…'}
-                  {!headCommitTotalLoading && headCommitTotal !== null && (
-                    <>
-                      {' '}
-                      ·{' '}
-                      {commitLogScope === 'all'
-                        ? `全部引用共 ${headCommitTotal} 个提交`
-                        : commitLogRev
-                          ? `分支「${shortBranchRef(commitLogRev)}」共 ${headCommitTotal} 个提交`
-                          : `当前分支共 ${headCommitTotal} 个提交`}
-                    </>
-                  )}
-                  {filteredCommits.length !== commits.length && (
-                    <> · 筛选后显示 {filteredCommits.length} 条</>
-                  )}
-                  {graphRailBranchFilter && (
-                    <>
-                      {' '}
-                      · 仅看分支{' '}
-                      <button
-                        type="button"
-                        className="inline-block max-w-[min(11rem,40vw)] truncate align-bottom font-mono text-[10px] text-foreground underline decoration-dotted underline-offset-2 hover:text-primary"
-                        title={`${graphRailBranchFilter}\n点击清除分支筛选`}
-                        onClick={() => setGraphRailBranchFilter(null)}
-                      >
-                        {graphRailBranchFilter}
-                      </button>
-                    </>
-                  )}
-                  {headShortNormalized && (
-                    <>
-                      {' '}
-                      · 当前检出{' '}
-                      <span className="font-mono text-foreground" title="工作区基于此提交（HEAD）">
-                        HEAD {headShortId?.trim()}
-                      </span>
-                    </>
-                  )}
-                </>
-              )}
-            </p>
+
+            <div className="flex min-w-0 items-center gap-2">
+              <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+                <p
+                  className="min-w-0 truncate text-[10px] leading-none text-muted-foreground"
+                  title={commitListMetaTitle}
+                >
+                  {commitListCountLabel}
+                  {commitListTotalLabel ? ` · ${commitListTotalLabel}` : ''}
+                  {!isSearchMode && filteredCommits.length !== commits.length
+                    ? ` · 显示 ${filteredCommits.length}`
+                    : ''}
+                  {headShortNormalized ? ` · ${headShortId?.trim()}` : ''}
+                </p>
+                {graphRailBranchFilter ? (
+                  <button
+                    type="button"
+                    className="max-w-[8rem] shrink-0 truncate font-mono text-[10px] text-foreground underline decoration-dotted underline-offset-2 hover:text-primary"
+                    title={`${graphRailBranchFilter}\n点击清除分支筛选`}
+                    onClick={() => setGraphRailBranchFilter(null)}
+                  >
+                    {graphRailBranchFilter}
+                  </button>
+                ) : null}
+              </div>
+              <RemoteSyncBar
+                ahead={aheadCount}
+                behind={behindCount}
+                hasUpstream={hasUpstream}
+                hasOriginRemote={hasOriginRemote}
+                disabled={syncBusy}
+                onFetchChanges={onFetchChanges}
+                onPullChanges={onPullChanges}
+                onPushChanges={onPushChanges}
+                onRefresh={onRefreshRepo}
+                refreshTitle="刷新仓库与提交列表"
+                density="compact"
+                className="ml-auto shrink-0 border-0 bg-transparent p-0"
+                repoPath={repoPath}
+                onPendingCommitClick={(commit) => {
+                  void handleCommitSelect(commit, { scrollIntoView: true })
+                }}
+              />
+            </div>
           </CardHeader>
           <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden p-0">
             <div
@@ -2800,8 +2782,10 @@ export function UnifiedCommitView({
                       <FileText className="h-3.5 w-3.5 shrink-0 opacity-80" aria-hidden />
                       <span className="truncate">文件变更</span>
                       {commitFiles.length > 0 && (
-                        <span className="shrink-0 font-normal text-muted-foreground">
-                          ({commitFiles.length})
+                        <span className="shrink-0 font-normal text-muted-foreground" title={fileFilterActive ? `筛选后 ${visibleCommitFiles.length} / 共 ${commitFiles.length} 个文件` : undefined}>
+                          {fileFilterActive
+                            ? `${visibleCommitFiles.length}/${commitFiles.length}`
+                            : `(${commitFiles.length})`}
                         </span>
                       )}
                     </CardTitle>
@@ -2820,7 +2804,7 @@ export function UnifiedCommitView({
                     )}
                   </div>
                 </CardHeader>
-                <CardContent className="min-h-0 flex-1 overflow-hidden px-1.5 py-1 sm:px-2">
+                <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden px-1.5 py-1 sm:px-2">
                   {loadingFiles ? (
                     <div className="flex items-center justify-center py-8">
                       <Loader2 className="h-6 w-6 animate-spin" />
@@ -2831,24 +2815,39 @@ export function UnifiedCommitView({
                       <p className="text-muted-foreground">此提交没有文件变更</p>
                     </div>
                   ) : (
-                    <div
-                      ref={fileListScrollRef}
-                      tabIndex={0}
-                      role="listbox"
-                      aria-label="变更文件列表，↑/↓ 移动，Home/End 跳转，回车选中"
-                      onKeyDown={handleFileListKeyDown}
-                      className="scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent h-full space-y-px overflow-y-auto outline-none"
-                    >
-                      {commitFiles.map((file) => (
-                        <FileItem
-                          key={file.path}
-                          file={file}
-                          isSelected={selectedFile === file.path}
-                          onSelect={handleFileSelect}
-                          getStatusIcon={getStatusIcon}
-                        />
-                      ))}
-                    </div>
+                    <>
+                      <FileChangeFilterBar
+                        query={fileQuery}
+                        onQueryChange={setFileQuery}
+                        status={fileStatusFilter}
+                        onStatusChange={setFileStatusFilter}
+                        buckets={fileStatusBuckets}
+                      />
+                      <div
+                        ref={fileListScrollRef}
+                        tabIndex={0}
+                        role="listbox"
+                        aria-label="变更文件列表，↑/↓ 移动，Home/End 跳转，回车选中"
+                        onKeyDown={handleFileListKeyDown}
+                        className="scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent min-h-0 flex-1 space-y-px overflow-y-auto outline-none"
+                      >
+                        {visibleCommitFiles.length === 0 ? (
+                          <p className="py-8 text-center text-sm text-muted-foreground">
+                            没有匹配的文件变更
+                          </p>
+                        ) : (
+                          visibleCommitFiles.map((file) => (
+                            <FileItem
+                              key={file.path}
+                              file={file}
+                              isSelected={selectedFile === file.path}
+                              onSelect={handleFileSelect}
+                              getStatusIcon={getStatusIcon}
+                            />
+                          ))
+                        )}
+                      </div>
+                    </>
                   )}
                 </CardContent>
               </Card>

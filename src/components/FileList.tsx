@@ -1,9 +1,16 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { FileChange } from '../types/git'
 import { FileText, Plus, Edit, Trash2, GitBranch } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { splitRepoPath } from '../utils/splitRepoPath'
+import {
+  FileChangeFilterBar,
+  countFileChangeStatuses,
+  filterFileChanges,
+  isFileFilterActive,
+  type FileStatusFilter,
+} from './FileChangeFilterBar'
 
 interface FileListProps {
   files: FileChange[]
@@ -14,6 +21,15 @@ interface FileListProps {
 
 export function FileList({ files, selectedFile, onFileSelect }: FileListProps) {
   const listRef = useRef<HTMLDivElement>(null)
+  const [fileQuery, setFileQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<FileStatusFilter>('all')
+
+  const visibleFiles = useMemo(
+    () => filterFileChanges(files, fileQuery, statusFilter),
+    [files, fileQuery, statusFilter]
+  )
+  const statusBuckets = useMemo(() => countFileChangeStatuses(files), [files])
+  const filterActive = isFileFilterActive(fileQuery, statusFilter)
 
   useEffect(() => {
     if (!selectedFile || !listRef.current) return
@@ -32,7 +48,7 @@ export function FileList({ files, selectedFile, onFileSelect }: FileListProps) {
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
-      if (files.length === 0) return
+      if (visibleFiles.length === 0) return
       const t = e.target
       if (t instanceof HTMLElement) {
         const tag = t.tagName
@@ -41,19 +57,19 @@ export function FileList({ files, selectedFile, onFileSelect }: FileListProps) {
       const key = e.key
       if (key !== 'ArrowUp' && key !== 'ArrowDown' && key !== 'Home' && key !== 'End') return
       e.preventDefault()
-      let idx = selectedFile ? files.findIndex((f) => f.path === selectedFile) : -1
+      let idx = selectedFile ? visibleFiles.findIndex((f) => f.path === selectedFile) : -1
       if (key === 'ArrowDown') {
         if (idx === -1) idx = 0
-        else idx = Math.min(idx + 1, files.length - 1)
+        else idx = Math.min(idx + 1, visibleFiles.length - 1)
       } else if (key === 'ArrowUp') {
-        if (idx === -1) idx = files.length - 1
+        if (idx === -1) idx = visibleFiles.length - 1
         else idx = Math.max(idx - 1, 0)
       } else if (key === 'Home') idx = 0
-      else if (key === 'End') idx = files.length - 1
-      const next = files[idx]
+      else if (key === 'End') idx = visibleFiles.length - 1
+      const next = visibleFiles[idx]
       if (next && next.path !== selectedFile) onFileSelect(next.path)
     },
-    [files, selectedFile, onFileSelect]
+    [visibleFiles, selectedFile, onFileSelect]
   )
 
   const getStatusIcon = (status: string) => {
@@ -91,21 +107,35 @@ export function FileList({ files, selectedFile, onFileSelect }: FileListProps) {
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <FileText className="h-5 w-5" />
-          文件变更 ({files.length})
+          文件变更 (
+            {filterActive ? `${visibleFiles.length}/${files.length}` : files.length}
+          )
         </CardTitle>
       </CardHeader>
-      <CardContent className="px-2.5 py-2">
+      <CardContent className="flex flex-col px-2.5 py-2">
+        <FileChangeFilterBar
+          query={fileQuery}
+          onQueryChange={setFileQuery}
+          status={statusFilter}
+          onStatusChange={setStatusFilter}
+          buckets={statusBuckets}
+        />
         <div
           ref={listRef}
           tabIndex={0}
           role="listbox"
           aria-label="变更文件列表，↑/↓ 移动"
           onKeyDown={handleKeyDown}
-          className="space-y-px overflow-y-auto outline-none"
+          className="min-h-0 flex-1 space-y-px overflow-y-auto outline-none"
         >
-          {files.map((file) => {
-            const { dir, base } = splitRepoPath(file.path)
-            return (
+          {visibleFiles.length === 0 ? (
+            <p className="py-4 text-center text-sm text-muted-foreground">
+              没有匹配的文件变更
+            </p>
+          ) : (
+            visibleFiles.map((file) => {
+              const { dir, base } = splitRepoPath(file.path)
+              return (
               <div
                 key={file.path}
                 data-file-path={file.path}
@@ -140,8 +170,9 @@ export function FileList({ files, selectedFile, onFileSelect }: FileListProps) {
                   </span>
                 )}
               </div>
-            )
-          })}
+              )
+            })
+          )}
         </div>
       </CardContent>
     </Card>
