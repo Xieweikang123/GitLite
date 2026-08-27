@@ -3980,6 +3980,24 @@ fn commit_log_scope_from_parts(scope: Option<&str>, rev: Option<&str>) -> Commit
     }
 }
 
+/// 解析提交历史用的引用。误把远程跟踪写成 `refs/heads/origin/…` 时回退到 `refs/remotes/…`。
+fn revparse_history_object<'repo>(
+    repo: &'repo Repository,
+    ref_spec: &str,
+) -> Result<git2::Object<'repo>> {
+    match repo.revparse_single(ref_spec) {
+        Ok(obj) => Ok(obj),
+        Err(e) => {
+            if let Some(rest) = ref_spec.strip_prefix("refs/heads/") {
+                if let Ok(obj) = repo.revparse_single(&format!("refs/remotes/{rest}")) {
+                    return Ok(obj);
+                }
+            }
+            Err(anyhow::anyhow!("无法解析引用 \"{}\": {}", ref_spec, e))
+        }
+    }
+}
+
 fn revwalk_push_scope(
     repo: &Repository,
     revwalk: &mut git2::Revwalk,
@@ -4022,9 +4040,7 @@ fn revwalk_push_scope(
             }
         }
         CommitLogScope::Rev(ref_spec) => {
-            let obj = repo
-                .revparse_single(ref_spec.as_str())
-                .map_err(|e| anyhow::anyhow!("无法解析引用 \"{}\": {}", ref_spec, e))?;
+            let obj = revparse_history_object(repo, ref_spec.as_str())?;
             revwalk
                 .push(obj.id())
                 .map_err(|e| anyhow::anyhow!("Failed to push rev: {}", e))?;

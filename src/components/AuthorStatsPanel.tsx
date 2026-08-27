@@ -38,11 +38,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { Button } from './ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { cn } from '../lib/utils'
+import { branchRevSpec } from '../utils/branchDisplayName'
 import type {
   AuthorCommitStat,
   BranchActivityLifecycleReport,
   BranchActivityLifecycleStat,
   AuthorLineStat,
+  BranchInfo,
   CommitInfo,
   DiffAggregateStats,
   FileTerritoryStat,
@@ -304,7 +306,7 @@ function cacheKeyBranchStats(repo: string, baseBranch: string | null | undefined
 
 interface AuthorStatsPanelProps {
   repoPath: string | undefined
-  branchNames: string[]
+  branches: BranchInfo[]
   initialReportTab?: ReportTab
   onReportTabChange?: (tab: ReportTab) => void
   getAuthorCommitStats: (
@@ -349,7 +351,7 @@ interface AuthorStatsPanelProps {
 
 export function AuthorStatsPanel({
   repoPath,
-  branchNames,
+  branches,
   initialReportTab = 'authors',
   onReportTabChange,
   getAuthorCommitStats,
@@ -476,10 +478,28 @@ export function AuthorStatsPanel({
     }
   }, [repoPath])
 
+  const branchesSorted = useMemo(() => {
+    const locals = branches
+      .filter((b) => !b.is_remote)
+      .sort((a, b) => a.name.localeCompare(b.name))
+    const remotes = branches
+      .filter((b) => b.is_remote)
+      .sort((a, b) => a.name.localeCompare(b.name))
+    return [...locals, ...remotes]
+  }, [branches])
+
   const branchNamesSorted = useMemo(
-    () => [...branchNames].sort((a, b) => a.localeCompare(b)),
-    [branchNames]
+    () => branchesSorted.map((b) => b.name),
+    [branchesSorted]
   )
+
+  useEffect(() => {
+    if (!statsRev) return
+    if (!statsRev.startsWith('refs/heads/')) return
+    const short = statsRev.slice('refs/heads/'.length)
+    const remote = branches.find((b) => b.is_remote && b.name === short)
+    if (remote) setStatsRev(branchRevSpec(remote.name, true))
+  }, [statsRev, branches])
 
   useEffect(() => {
     if (branchNamesSorted.length === 0) {
@@ -892,9 +912,12 @@ export function AuthorStatsPanel({
                       aria-label="选择分支历史"
                     >
                       <option value="">当前检出（HEAD）</option>
-                      {branchNamesSorted.map((name) => (
-                        <option key={name} value={`refs/heads/${name}`}>
-                          {name}
+                      {branchesSorted.map((b) => (
+                        <option
+                          key={`${b.is_remote ? 'r' : 'l'}:${b.name}`}
+                          value={branchRevSpec(b.name, b.is_remote)}
+                        >
+                          {b.name}
                         </option>
                       ))}
                     </select>

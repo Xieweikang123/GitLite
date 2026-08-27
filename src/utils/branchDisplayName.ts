@@ -8,6 +8,25 @@ export function formatBranchLabelShort(name: string): string {
   return name
 }
 
+/**
+ * 分支历史查询用的完整引用。
+ * 远程跟踪名已是 `origin/master` 这种短名，不能再套 `refs/heads/`，否则 git 找不到记录。
+ */
+export function branchRevSpec(name: string, isRemote: boolean): string {
+  const n = name.trim()
+  if (!n) return ''
+  if (isRemote) {
+    return n.startsWith('refs/remotes/') ? n : `refs/remotes/${n}`
+  }
+  return n.startsWith('refs/heads/') ? n : `refs/heads/${n}`
+}
+
+/** 下拉框值为 `refs/heads/…` 或 `refs/remotes/…` 时，界面只展示短名 */
+export function shortBranchRef(ref: string | null | undefined): string {
+  if (!ref) return ''
+  return ref.replace(/^refs\/heads\//, '').replace(/^refs\/remotes\//, '')
+}
+
 /** 与 CommitGraphStrip 车道色一致顺序；同分支名（完整 ref 名）始终同色 */
 const BRANCH_BADGE_PALETTE = [
   'border-sky-500/55 bg-sky-500/15 text-sky-950 dark:border-sky-400/50 dark:bg-sky-500/20 dark:text-sky-50',

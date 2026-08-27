@@ -38,6 +38,8 @@ import {
   FileChange,
   type GitResetMode,
   type BranchOnCommit,
+  type BranchInfo,
+  type BranchRefTip,
   type CommitBranchLabels,
 } from '../types/git'
 import { VSCodeDiff } from './CodeDiff'
@@ -47,7 +49,7 @@ import { invoke } from '@tauri-apps/api/tauri'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { CommitDatePickerButton } from './CommitDatePickerButton'
 import { formatLocalYmd } from '../utils/dateYmd'
-import { branchBadgeClassName, formatBranchLabelShort } from '../utils/branchDisplayName'
+import { branchBadgeClassName, branchRevSpec, shortBranchRef } from '../utils/branchDisplayName'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { Label } from './ui/label'
 import { formatTauriInvokeError } from '../utils/tauriError'
@@ -65,10 +67,27 @@ const DEFAULT_PANES = { list: 340, file: 240 } as const
 /** 左侧「每分支一竖线」最多占多少列，避免极多远程分支时图过宽 */
 const MAX_BRANCH_RAIL_COLS = 40
 
-/** 分支下拉框值为 `refs/heads/…`，界面文案只展示短名 */
-function shortLocalBranchRef(ref: string | null | undefined): string {
-  if (!ref) return ''
-  return ref.replace(/^refs\/heads\//, '')
+/** 行内 tip 徽章点击时，对齐到左侧竖线所用的远程跟踪名 */
+function resolveGraphRailName(name: string, rails: readonly string[]): string {
+  if (rails.includes(name)) return name
+  if (!name.includes('/')) {
+    const origin = `origin/${name}`
+    if (rails.includes(origin)) return origin
+    const hit = rails.find((r) => r.endsWith(`/${name}`))
+    if (hit) return hit
+  }
+  return name
+}
+
+function tipMatchesGraphRail(tip: BranchOnCommit, rail: string): boolean {
+  if (tip.name === rail) return true
+  if (!tip.is_remote && (rail === `origin/${tip.name}` || rail.endsWith(`/${tip.name}`))) {
+    return true
+  }
+  if (tip.is_remote && !rail.includes('/') && tip.name.endsWith(`/${rail}`)) {
+    return true
+  }
+  return false
 }
 
 function loadPanes(): { list: number; file: number } {
@@ -337,11 +356,11 @@ interface UnifiedCommitViewProps {
   /** 提交历史范围：当前分支 HEAD 或全部分支/远程/标签 */
   commitLogScope?: 'head' | 'all'
   onCommitLogScopeChange?: (scope: 'head' | 'all') => void
-  /** 「当前分支」模式下查看的引用（本地分支名）；null 表示当前检出 HEAD */
+  /** 「当前分支」模式下查看的引用；null 表示当前检出 HEAD */
   commitLogRev?: string | null
   onCommitLogRevChange?: (rev: string | null) => void
-  /** 下拉可选分支名（通常为本地分支） */
-  branchNames?: string[]
+  /** 下拉可选分支（含本地与远程跟踪） */
+  branches?: BranchInfo[]
   aheadCount?: number
   /** 列表前部为「待拉取」提交时的条数（与 commits 中前置的 incoming 段一致） */
   incomingCommitCount?: number
@@ -395,7 +414,7 @@ export function UnifiedCommitView({
   onCommitLogScopeChange,
   commitLogRev = null,
   onCommitLogRevChange,
-  branchNames = [],
+  branches = [],
   aheadCount = 0,
   incomingCommitCount = 0,
   behindCount,
@@ -543,6 +562,10 @@ export function UnifiedCommitView({
   const fileListScrollRef = useRef<HTMLDivElement>(null)
   const loadMoreSentinelRef = useRef<HTMLDivElement>(null)
   const [branchLabelsByCommit, setBranchLabelsByCommit] = useState<
+    Map<string, BranchOnCommit[]>
+  >(() => new Map())
+  /** 本地/远程引用 tip 所在提交（用于行内徽章，区别于竖线用的祖先标签） */
+  const [branchTipsByCommit, setBranchTipsByCommit] = useState<
     Map<string, BranchOnCommit[]>
   >(() => new Map())
   /** 与左侧 CommitGraphStrip 行对齐：每行提交条高度（px） */
@@ -790,35 +813,54 @@ export function UnifiedCommitView({
   }, [isSearchMode, pendingSearch, onClearSearchMode])
 
   // 过滤提交 - 非搜索模式下按关键词过滤；始终按自定义日期范围过滤
-  const branchNamesSorted = useMemo(() => {
-    if (branchNames.length === 0) return []
+  const branchesSorted = useMemo(() => {
+    if (branches.length === 0) return []
     const cur = currentBranch?.trim()
-    const set = new Set(branchNames)
-    const rest = branchNames
-      .filter((n) => n !== cur)
-      .sort((a, b) => a.localeCompare(b))
-    if (cur && set.has(cur)) {
-      return [cur, ...rest]
+    const locals = branches.filter((b) => !b.is_remote)
+    const remotes = branches
+      .filter((b) => b.is_remote)
+      .sort((a, b) => a.name.localeCompare(b.name))
+    const restLocals = locals
+      .filter((b) => b.name !== cur)
+      .sort((a, b) => a.name.localeCompare(b.name))
+    const current = cur ? locals.find((b) => b.name === cur) : undefined
+    if (current) {
+      return [current, ...restLocals, ...remotes]
     }
-    return [...branchNames].sort((a, b) => a.localeCompare(b))
-  }, [branchNames, currentBranch])
+    return [
+      ...[...locals].sort((a, b) => a.name.localeCompare(b.name)),
+      ...remotes,
+    ]
+  }, [branches, currentBranch])
 
   /** 与「当前检出」本地分支对应的 ref；分离 HEAD 时为 null（不显示分支历史下拉） */
   const checkoutHeadRef = useMemo(() => {
     const cur = currentBranch?.trim()
     if (!cur || cur === 'detached') return null
-    if (!branchNamesSorted.includes(cur)) return null
-    return `refs/heads/${cur}`
-  }, [currentBranch, branchNamesSorted])
+    if (!branchesSorted.some((b) => !b.is_remote && b.name === cur)) return null
+    return branchRevSpec(cur, false)
+  }, [currentBranch, branchesSorted])
 
   /** 无 commitLogRev 时下列表展示为当前检出分支，语义仍为 HEAD（含上游待拉取合并展示） */
   const commitLogBranchSelectValue = useMemo(() => {
     const rev = commitLogRev?.trim()
     if (rev) return rev
     if (checkoutHeadRef) return checkoutHeadRef
-    const first = branchNamesSorted[0]
-    return first ? `refs/heads/${first}` : ''
-  }, [commitLogRev, checkoutHeadRef, branchNamesSorted])
+    const first = branchesSorted[0]
+    return first ? branchRevSpec(first.name, first.is_remote) : ''
+  }, [commitLogRev, checkoutHeadRef, branchesSorted])
+
+  /** 旧版把远程跟踪误写成 refs/heads/origin/…，自动改成正确引用以免空列表 */
+  useEffect(() => {
+    const rev = commitLogRev?.trim()
+    if (!rev || !onCommitLogRevChange) return
+    if (!rev.startsWith('refs/heads/')) return
+    const short = rev.slice('refs/heads/'.length)
+    const remote = branches.find((b) => b.is_remote && b.name === short)
+    if (remote) {
+      onCommitLogRevChange(branchRevSpec(remote.name, true))
+    }
+  }, [commitLogRev, branches, onCommitLogRevChange])
 
   const hasActiveFilters = useMemo(
     () =>
@@ -1002,6 +1044,40 @@ export function UnifiedCommitView({
       cancelled = true
     }
   }, [repoPath, branchLabelIdsKey, currentBranch])
+
+  const branchTipRefreshKey = `${repoPath ?? ''}|${currentBranch ?? ''}|${commits.length}|${commits[0]?.id ?? ''}|${aheadCount}|${behindCount}`
+
+  /** 各引用当前指向的提交（origin/master 等只出现在 tip 那一行） */
+  useEffect(() => {
+    if (!repoPath) {
+      setBranchTipsByCommit(new Map())
+      return
+    }
+    let cancelled = false
+    invoke<BranchRefTip[]>('get_branch_ref_tips', { repoPath })
+      .then((tips) => {
+        if (cancelled) return
+        const next = new Map<string, BranchOnCommit[]>()
+        for (const t of tips) {
+          const list = next.get(t.commit_id) ?? []
+          list.push({ name: t.name, is_remote: Boolean(t.is_remote) })
+          next.set(t.commit_id, list)
+        }
+        for (const list of next.values()) {
+          list.sort(
+            (a, b) =>
+              Number(a.is_remote) - Number(b.is_remote) || a.name.localeCompare(b.name)
+          )
+        }
+        setBranchTipsByCommit(next)
+      })
+      .catch(() => {
+        if (!cancelled) setBranchTipsByCommit(new Map())
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [branchTipRefreshKey, repoPath])
 
   /** 左侧连线图着色：优先当前分支对应的远程名，否则取列表中第一个分支名 */
   const graphBranchColorByCommit = useMemo(() => {
@@ -2052,7 +2128,7 @@ export function UnifiedCommitView({
                 )}
                 {commitLogScope === 'head' &&
                   onCommitLogRevChange &&
-                  branchNamesSorted.length > 0 &&
+                  branchesSorted.length > 0 &&
                   checkoutHeadRef != null && (
                     <select
                       className="h-6 max-w-[11rem] shrink rounded-md border border-input bg-background px-1.5 text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -2065,12 +2141,15 @@ export function UnifiedCommitView({
                           onCommitLogRevChange(v || null)
                         }
                       }}
-                      title="查看任意本地分支的提交历史（无需切换检出）；选当前检出分支等价于跟随 HEAD"
+                      title="查看任意本地或远程跟踪分支的提交历史（无需切换检出）；选当前检出分支等价于跟随 HEAD"
                       aria-label="选择要查看的历史分支"
                     >
-                      {branchNamesSorted.map((name) => (
-                        <option key={name} value={`refs/heads/${name}`}>
-                          {name}
+                      {branchesSorted.map((b) => (
+                        <option
+                          key={`${b.is_remote ? 'r' : 'l'}:${b.name}`}
+                          value={branchRevSpec(b.name, b.is_remote)}
+                        >
+                          {b.name}
                         </option>
                       ))}
                     </select>
@@ -2119,11 +2198,12 @@ export function UnifiedCommitView({
               <details className="text-[10px] leading-tight text-muted-foreground">
                 <summary className="cursor-pointer select-none list-none rounded-sm px-0 py-0 [&::-webkit-details-marker]:hidden hover:text-foreground">
                   <span className="font-medium text-foreground/85">全部分支</span>
-                  <span className="opacity-90"> 提交旁标签仅显示远程跟踪分支</span>
+                  <span className="opacity-90"> 提交旁徽章为引用当前指向的提交</span>
                   <span className="text-primary/70"> · 展开说明</span>
                 </summary>
                 <p className="mt-0.5 pl-0 text-[10px] text-muted-foreground">
-                  历史范围仍为各本地分支、远程跟踪与标签可达的合并历史；每条提交旁的分支名仅列远程跟踪（如 origin/…），避免与本地同名重复。
+                  历史范围为各本地分支、远程跟踪与标签可达的合并历史。行内徽章只标出引用 tip（本地
+                  master、远程 origin/master 等），虚线边框为远程跟踪，便于看出远端当前所在节点。
                 </p>
               </details>
             )}
@@ -2291,7 +2371,7 @@ export function UnifiedCommitView({
                 commitLogScope === 'all'
                   ? '「已加载」为当前列表条数，可继续加载。总数为所有本地分支、远程跟踪与标签可达的去重提交数（与 git log --all 类似）。'
                   : commitLogRev
-                    ? `「已加载」为当前列表条数。所选分支「${shortLocalBranchRef(commitLogRev)}」的可达提交总数与 git rev-list --count ${commitLogRev} 一致。`
+                    ? `「已加载」为当前列表条数。所选分支「${shortBranchRef(commitLogRev)}」的可达提交总数与 git rev-list --count ${commitLogRev} 一致。`
                     : '「已加载」为当前列表中的条数，可向下滚动继续加载。「当前分支」总数为 HEAD 可达提交数（与 git rev-list --count HEAD 一致），含合并带来的历史。'
               }
             >
@@ -2306,7 +2386,7 @@ export function UnifiedCommitView({
                       {commitLogScope === 'all'
                         ? `全部引用共 ${headCommitTotal} 个提交`
                         : commitLogRev
-                          ? `分支「${shortLocalBranchRef(commitLogRev)}」共 ${headCommitTotal} 个提交`
+                          ? `分支「${shortBranchRef(commitLogRev)}」共 ${headCommitTotal} 个提交`
                           : `当前分支共 ${headCommitTotal} 个提交`}
                     </>
                   )}
@@ -2320,7 +2400,7 @@ export function UnifiedCommitView({
                         title={`${graphRailBranchFilter}\n点击清除分支筛选`}
                         onClick={() => setGraphRailBranchFilter(null)}
                       >
-                        {formatBranchLabelShort(graphRailBranchFilter)}
+                        {graphRailBranchFilter}
                       </button>
                     </>
                   )}
@@ -2346,7 +2426,7 @@ export function UnifiedCommitView({
                       {commitLogScope === 'all'
                         ? `全部引用共 ${headCommitTotal} 个提交`
                         : commitLogRev
-                          ? `分支「${shortLocalBranchRef(commitLogRev)}」共 ${headCommitTotal} 个提交`
+                          ? `分支「${shortBranchRef(commitLogRev)}」共 ${headCommitTotal} 个提交`
                           : `当前分支共 ${headCommitTotal} 个提交`}
                     </>
                   )}
@@ -2363,7 +2443,7 @@ export function UnifiedCommitView({
                         title={`${graphRailBranchFilter}\n点击清除分支筛选`}
                         onClick={() => setGraphRailBranchFilter(null)}
                       >
-                        {formatBranchLabelShort(graphRailBranchFilter)}
+                        {graphRailBranchFilter}
                       </button>
                     </>
                   )}
@@ -2424,44 +2504,45 @@ export function UnifiedCommitView({
                 <div className="flex min-w-0 flex-1 flex-col">
               {filteredCommits.map((commit, i) => {
                 const atHead = isCommitCheckedOut(commit)
-                const branchLabels = branchLabelsByCommit.get(commit.id)
+                const branchTips = branchTipsByCommit.get(commit.id)
                 /** 宽屏一行可排更多标签；仅作上限，窄屏仍由 flex-wrap 换行 */
                 const maxBranchBadges = 20
                 const allBranchesTitle =
-                  branchLabels && branchLabels.length > 0
-                    ? branchLabels
+                  branchTips && branchTips.length > 0
+                    ? branchTips
                         .map((b) => `${b.is_remote ? '远程' : '本地'} ${b.name}`)
                         .join('\n')
                     : undefined
 
                 /**
-                 * 按竖线筛选时：行内只突出当前分支徽章，避免与左侧「只看此分支」重复堆满屏；
-                 * 若该提交仍被其它分支指向，用「+N」保留入口，悬停可看完整列表。
+                 * 行内只显示引用 tip（远端/本地当前指向的提交）。按竖线筛选时突出匹配徽章。
                  */
-                let shownBranches: typeof branchLabels
+                let shownBranches: typeof branchTips
                 let moreBranchCount = 0
                 let moreBranchTitle: string | undefined = allBranchesTitle
-                if (graphRailBranchFilter && branchLabels?.length) {
-                  const hit = branchLabels.filter((b) => b.name === graphRailBranchFilter)
+                if (graphRailBranchFilter && branchTips?.length) {
+                  const hit = branchTips.filter((b) =>
+                    tipMatchesGraphRail(b, graphRailBranchFilter)
+                  )
                   if (hit.length > 0) {
                     shownBranches = hit
-                    const hiddenOthers = branchLabels.length - hit.length
+                    const hiddenOthers = branchTips.length - hit.length
                     if (hiddenOthers > 0) {
                       moreBranchCount = hiddenOthers
-                      moreBranchTitle = `另有 ${hiddenOthers} 个其它分支指向此提交\n\n${allBranchesTitle ?? ''}`
+                      moreBranchTitle = `另有 ${hiddenOthers} 个其它引用指向此提交\n\n${allBranchesTitle ?? ''}`
                     }
                   } else {
-                    shownBranches = branchLabels.slice(0, maxBranchBadges)
+                    shownBranches = branchTips.slice(0, maxBranchBadges)
                     moreBranchCount =
-                      branchLabels.length > maxBranchBadges
-                        ? branchLabels.length - maxBranchBadges
+                      branchTips.length > maxBranchBadges
+                        ? branchTips.length - maxBranchBadges
                         : 0
                   }
                 } else {
-                  shownBranches = branchLabels?.slice(0, maxBranchBadges)
+                  shownBranches = branchTips?.slice(0, maxBranchBadges)
                   moreBranchCount =
-                    branchLabels && branchLabels.length > maxBranchBadges
-                      ? branchLabels.length - maxBranchBadges
+                    branchTips && branchTips.length > maxBranchBadges
+                      ? branchTips.length - maxBranchBadges
                       : 0
                 }
                 const isRowSelected = selectedCommit?.id === commit.id
@@ -2584,7 +2665,12 @@ export function UnifiedCommitView({
                               HEAD
                             </span>
                           )}
-                          {shownBranches?.map((b) => (
+                          {shownBranches?.map((b) => {
+                            const railName = resolveGraphRailName(b.name, branchRailColumns)
+                            const railActive =
+                              !!graphRailBranchFilter &&
+                              tipMatchesGraphRail(b, graphRailBranchFilter)
+                            return (
                             <Badge
                               key={`${b.name}-${b.is_remote ? 'r' : 'l'}`}
                               variant="outline"
@@ -2594,28 +2680,30 @@ export function UnifiedCommitView({
                                 'h-4 min-w-0 max-w-[11rem] shrink-0 justify-center border-border/50 bg-background/40 px-1 py-0 text-[9px] font-medium leading-none',
                                 'cursor-pointer select-none hover:bg-muted/50',
                                 branchBadgeClassName(b.name),
+                                b.is_remote && 'border-dashed',
                                 /* Badge 默认带 ring-offset-2，叠 inset ring 易发白；焦点与选中均取消 offset */
                                 'focus:outline-none focus:ring-1 focus:ring-offset-0 focus-visible:ring-offset-0',
                                 'focus:ring-emerald-600/40 dark:focus:ring-emerald-400/35',
-                                graphRailBranchFilter === b.name &&
+                                railActive &&
                                   'shadow-[inset_0_0_0_1px] shadow-emerald-700/45 dark:shadow-emerald-400/40'
                               )}
-                              title={`${b.is_remote ? '远程分支' : '本地分支'}：${b.name}\n点击：仅看此分支（与左侧竖线相同；再点此徽章或竖线可清除）`}
+                              title={`${b.is_remote ? '远程跟踪' : '本地分支'}：${b.name}（当前指向此提交）\n点击：仅看此分支（与左侧竖线相同；再点此徽章或竖线可清除）`}
                               onClick={(e) => {
                                 e.stopPropagation()
-                                onGraphBranchRailClick(b.name)
+                                onGraphBranchRailClick(railName)
                               }}
                               onKeyDown={(e) => {
                                 if (e.key === 'Enter' || e.key === ' ') {
                                   e.preventDefault()
                                   e.stopPropagation()
-                                  onGraphBranchRailClick(b.name)
+                                  onGraphBranchRailClick(railName)
                                 }
                               }}
                             >
-                              <span className="min-w-0 truncate">{formatBranchLabelShort(b.name)}</span>
+                              <span className="min-w-0 truncate">{b.name}</span>
                             </Badge>
-                          ))}
+                            )
+                          })}
                           {moreBranchCount > 0 && (
                             <span
                               className="shrink-0 text-[9px] text-muted-foreground"

@@ -1063,7 +1063,7 @@ function App() {
           <div className="flex min-h-0 flex-1 flex-col px-2 pt-1.5 sm:px-3">
             <AuthorStatsPanel
               repoPath={repoInfo?.path}
-              branchNames={repoInfo?.branches.map((b) => b.name) ?? []}
+              branches={repoInfo?.branches ?? []}
               initialReportTab={statsReportTab}
               onReportTabChange={setStatsReportTab}
               getAuthorCommitStats={getAuthorCommitStats}
@@ -1092,7 +1092,7 @@ function App() {
                 onCommitLogScopeChange={handleCommitLogScopeChange}
                 commitLogRev={commitLogRev}
                 onCommitLogRevChange={handleCommitLogRevChange}
-                branchNames={repoInfo.branches.map((b) => b.name)}
+                branches={repoInfo.branches}
                 aheadCount={
                   commitLogScope === 'all' || commitLogRev
                     ? 0
