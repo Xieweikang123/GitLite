@@ -5454,51 +5454,34 @@ async fn get_commit_files(repo_path: String, commit_id: String) -> Result<Vec<Fi
         .map_err(|e| format!("Failed to create diff: {}", e))?;
     
     let mut files = Vec::new();
-    
-    diff.foreach(
-        &mut |delta, _progress| {
-            let old_path = delta.old_file().path().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-            let new_path = delta.new_file().path().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-            
-            let status = match delta.status() {
-                git2::Delta::Added => "added",
-                git2::Delta::Modified => "modified", 
-                git2::Delta::Deleted => "deleted",
-                git2::Delta::Renamed => "renamed",
-                git2::Delta::Copied => "copied",
-                _ => "unknown",
-            };
-            
-            // 获取正确的文件路径
-            let file_path = if new_path.is_empty() { old_path } else { new_path };
-            
-            // 简化的统计方法 - 先确保文件被检测到
-            let additions = match status {
-                "added" => 1, // 新增文件至少算1行
-                "deleted" => 0,
-                _ => 1, // 其他情况先算1行
-            };
-            
-            let deletions = match status {
-                "deleted" => 1, // 删除文件至少算1行
-                "added" => 0,
-                _ => 0, // 其他情况先算0行
-            };
-            
-            files.push(FileChange {
-                path: file_path,
-                status: status.to_string(),
-                additions,
-                deletions,
-            });
-            
-            true
-        },
-        None,
-        None,
-        None,
-    ).map_err(|e| format!("Failed to iterate diff: {}", e))?;
-    
+
+    // 逐个 delta 生成 patch，统计行级增删（与 `git diff --numstat` 一致；二进制为 0）
+    for (idx, delta) in diff.deltas().enumerate() {
+        let old_path = delta.old_file().path().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+        let new_path = delta.new_file().path().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+
+        let status = match delta.status() {
+            git2::Delta::Added => "added",
+            git2::Delta::Modified => "modified",
+            git2::Delta::Deleted => "deleted",
+            git2::Delta::Renamed => "renamed",
+            git2::Delta::Copied => "copied",
+            _ => "unknown",
+        };
+
+        // 获取正确的文件路径
+        let file_path = if new_path.is_empty() { old_path } else { new_path };
+
+        let (additions, deletions) = delta_numstat(&diff, idx);
+
+        files.push(FileChange {
+            path: file_path,
+            status: status.to_string(),
+            additions,
+            deletions,
+        });
+    }
+
     Ok(files)
 }
 
@@ -5605,8 +5588,26 @@ async fn get_file_diff(repo_path: String, commit_id: String) -> Result<String, S
     Ok(diff_text)
 }
 
-/// 从 diff 单条 delta 生成 UI 用的文件状态（与 `git diff` 语义一致）
-fn file_change_from_delta(delta: &git2::DiffDelta) -> Option<FileChange> {
+/// 统计 diff 中第 idx 个 delta 的行级增删（与 `git diff --numstat` 一致；二进制为 0）
+fn delta_numstat(diff: &git2::Diff, idx: usize) -> (i32, i32) {
+    match git2::Patch::from_diff(diff, idx) {
+        Ok(Some(patch)) => match patch.line_stats() {
+            Ok((_, additions, deletions)) => (
+                additions.min(i32::MAX as usize) as i32,
+                deletions.min(i32::MAX as usize) as i32,
+            ),
+            Err(_) => (0, 0),
+        },
+        _ => (0, 0),
+    }
+}
+
+/// 从 diff 单条 delta 生成 UI 用的文件状态（与 `git diff` 语义一致），行统计由 delta_numstat 提供
+fn file_change_from_delta(
+    diff: &git2::Diff,
+    idx: usize,
+    delta: &git2::DiffDelta,
+) -> Option<FileChange> {
     let path = normalize_repo_rel_path(
         &delta
             .new_file()
@@ -5628,11 +5629,12 @@ fn file_change_from_delta(delta: &git2::DiffDelta) -> Option<FileChange> {
         git2::Delta::Conflicted => "modified",
         _ => "modified",
     };
+    let (additions, deletions) = delta_numstat(diff, idx);
     Some(FileChange {
         path,
         status: status.to_string(),
-        additions: 1,
-        deletions: 0,
+        additions,
+        deletions,
     })
 }
 
@@ -5681,8 +5683,8 @@ fn collect_workspace_status(repo: &Repository) -> Result<WorkspaceStatus, String
         .diff_tree_to_index(Some(&head_tree), Some(&index), None)
         .map_err(|e| format!("Failed to diff HEAD vs index: {}", e))?;
     let mut staged_files = Vec::new();
-    for delta in staged_diff.deltas() {
-        if let Some(fc) = file_change_from_delta(&delta) {
+    for (idx, delta) in staged_diff.deltas().enumerate() {
+        if let Some(fc) = file_change_from_delta(&staged_diff, idx, &delta) {
             if !conflicted_paths.contains(&fc.path) {
                 staged_files.push(fc);
             }
@@ -5698,7 +5700,7 @@ fn collect_workspace_status(repo: &Repository) -> Result<WorkspaceStatus, String
 
     let mut unstaged_files = Vec::new();
     let mut untracked_files = Vec::new();
-    for delta in unstaged_diff.deltas() {
+    for (idx, delta) in unstaged_diff.deltas().enumerate() {
         let file_path = normalize_repo_rel_path(
             &delta
                 .new_file()
@@ -5720,7 +5722,7 @@ fn collect_workspace_status(repo: &Repository) -> Result<WorkspaceStatus, String
                 }
             }
             _ => {
-                if let Some(fc) = file_change_from_delta(&delta) {
+                if let Some(fc) = file_change_from_delta(&unstaged_diff, idx, &delta) {
                     if !unstaged_files.iter().any(|f: &FileChange| f.path == fc.path) {
                         unstaged_files.push(fc);
                     }
@@ -7734,3 +7736,124 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+mod numstat_tests {
+    use super::*;
+    use git2::IndexAddOption;
+
+    fn tmp_repo(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("gitlite-numstat-{}-{}", name, std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let repo = Repository::init(&dir).expect("init repo");
+        let mut cfg = repo.config().expect("repo config");
+        cfg.set_str("user.name", "tester").unwrap();
+        cfg.set_str("user.email", "tester@example.com").unwrap();
+        dir
+    }
+
+    fn commit_all(repo: &Repository, msg: &str) -> Oid {
+        let sig = git2::Signature::now("tester", "tester@example.com").unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let parents: Vec<git2::Commit> = match repo.head() {
+            Ok(h) => vec![h.peel_to_commit().unwrap()],
+            Err(_) => vec![],
+        };
+        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &parent_refs)
+            .unwrap()
+    }
+
+    fn write_file(root: &Path, rel: &str, content: &[u8]) {
+        let p = root.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, content).unwrap();
+    }
+
+    #[tokio::test]
+    async fn commit_files_report_real_numstat() {
+        let dir = tmp_repo("commit-files");
+        let repo = Repository::open(&dir).unwrap();
+
+        write_file(&dir, "old.txt", b"line1\nline2\n");
+        commit_all(&repo, "initial");
+
+        // +2 -1（改一行加两行）、新增 new.txt 三行、二进制文件应计 0/0
+        write_file(&dir, "old.txt", b"line1\nchanged\nadded\n");
+        write_file(&dir, "new.txt", b"a\nb\nc\n");
+        write_file(&dir, "blob.bin", b"\x00\x01\x02bin\x00");
+        let cid = commit_all(&repo, "second");
+
+        let files =
+            get_commit_files(dir.to_string_lossy().to_string(), cid.to_string())
+                .await
+                .unwrap();
+
+        assert_eq!(files.len(), 3);
+        for f in &files {
+            match f.path.as_str() {
+                "old.txt" => {
+                    assert_eq!(f.status, "modified");
+                    assert_eq!((f.additions, f.deletions), (2, 1));
+                }
+                "new.txt" => {
+                    assert_eq!(f.status, "added");
+                    assert_eq!((f.additions, f.deletions), (3, 0));
+                }
+                "blob.bin" => {
+                    assert_eq!(f.status, "added");
+                    assert_eq!((f.additions, f.deletions), (0, 0));
+                }
+                other => panic!("unexpected path: {}", other),
+            }
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn workspace_files_report_real_numstat() {
+        let dir = tmp_repo("workspace-files");
+        let repo = Repository::open(&dir).unwrap();
+
+        write_file(&dir, "a.txt", b"x\ny\nz\n");
+        commit_all(&repo, "initial");
+
+        // 工作区未暂存改动：+1 -2
+        write_file(&dir, "a.txt", b"x\nmodified\n");
+
+        // 暂存一个新增文件：+2 -0
+        write_file(&dir, "staged.txt", b"s1\ns2\n");
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("staged.txt")).unwrap();
+            index.write().unwrap();
+        }
+
+        let status = collect_workspace_status(&repo).unwrap();
+
+        let staged = status
+            .staged_files
+            .iter()
+            .find(|f| f.path == "staged.txt")
+            .expect("staged.txt missing");
+        assert_eq!(staged.status, "added");
+        assert_eq!((staged.additions, staged.deletions), (2, 0));
+
+        let unstaged = status
+            .unstaged_files
+            .iter()
+            .find(|f| f.path == "a.txt")
+            .expect("a.txt missing");
+        assert_eq!(unstaged.status, "modified");
+        assert_eq!((unstaged.additions, unstaged.deletions), (1, 2));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
