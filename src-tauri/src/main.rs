@@ -649,6 +649,18 @@ pub struct BranchRefTip {
     pub is_remote: bool,
 }
 
+/// 某本地分支相对其上游（或 `origin/<同名>`）的超前/落后
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BranchSyncStatus {
+    pub ahead: u32,
+    pub behind: u32,
+    /// 已配置上游，或存在可比较的 `origin/<同名>` 远程跟踪
+    pub has_upstream: bool,
+    pub upstream_name: Option<String>,
+    pub local_short_id: Option<String>,
+    pub upstream_short_id: Option<String>,
+}
+
 /// 某条分支是否包含指定提交（在分支 tip 的历史上）
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BranchOnCommit {
@@ -4928,6 +4940,221 @@ async fn get_branch_ref_tips(repo_path: String) -> Result<Vec<BranchRefTip>, Str
         .collect())
 }
 
+fn oid_short(oid: git2::Oid) -> String {
+    format!("{:.7}", oid)
+}
+
+fn local_branch_name_from_rev(rev: &str) -> Option<String> {
+    let r = rev.trim();
+    if r.is_empty() {
+        return None;
+    }
+    if r.starts_with("refs/remotes/") {
+        return None;
+    }
+    if let Some(rest) = r.strip_prefix("refs/heads/") {
+        let name = rest.trim();
+        return (!name.is_empty()).then(|| name.to_string());
+    }
+    // 远程短名 origin/foo 不当作本地分支
+    if r.starts_with("origin/") {
+        return None;
+    }
+    Some(r.to_string())
+}
+
+fn branch_sync_status_for(repo: &Repository, branch_rev: &str) -> Result<BranchSyncStatus, String> {
+    let Some(local_name) = local_branch_name_from_rev(branch_rev) else {
+        return Ok(BranchSyncStatus {
+            ahead: 0,
+            behind: 0,
+            has_upstream: false,
+            upstream_name: None,
+            local_short_id: None,
+            upstream_short_id: None,
+        });
+    };
+    let branch = repo
+        .find_branch(&local_name, git2::BranchType::Local)
+        .map_err(|e| format!("找不到本地分支「{}」: {}", local_name, e))?;
+    let local_oid = branch.get().target();
+    let local_short_id = local_oid.map(oid_short);
+
+    let mut upstream_name: Option<String> = None;
+    let mut upstream_oid: Option<git2::Oid> = None;
+    let mut has_upstream = false;
+
+    if let Ok(up) = branch.upstream() {
+        has_upstream = true;
+        upstream_oid = up.get().target();
+        upstream_name = up
+            .name()
+            .ok()
+            .flatten()
+            .map(|s| s.strip_prefix("refs/remotes/").unwrap_or(s).to_string())
+            .or_else(|| {
+                up.get().name().map(|n| {
+                    n.strip_prefix("refs/remotes/")
+                        .unwrap_or(n)
+                        .to_string()
+                })
+            });
+    } else {
+        let origin_name = format!("origin/{local_name}");
+        if let Ok(remote_br) = repo.find_branch(&origin_name, git2::BranchType::Remote) {
+            has_upstream = true;
+            upstream_oid = remote_br.get().target();
+            upstream_name = Some(origin_name);
+        }
+    }
+
+    let mut ahead = 0u32;
+    let mut behind = 0u32;
+    if let (Some(local), Some(up)) = (local_oid, upstream_oid) {
+        if let Ok((a, b)) = repo.graph_ahead_behind(local, up) {
+            ahead = a as u32;
+            behind = b as u32;
+        }
+    }
+
+    Ok(BranchSyncStatus {
+        ahead,
+        behind,
+        has_upstream,
+        upstream_name,
+        local_short_id,
+        upstream_short_id: upstream_oid.map(oid_short),
+    })
+}
+
+#[tauri::command]
+async fn get_branch_sync_status(
+    repo_path: String,
+    branch: String,
+) -> Result<BranchSyncStatus, String> {
+    tokio::task::spawn_blocking(move || {
+        let repo = Repository::open(&repo_path)
+            .map_err(|e| format!("Failed to open repository: {}", e))?;
+        branch_sync_status_for(&repo, branch.trim())
+    })
+    .await
+    .map_err(|e| format!("任务已中断: {}", e))?
+}
+
+/// 在不切换检出的前提下，将某本地分支快进到其上游（`git fetch` + 快进引用）。
+/// 工作区 / 当前 HEAD 不变。本地已有独有提交时拒绝，需先检出再拉取。
+fn execute_fast_forward_local_branch(repo_path: &str, branch_rev: &str) -> Result<String, String> {
+    let Some(local_name) = local_branch_name_from_rev(branch_rev) else {
+        return Err("只能更新本地分支".to_string());
+    };
+
+    let repo = Repository::open(repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
+    pull_preflight(&repo)?;
+    repo.find_remote("origin")
+        .map_err(|_| "未找到远程 origin。".to_string())?;
+
+    if let Ok(head) = repo.head() {
+        if head.shorthand() == Some(local_name.as_str()) {
+            return Err("当前已检出该分支，请使用普通拉取。".to_string());
+        }
+    }
+
+    let fetch_out = run_git_in_repo(repo_path, &["fetch", "origin"])
+        .map_err(|e| format!("无法执行 git fetch: {}", e))?;
+    if !fetch_out.status.success() {
+        return Err(format!("git fetch 失败: {}", git_output_detail(&fetch_out)));
+    }
+
+    let repo = Repository::open(repo_path).map_err(|e| format!("fetch 后无法重新打开仓库: {}", e))?;
+    let status = branch_sync_status_for(&repo, &local_name)?;
+    if !status.has_upstream {
+        return Err(format!("本地分支「{}」没有可比较的远程跟踪。", local_name));
+    }
+    if status.behind == 0 {
+        return Ok(format!("本地 {} 已是最新", local_name));
+    }
+    if status.ahead > 0 {
+        return Err(format!(
+            "无法快进：本地分支「{}」与远程已分叉。请先切换到该分支再拉取。",
+            local_name
+        ));
+    }
+
+    let up_name = status
+        .upstream_name
+        .as_deref()
+        .ok_or_else(|| "无法解析上游分支名".to_string())?;
+    let up_ref = if up_name.starts_with("refs/") {
+        up_name.to_string()
+    } else {
+        format!("refs/remotes/{up_name}")
+    };
+    let upstream_oid = match repo.refname_to_id(&up_ref) {
+        Ok(oid) => oid,
+        Err(_) => repo
+            .revparse_single(up_name)
+            .map_err(|e| format!("无法解析远程「{}」: {}", up_name, e))?
+            .id(),
+    };
+
+    let mut reference = repo
+        .find_reference(&format!("refs/heads/{local_name}"))
+        .map_err(|e| format!("找不到本地分支「{}」: {}", local_name, e))?;
+    let Some(old_oid) = reference.target() else {
+        return Err(format!("本地分支「{}」没有指向提交", local_name));
+    };
+    if old_oid == upstream_oid {
+        return Ok(format!("本地 {} 已是最新", local_name));
+    }
+    if !repo
+        .graph_descendant_of(upstream_oid, old_oid)
+        .unwrap_or(false)
+    {
+        return Err(format!(
+            "无法快进：本地分支「{}」与远程已分叉。请先切换到该分支再拉取。",
+            local_name
+        ));
+    }
+
+    reference
+        .set_target(
+            upstream_oid,
+            &format!("gitlite: fast-forward {local_name} to {up_name}"),
+        )
+        .map_err(|e| format!("快进引用失败: {}", e))?;
+
+    Ok(format!(
+        "已将本地 {} 快进 {} 个提交（仍停留在当前检出分支）",
+        local_name, status.behind
+    ))
+}
+
+#[tauri::command]
+async fn fast_forward_local_branch(
+    repo_path: String,
+    branch: String,
+) -> Result<String, String> {
+    let started = Instant::now();
+    let branch = branch.trim().to_string();
+    let result = tokio::task::spawn_blocking({
+        let repo_path = repo_path.clone();
+        let branch = branch.clone();
+        move || execute_fast_forward_local_branch(&repo_path, &branch)
+    })
+    .await
+    .map_err(|e| format!("任务已中断: {}", e))?;
+    record_git_write_operation(
+        &repo_path,
+        "fast-forward-branch",
+        false,
+        started,
+        &result,
+        None,
+        None,
+    );
+    result
+}
+
 /// 批量查询：每个提交在哪些**远程跟踪**分支的历史上（分支 tip 为该提交的后代或等于该提交）。
 /// 不包含 `refs/heads/` 本地分支，避免与 `origin/…` 等同名引用重复展示。
 #[tauri::command]
@@ -7665,6 +7892,8 @@ fn main() {
             get_commits_for_activity_bucket,
             get_head_file_paths,
             get_branch_ref_tips,
+            get_branch_sync_status,
+            fast_forward_local_branch,
             get_commits_branch_labels,
             checkout_branch,
             create_branch,

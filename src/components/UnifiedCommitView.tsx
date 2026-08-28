@@ -34,6 +34,9 @@ import {
   ChevronRight,
   Info,
   X,
+  ArrowDown,
+  ArrowUp,
+  GitPullRequest,
 } from 'lucide-react'
 import {
   CommitInfo,
@@ -43,6 +46,7 @@ import {
   type BranchInfo,
   type BranchRefTip,
   type CommitBranchLabels,
+  type BranchSyncStatus,
 } from '../types/git'
 import { VSCodeDiff } from './CodeDiff'
 import { RemoteSyncBar } from './RemoteSyncBar'
@@ -51,7 +55,12 @@ import { invoke } from '@tauri-apps/api/tauri'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { CommitDatePickerButton } from './CommitDatePickerButton'
 import { formatLocalYmd } from '../utils/dateYmd'
-import { branchBadgeClassName, branchRevSpec, shortBranchRef } from '../utils/branchDisplayName'
+import {
+  branchBadgeClassName,
+  branchRevSpec,
+  refsSameBranchLine,
+  shortBranchRef,
+} from '../utils/branchDisplayName'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 import { Label } from './ui/label'
@@ -379,6 +388,10 @@ interface UnifiedCommitViewProps {
   onPullChanges?: () => void
   onPushChanges?: () => void
   onRefreshRepo?: () => void
+  /** 将下拉中的非检出本地分支快进到上游（不切换工作区） */
+  onFastForwardViewedBranch?: (branchName: string) => Promise<boolean>
+  /** 切换到该分支并拉取（本地与远程已分叉时） */
+  onCheckoutAndPullViewedBranch?: (branchName: string) => Promise<boolean>
   /** 仓库级操作进行中（如切换分支），用于禁用同步按钮 */
   syncBusy?: boolean
   onGetCommitFiles: (commitId: string) => Promise<FileChange[]>
@@ -432,6 +445,8 @@ export function UnifiedCommitView({
   onPullChanges,
   onPushChanges,
   onRefreshRepo,
+  onFastForwardViewedBranch,
+  onCheckoutAndPullViewedBranch,
   syncBusy = false,
   onGetCommitFiles,
   onGetDiff,
@@ -463,6 +478,10 @@ export function UnifiedCommitView({
   const [graphRailBranchFilter, setGraphRailBranchFilter] = useState<string | null>(null)
   const [headCommitTotal, setHeadCommitTotal] = useState<number | null>(null)
   const [headCommitTotalLoading, setHeadCommitTotalLoading] = useState(false)
+  const [viewedBranchSync, setViewedBranchSync] = useState<BranchSyncStatus | null>(null)
+  const [viewedSyncNonce, setViewedSyncNonce] = useState(0)
+  const [viewedPullDialogOpen, setViewedPullDialogOpen] = useState(false)
+  const [viewedPullSubmitting, setViewedPullSubmitting] = useState(false)
   const [summaryOpen, setSummaryOpen] = useState(false)
   /** 弹窗内是否展示并请求 AI 总结（仅「提交列表」打开时为 false，可随后在弹窗内点「生成 AI 总结」） */
   const [summaryIncludeAi, setSummaryIncludeAi] = useState(true)
@@ -773,7 +792,7 @@ export function UnifiedCommitView({
 
   useEffect(() => {
     setGraphRailBranchFilter(null)
-  }, [repoPath])
+  }, [repoPath, commitLogScope, commitLogRev])
 
   // 提交列表右键菜单：点击外部、滚动、Esc 关闭
   useEffect(() => {
@@ -862,6 +881,98 @@ export function UnifiedCommitView({
     return branchRevSpec(cur, false)
   }, [currentBranch, branchesSorted])
 
+  /**
+   * 「当前分支」正在查看的短名：下拉选中的引用，或当前检出分支。
+   * 全部分支模式下为 null，图仍按所有远程跟踪画竖轨。
+   */
+  const historyFocusBranch = useMemo(() => {
+    if (commitLogScope !== 'head') return null
+    const fromRev = shortBranchRef(commitLogRev)
+    if (fromRev) return fromRev
+    const cur = currentBranch?.trim()
+    if (!cur || cur === 'detached') return null
+    return cur
+  }, [commitLogScope, commitLogRev, currentBranch])
+
+  /** 全部分支才按竖线筛选列表；当前分支列表本身已是该引用历史 */
+  const railFilterEnabled = commitLogScope === 'all'
+
+  /** 下拉选中的本地分支（非当前检出、非远程跟踪） */
+  const viewedOtherLocalBranch = useMemo(() => {
+    if (commitLogScope !== 'head') return null
+    const rev = commitLogRev?.trim()
+    if (!rev || rev.startsWith('refs/remotes/')) return null
+    const name = shortBranchRef(rev)
+    if (!name) return null
+    return branches.some((b) => !b.is_remote && b.name === name) ? name : null
+  }, [commitLogScope, commitLogRev, branches])
+
+  const bumpViewedSync = useCallback(() => {
+    setViewedSyncNonce((n) => n + 1)
+  }, [])
+
+  const handleFetchForView = useCallback(() => {
+    const result = onFetchChanges?.() as unknown
+    if (result && typeof (result as Promise<unknown>).then === 'function') {
+      void Promise.resolve(result).finally(bumpViewedSync)
+    } else {
+      window.setTimeout(bumpViewedSync, 600)
+    }
+  }, [onFetchChanges, bumpViewedSync])
+
+  const handleRefreshForView = useCallback(() => {
+    const result = onRefreshRepo?.() as unknown
+    if (result && typeof (result as Promise<unknown>).then === 'function') {
+      void Promise.resolve(result).finally(bumpViewedSync)
+    } else {
+      window.setTimeout(bumpViewedSync, 600)
+    }
+  }, [onRefreshRepo, bumpViewedSync])
+
+  const confirmViewedBranchPull = useCallback(async () => {
+    if (!viewedOtherLocalBranch) return
+    const diverged = (viewedBranchSync?.ahead ?? 0) > 0
+    setViewedPullSubmitting(true)
+    try {
+      const ok = diverged
+        ? await onCheckoutAndPullViewedBranch?.(viewedOtherLocalBranch)
+        : await onFastForwardViewedBranch?.(viewedOtherLocalBranch)
+      if (ok) {
+        setViewedPullDialogOpen(false)
+        bumpViewedSync()
+      }
+    } finally {
+      setViewedPullSubmitting(false)
+    }
+  }, [
+    viewedOtherLocalBranch,
+    viewedBranchSync?.ahead,
+    onCheckoutAndPullViewedBranch,
+    onFastForwardViewedBranch,
+    bumpViewedSync,
+  ])
+
+  useEffect(() => {
+    if (!repoPath || !viewedOtherLocalBranch) {
+      setViewedBranchSync(null)
+      return
+    }
+    let cancelled = false
+    invoke<BranchSyncStatus>('get_branch_sync_status', {
+      repoPath,
+      branch: viewedOtherLocalBranch,
+    })
+      .then((s) => {
+        if (!cancelled) setViewedBranchSync(s)
+      })
+      .catch(() => {
+        if (!cancelled) setViewedBranchSync(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [repoPath, viewedOtherLocalBranch, viewedSyncNonce, commits[0]?.id])
+
   /** 无 commitLogRev 时下列表展示为当前检出分支，语义仍为 HEAD（含上游待拉取合并展示） */
   const commitLogBranchSelectValue = useMemo(() => {
     const rev = commitLogRev?.trim()
@@ -893,7 +1004,7 @@ export function UnifiedCommitView({
         appliedEnd ||
         appliedSearch.trim() ||
         isSearchMode ||
-        graphRailBranchFilter
+        (railFilterEnabled && graphRailBranchFilter)
       ),
     [
       pendingStart,
@@ -903,6 +1014,7 @@ export function UnifiedCommitView({
       appliedEnd,
       appliedSearch,
       isSearchMode,
+      railFilterEnabled,
       graphRailBranchFilter,
     ]
   )
@@ -993,7 +1105,7 @@ export function UnifiedCommitView({
           commit.short_id.toLowerCase().includes(term)
         if (!ok) return false
       }
-      if (graphRailBranchFilter) {
+      if (railFilterEnabled && graphRailBranchFilter) {
         const labels = branchLabelsByCommit.get(commit.id)
         if (!labels?.some((b) => b.name === graphRailBranchFilter)) return false
       }
@@ -1006,6 +1118,7 @@ export function UnifiedCommitView({
     appliedEnd,
     getCommitDate,
     isSearchMode,
+    railFilterEnabled,
     graphRailBranchFilter,
     branchLabelsByCommit,
   ])
@@ -1059,9 +1172,9 @@ export function UnifiedCommitView({
     return filteredCommits.every((c) => branchLabelsByCommit.has(c.id))
   }, [filteredCommits, branchLabelsByCommit])
 
-  // 每个提交在哪些远程跟踪分支历史上（与后端一致，不重复列本地分支）
+  // 每个提交在哪些远程跟踪分支历史上（仅「全部分支」需要竖轨；当前分支用 DAG，避免其它远程把图拉偏）
   useEffect(() => {
-    if (!repoPath || filteredCommits.length === 0) {
+    if (!repoPath || filteredCommits.length === 0 || commitLogScope !== 'all') {
       setBranchLabelsByCommit(new Map())
       return
     }
@@ -1093,7 +1206,7 @@ export function UnifiedCommitView({
     return () => {
       cancelled = true
     }
-  }, [repoPath, branchLabelIdsKey, currentBranch])
+  }, [repoPath, branchLabelIdsKey, currentBranch, commitLogScope])
 
   const branchTipRefreshKey = `${repoPath ?? ''}|${currentBranch ?? ''}|${commits.length}|${commits[0]?.id ?? ''}|${aheadCount}|${behindCount}`
 
@@ -1129,9 +1242,15 @@ export function UnifiedCommitView({
     }
   }, [branchTipRefreshKey, repoPath])
 
-  /** 左侧连线图着色：优先当前分支对应的远程名，否则取列表中第一个分支名 */
+  /** 左侧连线图着色：当前分支整列同色；全部分支优先正在查看/检出对应的远程名 */
   const graphBranchColorByCommit = useMemo(() => {
     const m = new Map<string, string>()
+    if (historyFocusBranch) {
+      for (const c of filteredCommits) {
+        m.set(c.id, historyFocusBranch)
+      }
+      return m
+    }
     for (const c of filteredCommits) {
       const labels = branchLabelsByCommit.get(c.id)
       if (!labels?.length) continue
@@ -1145,18 +1264,20 @@ export function UnifiedCommitView({
       m.set(c.id, prefer.name)
     }
     return m
-  }, [filteredCommits, branchLabelsByCommit, currentBranch])
+  }, [filteredCommits, branchLabelsByCommit, currentBranch, historyFocusBranch])
 
-  /** 左侧「每分支一竖线」：提交 → 分支名列表（与后端 get_commits_branch_labels 一致） */
+  /** 左侧「每分支一竖线」：提交 → 分支名列表（当前分支模式只保留正在查看的那条线） */
   const branchNamesByCommitIdForGraph = useMemo(() => {
     const m = new Map<string, readonly string[]>()
+    const focus = historyFocusBranch
     for (const c of filteredCommits) {
       const labels = branchLabelsByCommit.get(c.id)
       if (labels === undefined) continue
-      m.set(c.id, labels.map((b) => b.name))
+      const names = labels.map((b) => b.name)
+      m.set(c.id, focus ? names.filter((n) => refsSameBranchLine(n, focus)) : names)
     }
     return m
-  }, [filteredCommits, branchLabelsByCommit])
+  }, [filteredCommits, branchLabelsByCommit, historyFocusBranch])
 
   /**
    * 分支竖轨模式须「当前列表每一行都已写入标签结果」（含空数组），否则 frozen 列 +
@@ -1178,10 +1299,13 @@ export function UnifiedCommitView({
       if (!labels) continue
       for (const b of labels) set.add(b.name)
     }
-    const names = [...set]
+    const names = [...set].filter((n) =>
+      historyFocusBranch ? refsSameBranchLine(n, historyFocusBranch) : true
+    )
     if (names.length === 0) return [] as string[]
 
     const rank = (n: string) => {
+      if (historyFocusBranch && refsSameBranchLine(n, historyFocusBranch)) return 0
       if (n === currentBranch || n === `origin/${currentBranch}`) return 0
       if (n.endsWith(`/${currentBranch}`)) return 0
       if (!n.includes('/')) return 1
@@ -1211,7 +1335,7 @@ export function UnifiedCommitView({
       return a.localeCompare(b)
     })
     return names.slice(0, MAX_BRANCH_RAIL_COLS)
-  }, [filteredCommits, branchLabelsByCommit, currentBranch])
+  }, [filteredCommits, branchLabelsByCommit, currentBranch, historyFocusBranch])
 
   /** 未开启「竖线筛选」时的列顺序快照，用于开启筛选后保持左右列不重排（仅隐藏无提交的分支列） */
   const branchRailOrderBeforeGraphFilterRef = useRef<string[]>([])
@@ -2225,6 +2349,85 @@ export function UnifiedCommitView({
                       ))}
                     </select>
                   )}
+                {viewedOtherLocalBranch && viewedBranchSync ? (
+                  <span className="flex min-w-0 max-w-[14rem] shrink-0 items-center gap-1">
+                    {viewedBranchSync.has_upstream ? (
+                      <>
+                        {viewedBranchSync.behind > 0 ? (
+                          <button
+                            type="button"
+                            className="inline-flex h-6 max-w-full items-center gap-0.5 truncate rounded-md border border-amber-500/35 bg-amber-500/10 px-1.5 text-[11px] font-medium text-amber-800 dark:text-amber-200"
+                            title={
+                              viewedBranchSync.upstream_name
+                                ? `本地 ${viewedOtherLocalBranch} 比 ${viewedBranchSync.upstream_name} 落后 ${viewedBranchSync.behind} 个提交${viewedBranchSync.upstream_short_id ? `（远程 ${viewedBranchSync.upstream_short_id}）` : ''}。点击查看远程历史；可用右侧「获取」更新远程信息。`
+                                : `落后远程 ${viewedBranchSync.behind} 个提交`
+                            }
+                            onClick={() => {
+                              const up = viewedBranchSync.upstream_name?.trim()
+                              if (up && onCommitLogRevChange) {
+                                onCommitLogRevChange(branchRevSpec(up, true))
+                              }
+                            }}
+                          >
+                            <ArrowDown className="h-3 w-3 shrink-0" aria-hidden />
+                            落后 {viewedBranchSync.behind}
+                          </button>
+                        ) : null}
+                        {viewedBranchSync.behind > 0 &&
+                        (onFastForwardViewedBranch || onCheckoutAndPullViewedBranch) ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 shrink-0 gap-0.5 px-1.5 text-[11px] text-amber-800 hover:text-amber-900 dark:text-amber-200"
+                            disabled={syncBusy || viewedPullSubmitting}
+                            title={
+                              viewedBranchSync.ahead > 0
+                                ? `本地 ${viewedOtherLocalBranch} 与远程已分叉，需先切换再拉取`
+                                : `快进本地 ${viewedOtherLocalBranch}（不切换当前检出）`
+                            }
+                            onClick={() => setViewedPullDialogOpen(true)}
+                          >
+                            <GitPullRequest className="h-3 w-3" aria-hidden />
+                            拉取
+                          </Button>
+                        ) : null}
+                        {viewedBranchSync.ahead > 0 ? (
+                          <span
+                            className="inline-flex h-6 max-w-full items-center gap-0.5 truncate rounded-md border border-sky-500/35 bg-sky-500/10 px-1.5 text-[11px] font-medium text-sky-800 dark:text-sky-200"
+                            title={
+                              viewedBranchSync.upstream_name
+                                ? `本地 ${viewedOtherLocalBranch} 比 ${viewedBranchSync.upstream_name} 超前 ${viewedBranchSync.ahead} 个提交`
+                                : `超前远程 ${viewedBranchSync.ahead} 个提交`
+                            }
+                          >
+                            <ArrowUp className="h-3 w-3 shrink-0" aria-hidden />
+                            超前 {viewedBranchSync.ahead}
+                          </span>
+                        ) : null}
+                        {viewedBranchSync.ahead === 0 && viewedBranchSync.behind === 0 ? (
+                          <span
+                            className="inline-flex h-6 items-center gap-0.5 rounded-md px-1 text-[11px] text-muted-foreground"
+                            title={
+                              viewedBranchSync.upstream_name
+                                ? `与 ${viewedBranchSync.upstream_name} 一致`
+                                : '已与远程同步'
+                            }
+                          >
+                            已同步
+                          </span>
+                        ) : null}
+                      </>
+                    ) : (
+                      <span
+                        className="inline-flex h-6 items-center truncate rounded-md px-1 text-[11px] text-amber-700 dark:text-amber-300"
+                        title="这条本地分支还没有对应的远程跟踪，无法比较是否落后"
+                      >
+                        无远程跟踪
+                      </span>
+                    )}
+                  </span>
+                ) : null}
               </div>
               <div className="flex shrink-0 items-center gap-0.5">
                 {hasActiveFilters && (
@@ -2409,9 +2612,9 @@ export function UnifiedCommitView({
                   {!isSearchMode && filteredCommits.length !== commits.length
                     ? ` · 显示 ${filteredCommits.length}`
                     : ''}
-                  {headShortNormalized ? ` · ${headShortId?.trim()}` : ''}
+                  {!commitLogRev && headShortNormalized ? ` · ${headShortId?.trim()}` : ''}
                 </p>
-                {graphRailBranchFilter ? (
+                {railFilterEnabled && graphRailBranchFilter ? (
                   <button
                     type="button"
                     className="max-w-[8rem] shrink-0 truncate font-mono text-[10px] text-foreground underline decoration-dotted underline-offset-2 hover:text-primary"
@@ -2423,15 +2626,20 @@ export function UnifiedCommitView({
                 ) : null}
               </div>
               <RemoteSyncBar
-                ahead={aheadCount}
-                behind={behindCount}
-                hasUpstream={hasUpstream}
+                ahead={viewedOtherLocalBranch ? 0 : aheadCount}
+                behind={viewedOtherLocalBranch ? 0 : behindCount}
+                hasUpstream={viewedOtherLocalBranch ? true : hasUpstream}
                 hasOriginRemote={hasOriginRemote}
+                showStatus={!viewedOtherLocalBranch}
                 disabled={syncBusy}
-                onFetchChanges={onFetchChanges}
-                onPullChanges={onPullChanges}
-                onPushChanges={onPushChanges}
-                onRefresh={onRefreshRepo}
+                onFetchChanges={onFetchChanges ? handleFetchForView : undefined}
+                onPullChanges={
+                  viewedOtherLocalBranch ? undefined : onPullChanges
+                }
+                onPushChanges={
+                  viewedOtherLocalBranch ? undefined : onPushChanges
+                }
+                onRefresh={onRefreshRepo ? handleRefreshForView : undefined}
                 refreshTitle="刷新仓库与提交列表"
                 density="compact"
                 className="ml-auto shrink-0 border-0 bg-transparent p-0"
@@ -2466,17 +2674,23 @@ export function UnifiedCommitView({
                   commits={filteredCommits}
                   branchColorKeyByCommitId={graphBranchColorByCommit}
                   branchRailColumns={
-                    graphBranchModeReady && branchRailColumns.length > 0
+                    railFilterEnabled &&
+                    graphBranchModeReady &&
+                    branchRailColumns.length > 0
                       ? branchRailColumns
                       : undefined
                   }
                   branchNamesByCommitId={
-                    graphBranchModeReady && branchNamesByCommitIdForGraph.size > 0
+                    railFilterEnabled &&
+                    graphBranchModeReady &&
+                    branchNamesByCommitIdForGraph.size > 0
                       ? branchNamesByCommitIdForGraph
                       : undefined
                   }
-                  selectedGraphBranchRail={graphRailBranchFilter}
-                  onGraphBranchRailClick={onGraphBranchRailClick}
+                  selectedGraphBranchRail={railFilterEnabled ? graphRailBranchFilter : null}
+                  onGraphBranchRailClick={
+                    railFilterEnabled ? onGraphBranchRailClick : undefined
+                  }
                   rowHeights={
                     commitGraphRowHeights.length === filteredCommits.length
                       ? commitGraphRowHeights
@@ -2502,7 +2716,7 @@ export function UnifiedCommitView({
                 let shownBranches: typeof branchTips
                 let moreBranchCount = 0
                 let moreBranchTitle: string | undefined = allBranchesTitle
-                if (graphRailBranchFilter && branchTips?.length) {
+                if (railFilterEnabled && graphRailBranchFilter && branchTips?.length) {
                   const hit = branchTips.filter((b) =>
                     tipMatchesGraphRail(b, graphRailBranchFilter)
                   )
@@ -2650,17 +2864,18 @@ export function UnifiedCommitView({
                           {shownBranches?.map((b) => {
                             const railName = resolveGraphRailName(b.name, branchRailColumns)
                             const railActive =
+                              railFilterEnabled &&
                               !!graphRailBranchFilter &&
                               tipMatchesGraphRail(b, graphRailBranchFilter)
                             return (
                             <Badge
                               key={`${b.name}-${b.is_remote ? 'r' : 'l'}`}
                               variant="outline"
-                              role="button"
-                              tabIndex={0}
+                              role={railFilterEnabled ? 'button' : undefined}
+                              tabIndex={railFilterEnabled ? 0 : undefined}
                               className={cn(
                                 'h-4 min-w-0 max-w-[11rem] shrink-0 justify-center border-border/50 bg-background/40 px-1 py-0 text-[9px] font-medium leading-none',
-                                'cursor-pointer select-none hover:bg-muted/50',
+                                railFilterEnabled && 'cursor-pointer select-none hover:bg-muted/50',
                                 branchBadgeClassName(b.name),
                                 b.is_remote && 'border-dashed',
                                 /* Badge 默认带 ring-offset-2，叠 inset ring 易发白；焦点与选中均取消 offset */
@@ -2669,18 +2884,30 @@ export function UnifiedCommitView({
                                 railActive &&
                                   'shadow-[inset_0_0_0_1px] shadow-emerald-700/45 dark:shadow-emerald-400/40'
                               )}
-                              title={`${b.is_remote ? '远程跟踪' : '本地分支'}：${b.name}（当前指向此提交）\n点击：仅看此分支（与左侧竖线相同；再点此徽章或竖线可清除）`}
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                onGraphBranchRailClick(railName)
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' || e.key === ' ') {
-                                  e.preventDefault()
-                                  e.stopPropagation()
-                                  onGraphBranchRailClick(railName)
-                                }
-                              }}
+                              title={
+                                railFilterEnabled
+                                  ? `${b.is_remote ? '远程跟踪' : '本地分支'}：${b.name}（当前指向此提交）\n点击：仅看此分支（与左侧竖线相同；再点此徽章或竖线可清除）`
+                                  : `${b.is_remote ? '远程跟踪' : '本地分支'}：${b.name}（当前指向此提交）`
+                              }
+                              onClick={
+                                railFilterEnabled
+                                  ? (e) => {
+                                      e.stopPropagation()
+                                      onGraphBranchRailClick(railName)
+                                    }
+                                  : undefined
+                              }
+                              onKeyDown={
+                                railFilterEnabled
+                                  ? (e) => {
+                                      if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault()
+                                        e.stopPropagation()
+                                        onGraphBranchRailClick(railName)
+                                      }
+                                    }
+                                  : undefined
+                              }
                             >
                               <span className="min-w-0 truncate">{b.name}</span>
                             </Badge>
@@ -3640,6 +3867,78 @@ export function UnifiedCommitView({
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={viewedPullDialogOpen}
+        onOpenChange={(open) => {
+          if (viewedPullSubmitting) return
+          setViewedPullDialogOpen(open)
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>
+              {viewedBranchSync && viewedBranchSync.ahead > 0
+                ? '需要切换后再拉取'
+                : `快进更新 ${viewedOtherLocalBranch ?? ''}`}
+            </DialogTitle>
+          </DialogHeader>
+          {viewedOtherLocalBranch && viewedBranchSync ? (
+            <div className="space-y-3 text-sm">
+              {viewedBranchSync.ahead > 0 ? (
+                <p className="text-muted-foreground">
+                  本地 <span className="font-medium text-foreground">{viewedOtherLocalBranch}</span>{' '}
+                  与远程已分叉（超前 {viewedBranchSync.ahead}，落后 {viewedBranchSync.behind}
+                  ），无法在不切换的情况下快进。将先切换到该分支，再拉取远程。
+                </p>
+              ) : (
+                <p className="text-muted-foreground">
+                  将把本地 <span className="font-medium text-foreground">{viewedOtherLocalBranch}</span>{' '}
+                  快进 {viewedBranchSync.behind} 个提交
+                  {viewedBranchSync.upstream_name
+                    ? `（对齐 ${viewedBranchSync.upstream_name}）`
+                    : ''}
+                  。工作区仍停留在当前检出分支，不会切走。
+                </p>
+              )}
+              <div className="flex justify-end gap-2 pt-1">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setViewedPullDialogOpen(false)}
+                  disabled={viewedPullSubmitting}
+                >
+                  取消
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void confirmViewedBranchPull()}
+                  disabled={
+                    viewedPullSubmitting ||
+                    syncBusy ||
+                    (viewedBranchSync.ahead > 0
+                      ? !onCheckoutAndPullViewedBranch
+                      : !onFastForwardViewedBranch)
+                  }
+                >
+                  {viewedPullSubmitting ? (
+                    <span className="inline-flex items-center gap-1.5">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      进行中…
+                    </span>
+                  ) : viewedBranchSync.ahead > 0 ? (
+                    '切换并拉取'
+                  ) : (
+                    '快进更新'
+                  )}
+                </Button>
+              </div>
+            </div>
+          ) : null}
         </DialogContent>
       </Dialog>
     </div>

@@ -27,6 +27,24 @@ export function shortBranchRef(ref: string | null | undefined): string {
   return ref.replace(/^refs\/heads\//, '').replace(/^refs\/remotes\//, '')
 }
 
+/**
+ * 本地分支与其远程跟踪是否同一条线：`dev-ght` ↔ `origin/dev-ght`。
+ * 「当前分支」视图只保留正在查看的那条线，避免其它远程把图画成全部分支。
+ */
+export function refsSameBranchLine(name: string, focus: string): boolean {
+  const n = name.trim()
+  const f = focus.trim()
+  if (!n || !f) return false
+  if (n === f) return true
+  if (!f.includes('/')) {
+    return n === `origin/${f}` || n.endsWith(`/${f}`)
+  }
+  if (!n.includes('/')) {
+    return f === `origin/${n}` || f.endsWith(`/${n}`)
+  }
+  return false
+}
+
 /** 与 CommitGraphStrip 车道色一致顺序；同分支名（完整 ref 名）始终同色 */
 const BRANCH_BADGE_PALETTE = [
   'border-sky-500/55 bg-sky-500/15 text-sky-950 dark:border-sky-400/50 dark:bg-sky-500/20 dark:text-sky-50',

@@ -371,6 +371,20 @@ export function useGit() {
     [repoInfo]
   )
 
+  const fastForwardLocalBranch = useCallback(
+    async (branchName: string): Promise<string> => {
+      if (!repoInfo) throw new Error('No repository open')
+      const msg = await invoke<string>('fast_forward_local_branch', {
+        repoPath: repoInfo.path,
+        branch: branchName.trim(),
+      })
+      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+      setRepoInfo(updatedRepoInfo)
+      return msg
+    },
+    [repoInfo]
+  )
+
   const getRemoteManagementInfo = useCallback(async (): Promise<RemoteManagementInfo> => {
     if (!repoInfo) throw new Error('No repository open')
     return await invoke<RemoteManagementInfo>('get_remote_management_info', {
@@ -993,6 +1007,7 @@ export function useGit() {
     deleteBranch,
     renameBranch,
     mergeBranch,
+    fastForwardLocalBranch,
     getRemoteManagementInfo,
     addRemote,
     updateRemote,

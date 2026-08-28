@@ -621,6 +621,11 @@ function App() {
       finishRemoteOp(isConflict ? 'conflict' : 'success', outcome.message)
       return !isConflict
     } catch (error) {
+      try {
+        await refreshRepoInfo()
+      } catch {
+        /* 检出可能已成功，尽量刷新界面 */
+      }
       const message = formatTauriInvokeError(error, '切换并拉取失败')
       setLogs((prev) => [
         ...prev,

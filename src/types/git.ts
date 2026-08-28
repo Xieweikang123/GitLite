@@ -114,6 +114,16 @@ export interface BranchInfo {
   is_remote: boolean
 }
 
+/** 本地分支相对上游（或 origin/同名）的超前/落后 */
+export interface BranchSyncStatus {
+  ahead: number
+  behind: number
+  has_upstream: boolean
+  upstream_name?: string | null
+  local_short_id?: string | null
+  upstream_short_id?: string | null
+}
+
 export interface FileChange {
   path: string
   status: string // "added", "modified", "deleted", "renamed"
