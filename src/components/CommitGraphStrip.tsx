@@ -5,7 +5,7 @@ import { cn } from '../lib/utils'
 
 /** 略宽车道，便于 2px+ 竖轨与节点不挤 */
 const LANE_W = 12
-export const ROW_H = 46
+export const ROW_H = 40
 
 /** 竖轨 / 水平接驳描边宽度（类 SourceTree 的「轨道感」） */
 const RAIL_STROKE_PX = 2.35

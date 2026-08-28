@@ -138,6 +138,7 @@ export function CommitDatePickerButton({
       <PopoverContent
         className="w-auto max-w-[min(100vw-2rem,20rem)] overflow-visible p-2"
         align="start"
+        data-commit-date-picker=""
       >
         <div className="flex flex-col gap-2">
           {open ? (

@@ -58,6 +58,7 @@ import { formatLocalYmd } from '../utils/dateYmd'
 import {
   branchBadgeClassName,
   branchRevSpec,
+  formatBranchLabelShort,
   refsSameBranchLine,
   shortBranchRef,
 } from '../utils/branchDisplayName'
@@ -466,10 +467,11 @@ export function UnifiedCommitView({
   onJumpToCommitConsumed,
   suspendAutoLoadMore = false,
 }: UnifiedCommitViewProps) {
-  /** 筛选栏输入（待「查询」应用） */
+  /** 筛选栏输入；关键词短延迟后生效，日期立即生效 */
   const [pendingStart, setPendingStart] = useState('')
   const [pendingEnd, setPendingEnd] = useState('')
   const [pendingSearch, setPendingSearch] = useState('')
+  const [dateFilterOpen, setDateFilterOpen] = useState(false)
   /** 已应用到列表的筛选条件 */
   const [appliedStart, setAppliedStart] = useState('')
   const [appliedEnd, setAppliedEnd] = useState('')
@@ -1019,26 +1021,18 @@ export function UnifiedCommitView({
     ]
   )
 
-  const canApplyFilters = useMemo(
-    () =>
-      pendingStart !== appliedStart ||
-      pendingEnd !== appliedEnd ||
-      pendingSearch !== appliedSearch,
-    [
-      pendingStart,
-      pendingEnd,
-      pendingSearch,
-      appliedStart,
-      appliedEnd,
-      appliedSearch,
-    ]
-  )
-
   const applyFilters = useCallback(() => {
     setAppliedStart(pendingStart)
     setAppliedEnd(pendingEnd)
     setAppliedSearch(pendingSearch)
   }, [pendingStart, pendingEnd, pendingSearch])
+
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      setAppliedSearch(pendingSearch)
+    }, 280)
+    return () => window.clearTimeout(id)
+  }, [pendingSearch])
 
   const clearAllFilters = useCallback(() => {
     setPendingStart('')
@@ -1056,8 +1050,31 @@ export function UnifiedCommitView({
     setPendingEnd(end)
     setAppliedStart(start)
     setAppliedEnd(end)
-    setAppliedSearch(pendingSearch)
-  }, [pendingSearch])
+  }, [])
+
+  const dateFilterActive = !!(pendingStart || pendingEnd)
+  const dateFilterLabel = useMemo(() => {
+    const fmt = (ymd: string) => ymd.replace(/-/g, '/')
+    if (pendingStart && pendingEnd) {
+      if (pendingStart === pendingEnd) return fmt(pendingStart)
+      return `${fmt(pendingStart)} – ${fmt(pendingEnd)}`
+    }
+    if (pendingStart) return `${fmt(pendingStart)} 起`
+    if (pendingEnd) return `至 ${fmt(pendingEnd)}`
+    return '时间'
+  }, [pendingStart, pendingEnd])
+
+  const browsingNonCheckout =
+    commitLogScope === 'head' && !!commitLogRev?.trim()
+
+  const localBranchesForLog = useMemo(
+    () => branchesSorted.filter((b) => !b.is_remote),
+    [branchesSorted]
+  )
+  const remoteBranchesForLog = useMemo(
+    () => branchesSorted.filter((b) => b.is_remote),
+    [branchesSorted]
+  )
 
   const commitListCountLabel = isSearchMode
     ? `搜索 ${commits.length}`
@@ -2264,9 +2281,6 @@ export function UnifiedCommitView({
           <CardHeader className="flex flex-col gap-1.5 space-y-0 border-b border-border/35 bg-muted/15 px-2.5 py-2 sm:px-3 dark:bg-muted/5">
             <div className="flex min-w-0 items-center gap-2">
               <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                <CardTitle className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  提交记录
-                </CardTitle>
                 {onCommitLogScopeChange && (
                   <div
                     className="flex h-6 shrink-0 rounded-md border border-border/50 bg-background/70 p-0.5 dark:bg-background/40"
@@ -2282,7 +2296,7 @@ export function UnifiedCommitView({
                           : 'text-muted-foreground hover:text-foreground'
                       )}
                       onClick={() => onCommitLogScopeChange('head')}
-                      title="仅当前检出分支（HEAD）的提交历史"
+                      title="只看一条分支的提交历史；默认跟随上方工具栏的检出分支"
                     >
                       当前分支
                     </button>
@@ -2325,30 +2339,76 @@ export function UnifiedCommitView({
                   onCommitLogRevChange &&
                   branchesSorted.length > 0 &&
                   checkoutHeadRef != null && (
-                    <select
-                      className="h-6 max-w-[11rem] min-w-0 shrink rounded-md border border-input bg-background px-1.5 text-xs text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      value={commitLogBranchSelectValue}
-                      onChange={(e) => {
-                        const v = e.target.value.trim()
-                        if (checkoutHeadRef && v === checkoutHeadRef) {
-                          onCommitLogRevChange(null)
-                        } else {
-                          onCommitLogRevChange(v || null)
-                        }
-                      }}
-                      title="查看任意本地或远程跟踪分支的提交历史（无需切换检出）；选当前检出分支等价于跟随 HEAD"
-                      aria-label="选择要查看的历史分支"
+                    <div
+                      className={cn(
+                        'flex h-6 min-w-0 max-w-[18rem] shrink items-center gap-1 rounded-md border bg-background px-1.5',
+                        browsingNonCheckout
+                          ? 'border-primary/40'
+                          : 'border-input'
+                      )}
+                      title="浏览某条分支的历史，不会切换工作区。要改检出请用上方工具栏的分支选择器。"
                     >
-                      {branchesSorted.map((b) => (
-                        <option
-                          key={`${b.is_remote ? 'r' : 'l'}:${b.name}`}
-                          value={branchRevSpec(b.name, b.is_remote)}
-                        >
-                          {b.name}
-                        </option>
-                      ))}
-                    </select>
+                      <GitBranch className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />
+                      <span className="shrink-0 text-[10px] text-muted-foreground">
+                        {browsingNonCheckout ? '浏览' : '跟随'}
+                      </span>
+                      <select
+                        className="h-5 min-w-0 flex-1 border-0 bg-transparent py-0 pl-0 pr-1 text-xs text-foreground shadow-none focus-visible:outline-none"
+                        value={commitLogBranchSelectValue}
+                        onChange={(e) => {
+                          const v = e.target.value.trim()
+                          if (checkoutHeadRef && v === checkoutHeadRef) {
+                            onCommitLogRevChange(null)
+                          } else {
+                            onCommitLogRevChange(v || null)
+                          }
+                        }}
+                        aria-label="选择要查看历史的分支（不切换检出）"
+                      >
+                        {localBranchesForLog.length > 0 && (
+                          <optgroup label="本地">
+                            {localBranchesForLog.map((b) => {
+                              const spec = branchRevSpec(b.name, false)
+                              const isCheckout = spec === checkoutHeadRef
+                              return (
+                                <option key={`l:${b.name}`} value={spec}>
+                                  {isCheckout ? `${b.name}（检出）` : b.name}
+                                </option>
+                              )
+                            })}
+                          </optgroup>
+                        )}
+                        {remoteBranchesForLog.length > 0 && (
+                          <optgroup label="远程">
+                            {remoteBranchesForLog.map((b) => (
+                              <option
+                                key={`r:${b.name}`}
+                                value={branchRevSpec(b.name, true)}
+                              >
+                                {b.name}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                      </select>
+                    </div>
                   )}
+                {browsingNonCheckout && onCommitLogRevChange ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 shrink-0 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+                    onClick={() => onCommitLogRevChange(null)}
+                    title={
+                      currentBranch
+                        ? `回到检出分支 ${currentBranch} 的历史`
+                        : '回到当前检出的历史'
+                    }
+                  >
+                    回到检出
+                  </Button>
+                ) : null}
                 {viewedOtherLocalBranch && viewedBranchSync ? (
                   <span className="flex min-w-0 max-w-[14rem] shrink-0 items-center gap-1">
                     {viewedBranchSync.has_upstream ? (
@@ -2473,17 +2533,17 @@ export function UnifiedCommitView({
               </div>
             </div>
 
-            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-              <div className="relative min-w-[8rem] flex-1">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <div className="relative w-full min-w-[8rem] max-w-[16rem] shrink">
                 <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
                 <Input
-                  placeholder="筛选提交"
+                  placeholder="筛选已加载的提交"
                   value={pendingSearch}
                   onChange={(e) => setPendingSearch(e.target.value)}
                   aria-label="按关键词筛选已加载的提交"
                   className="h-6 w-full min-w-0 border-border/70 bg-background py-0 pl-7 pr-2 text-xs"
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && canApplyFilters) {
+                    if (e.key === 'Enter') {
                       e.preventDefault()
                       applyFilters()
                     }
@@ -2522,77 +2582,144 @@ export function UnifiedCommitView({
                   恢复列表
                 </Button>
               )}
-              <div className="flex shrink-0 items-center gap-1">
-                <Calendar className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />
-                <CommitDatePickerButton
-                  value={pendingStart}
-                  onChange={setPendingStart}
-                  placeholder="开始"
-                  title="开始日期"
-                  className="h-6 w-[6.75rem] max-w-none justify-start px-1.5 text-xs"
-                />
-                <span className="shrink-0 text-[10px] text-muted-foreground/70">–</span>
-                <CommitDatePickerButton
-                  value={pendingEnd}
-                  onChange={setPendingEnd}
-                  placeholder="结束"
-                  title="结束日期"
-                  className="h-6 w-[6.75rem] max-w-none justify-start px-1.5 text-xs"
-                />
-              </div>
-              <div className="flex shrink-0 items-center gap-0.5">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 shrink-0 px-1.5 text-xs text-muted-foreground hover:text-foreground"
-                  onClick={() => {
-                    const ymd = formatLocalYmd(new Date())
-                    applyDateRange(ymd, ymd)
-                  }}
-                  title="开始与结束均设为今天并立即筛选"
-                >
-                  今日
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 shrink-0 px-1.5 text-xs text-muted-foreground hover:text-foreground"
-                  onClick={() => {
-                    const end = new Date()
-                    const start = new Date(end)
-                    start.setDate(start.getDate() - 6)
-                    applyDateRange(formatLocalYmd(start), formatLocalYmd(end))
-                  }}
-                  title="含今日共 7 个自然日，立即筛选"
-                >
-                  7天
-                </Button>
-                {canApplyFilters && (
+              <div className="flex h-6 shrink-0 items-center">
+              <Popover open={dateFilterOpen} onOpenChange={setDateFilterOpen}>
+                <PopoverTrigger asChild>
                   <Button
                     type="button"
+                    variant={dateFilterActive ? 'secondary' : 'outline'}
                     size="sm"
-                    className="h-6 shrink-0 px-2 text-xs"
-                    onClick={applyFilters}
-                    title="将当前日期与关键词应用到列表筛选"
+                    className={cn(
+                      'h-6 max-w-[12rem] shrink-0 gap-1 px-1.5 text-xs font-normal',
+                      dateFilterActive && 'rounded-r-none border-r-0'
+                    )}
+                    title="按提交日期筛选"
+                    aria-label="按日期筛选"
                   >
-                    查询
+                    <Calendar className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />
+                    <span className="truncate">{dateFilterLabel}</span>
                   </Button>
-                )}
+                </PopoverTrigger>
+                <PopoverContent
+                  className="w-auto p-3"
+                  align="start"
+                  onInteractOutside={(event) => {
+                    const target = event.target as HTMLElement | null
+                    if (target?.closest('[data-commit-date-picker]')) {
+                      event.preventDefault()
+                    }
+                  }}
+                >
+                  <div className="flex flex-col gap-2.5">
+                    <div className="flex flex-wrap gap-1">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() => {
+                          applyDateRange('', '')
+                          setDateFilterOpen(false)
+                        }}
+                      >
+                        全部
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() => {
+                          const ymd = formatLocalYmd(new Date())
+                          applyDateRange(ymd, ymd)
+                          setDateFilterOpen(false)
+                        }}
+                      >
+                        今日
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() => {
+                          const end = new Date()
+                          const start = new Date(end)
+                          start.setDate(start.getDate() - 6)
+                          applyDateRange(formatLocalYmd(start), formatLocalYmd(end))
+                          setDateFilterOpen(false)
+                        }}
+                      >
+                        近 7 天
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() => {
+                          const end = new Date()
+                          const start = new Date(end)
+                          start.setDate(start.getDate() - 29)
+                          applyDateRange(formatLocalYmd(start), formatLocalYmd(end))
+                          setDateFilterOpen(false)
+                        }}
+                      >
+                        近 30 天
+                      </Button>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <CommitDatePickerButton
+                        value={pendingStart}
+                        onChange={(ymd) => {
+                          setPendingStart(ymd)
+                          setAppliedStart(ymd)
+                        }}
+                        placeholder="开始"
+                        title="开始日期"
+                        className="h-6 w-[7.25rem] max-w-none justify-start px-1.5 text-xs"
+                      />
+                      <span className="shrink-0 text-[10px] text-muted-foreground/70">–</span>
+                      <CommitDatePickerButton
+                        value={pendingEnd}
+                        onChange={(ymd) => {
+                          setPendingEnd(ymd)
+                          setAppliedEnd(ymd)
+                        }}
+                        placeholder="结束"
+                        title="结束日期"
+                        className="h-6 w-[7.25rem] max-w-none justify-start px-1.5 text-xs"
+                      />
+                    </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
+              {dateFilterActive ? (
                 <Button
                   type="button"
-                  variant="ghost"
+                  variant="secondary"
                   size="icon"
-                  className="h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
-                  disabled={filteredCommits.length === 0}
-                  onClick={openCommitListDialog}
-                  title="列出当前筛选下已加载的全部提交（时间升序），便于复制"
-                  aria-label="提交列表"
+                  className="h-6 w-6 shrink-0 rounded-l-none"
+                  title="清除日期筛选"
+                  aria-label="清除日期筛选"
+                  onClick={() => applyDateRange('', '')}
                 >
-                  <ClipboardList className="h-3.5 w-3.5" />
+                  <X className="h-3 w-3" aria-hidden />
                 </Button>
+              ) : null}
               </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="ml-auto h-6 w-6 shrink-0 text-muted-foreground hover:text-foreground"
+                disabled={filteredCommits.length === 0}
+                onClick={openCommitListDialog}
+                title="列出当前筛选下已加载的全部提交（时间升序），便于复制"
+                aria-label="提交列表"
+              >
+                <ClipboardList className="h-3.5 w-3.5" />
+              </Button>
             </div>
 
             {listError && (
@@ -2701,8 +2828,8 @@ export function UnifiedCommitView({
               {filteredCommits.map((commit, i) => {
                 const atHead = isCommitCheckedOut(commit)
                 const branchTips = branchTipsByCommit.get(commit.id)
-                /** 宽屏一行可排更多标签；仅作上限，窄屏仍由 flex-wrap 换行 */
-                const maxBranchBadges = 20
+                /** 引用与说明同一行，标签过多会挤掉标题，上限收紧 */
+                const maxBranchBadges = 8
                 const allBranchesTitle =
                   branchTips && branchTips.length > 0
                     ? branchTips
@@ -2754,7 +2881,7 @@ export function UnifiedCommitView({
                     commitRowElsRef.current[i] = el
                   }}
                   className={cn(
-                    'group relative flex min-h-[2.4rem] shrink-0 cursor-pointer flex-col justify-center border-b border-border/25 transition-colors duration-100 last:border-b-0',
+                    'group relative flex min-h-[2.25rem] shrink-0 cursor-pointer flex-col justify-center border-b border-border/20 transition-colors duration-100 last:border-b-0',
                     atHead &&
                       'bg-emerald-500/[0.07] before:absolute before:left-0 before:top-2 before:bottom-2 before:w-[3px] before:rounded-full before:bg-emerald-500/85 before:content-[""] dark:bg-emerald-500/[0.09] dark:before:bg-emerald-400/80',
                     !atHead && isRowSelected && 'bg-primary/[0.09] ring-1 ring-inset ring-primary/18 dark:bg-primary/[0.12]',
@@ -2784,14 +2911,14 @@ export function UnifiedCommitView({
                     setCommitContextMenu({ x: e.clientX, y: e.clientY, commit })
                   }}
                 >
-                  <div className="relative min-h-0 pr-1 pl-3 pt-1 pb-1 sm:pr-2">
+                  <div className="relative min-h-0 py-[0.35rem] pl-3 pr-1 sm:pr-1.5">
                     {/* 悬停操作：复制哈希 / 重置（与右键菜单一致） */}
-                    <div className="pointer-events-none absolute right-1 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100">
+                    <div className="pointer-events-none absolute right-1 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5 rounded-md bg-background/85 opacity-0 ring-1 ring-border/40 backdrop-blur-[2px] transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100 dark:bg-zinc-900/80">
                       <Button
                         type="button"
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                        className="h-6 w-6 text-muted-foreground hover:text-foreground"
                         title="复制短哈希"
                         aria-label="复制短哈希"
                         onClick={(e) => {
@@ -2810,7 +2937,7 @@ export function UnifiedCommitView({
                           type="button"
                           variant="ghost"
                           size="icon"
-                          className="h-7 w-7 text-muted-foreground hover:text-foreground disabled:opacity-40"
+                          className="h-6 w-6 text-muted-foreground hover:text-foreground disabled:opacity-40"
                           disabled={syncBusy || atHead}
                           title={
                             atHead
@@ -2828,34 +2955,11 @@ export function UnifiedCommitView({
                       )}
                     </div>
 
-                    <div className="min-w-0 space-y-0.5 pr-[4.25rem]">
-                      <div className="flex items-start gap-2">
-                        <p
-                          className="line-clamp-1 min-w-0 flex-1 text-[13px] font-medium leading-tight tracking-tight text-foreground/95"
-                          title={commit.message}
-                        >
-                          {commit.message}
-                        </p>
-                        <span className="mt-px shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/90">
-                          {commit.short_id}
-                        </span>
-                      </div>
-
-                      <div className="flex min-w-0 items-center gap-1.5 text-[11px] leading-tight text-muted-foreground">
-                        <span className="min-w-0 truncate">{commit.author}</span>
-                        <span className="shrink-0 opacity-40">·</span>
-                        <span className="shrink-0 tabular-nums opacity-90">{commit.date}</span>
-                      </div>
-
-                      {(atHead ||
-                        (shownBranches && shownBranches.length > 0) ||
-                        moreBranchCount > 0 ||
-                        pendingPullIds.has(commit.id) ||
-                        pendingPushIds.has(commit.id)) && (
-                        <div className="flex min-w-0 flex-wrap items-center gap-0.5 pt-0.5">
+                    <div className="min-w-0 space-y-0.5 pr-9">
+                      <div className="flex w-fit max-w-full min-w-0 items-center gap-1.5">
                           {atHead && (
                             <span
-                              className="inline-flex shrink-0 items-center rounded border border-emerald-500/35 bg-emerald-500/15 px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-emerald-800 dark:text-emerald-300/95"
+                              className="inline-flex h-4 shrink-0 items-center rounded border border-emerald-500/35 bg-emerald-500/15 px-1 text-[9px] font-semibold uppercase leading-none tracking-wide text-emerald-800 dark:text-emerald-300/95"
                               title="当前工作区检出（HEAD）"
                             >
                               HEAD
@@ -2867,6 +2971,7 @@ export function UnifiedCommitView({
                               railFilterEnabled &&
                               !!graphRailBranchFilter &&
                               tipMatchesGraphRail(b, graphRailBranchFilter)
+                            const label = formatBranchLabelShort(b.name)
                             return (
                             <Badge
                               key={`${b.name}-${b.is_remote ? 'r' : 'l'}`}
@@ -2874,7 +2979,7 @@ export function UnifiedCommitView({
                               role={railFilterEnabled ? 'button' : undefined}
                               tabIndex={railFilterEnabled ? 0 : undefined}
                               className={cn(
-                                'h-4 min-w-0 max-w-[11rem] shrink-0 justify-center border-border/50 bg-background/40 px-1 py-0 text-[9px] font-medium leading-none',
+                                'h-4 min-w-0 max-w-[7.5rem] shrink-0 justify-center border-border/50 bg-background/40 px-1 py-0 text-[9px] font-medium leading-none',
                                 railFilterEnabled && 'cursor-pointer select-none hover:bg-muted/50',
                                 branchBadgeClassName(b.name),
                                 b.is_remote && 'border-dashed',
@@ -2909,7 +3014,7 @@ export function UnifiedCommitView({
                                   : undefined
                               }
                             >
-                              <span className="min-w-0 truncate">{b.name}</span>
+                              <span className="min-w-0 truncate">{label}</span>
                             </Badge>
                             )
                           })}
@@ -2923,19 +3028,36 @@ export function UnifiedCommitView({
                           )}
                           {pendingPullIds.has(commit.id) && (
                             <span
-                              className="inline-flex shrink-0 rounded border border-amber-500/30 bg-amber-500/12 px-1 py-px text-[9px] font-medium text-amber-900 dark:text-amber-200/95"
+                              className="inline-flex h-4 shrink-0 items-center rounded border border-amber-500/30 bg-amber-500/12 px-1 text-[9px] font-medium leading-none text-amber-900 dark:text-amber-200/95"
                               title="远程已有、本地尚未拉取合并的提交"
                             >
                               待拉取
                             </span>
                           )}
                           {pendingPushIds.has(commit.id) && (
-                            <span className="inline-flex shrink-0 rounded border border-blue-500/30 bg-blue-500/12 px-1 py-px text-[9px] font-medium text-blue-900 dark:text-blue-200/95">
+                            <span className="inline-flex h-4 shrink-0 items-center rounded border border-blue-500/30 bg-blue-500/12 px-1 text-[9px] font-medium leading-none text-blue-900 dark:text-blue-200/95">
                               待推送
                             </span>
                           )}
-                        </div>
-                      )}
+                        <p
+                          className="min-w-0 truncate text-[13px] font-medium leading-tight tracking-tight text-foreground/95"
+                          title={commit.message}
+                        >
+                          {commit.message}
+                        </p>
+                        <span
+                          className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground/75"
+                          title={commit.id}
+                        >
+                          {commit.short_id}
+                        </span>
+                      </div>
+
+                      <div className="flex min-w-0 items-center gap-1.5 text-[11px] leading-tight text-muted-foreground">
+                        <span className="min-w-0 truncate">{commit.author}</span>
+                        <span className="shrink-0 opacity-40">·</span>
+                        <span className="shrink-0 tabular-nums opacity-90">{commit.date}</span>
+                      </div>
                     </div>
                   </div>
                 </div>
