@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/tauri'
-import { GitBranch, Network } from 'lucide-react'
+import { GitBranch, Network, RotateCcw, Timer } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { BranchSwitcher } from './BranchSwitcher'
 import { Button } from './ui/button'
@@ -18,7 +18,14 @@ interface TopToolbarProps {
   loading: boolean
   repoInfo: any
   children?: ReactNode
+  onManualRefresh?: () => void | Promise<void>
+  refreshing?: boolean
+  autoRefresh?: boolean
+  onToggleAutoRefresh?: (value: boolean) => void
 }
+
+/** 与 WorkspaceStatus 的刷新周期保持一致，仅用于提示文案 */
+const AUTO_REFRESH_INTERVAL_SEC = 10
 
 export function TopToolbar({
   onBranchSelect,
@@ -32,6 +39,10 @@ export function TopToolbar({
   loading,
   repoInfo,
   children,
+  onManualRefresh,
+  refreshing,
+  autoRefresh,
+  onToggleAutoRefresh,
 }: TopToolbarProps) {
   const handleOpenFolder = async () => {
     try {
@@ -142,6 +153,41 @@ export function TopToolbar({
           {children}
         </div>
       ) : null}
+
+      {(onManualRefresh || onToggleAutoRefresh) && (
+        <div className="ml-auto flex shrink-0 items-center gap-0.5 pl-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            title={refreshing ? '正在刷新…' : '手动刷新'}
+            disabled={!repoInfo || refreshing || loading}
+            onClick={() => void onManualRefresh?.()}
+          >
+            <RotateCcw className={`h-4 w-4${refreshing ? ' animate-spin' : ''}`} />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className={`h-8 w-8 shrink-0 ${
+              autoRefresh
+                ? 'text-blue-600 hover:text-blue-600 dark:text-blue-400'
+                : 'text-muted-foreground'
+            }`}
+            title={
+              autoRefresh
+                ? `自动刷新已开启：每 ${AUTO_REFRESH_INTERVAL_SEC}s 在后台静默刷新，无全屏加载遮罩；点击关闭`
+                : `自动刷新已关闭；点击开启（每 ${AUTO_REFRESH_INTERVAL_SEC}s 后台静默刷新）`
+            }
+            disabled={!repoInfo}
+            onClick={() => onToggleAutoRefresh?.(!autoRefresh)}
+          >
+            <Timer className="h-4 w-4" />
+          </Button>
+        </div>
+      )}
     </div>
   )
 }

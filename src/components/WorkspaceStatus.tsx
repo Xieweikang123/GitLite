@@ -5,12 +5,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { Badge } from './ui/badge'
 import { FileChange, type WorkspaceGitActions, type CommitInfo } from '../types/git'
 import { FileDiffModal } from './FileDiffModal'
-import { Eye, Archive, ArchiveRestore, Trash2, CheckCircle, AlertCircle, Loader2, Sparkles, RotateCcw } from 'lucide-react'
+import { Eye, Archive, ArchiveRestore, Trash2, CheckCircle, AlertCircle, Loader2, Sparkles, RotateCcw, ChevronDown } from 'lucide-react'
 import { shortenPathMiddle } from '../lib/utils'
 import { formatTauriInvokeError } from '../utils/tauriError'
 import { getClientCalendarOffsetEastMinutes } from '../utils/clientCalendarOffset'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { RemoteSyncBar } from './RemoteSyncBar'
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 
 interface WorkspaceStatusProps {
   repoInfo: any
@@ -20,7 +21,18 @@ interface WorkspaceStatusProps {
   onFetchChanges?: () => void
   gitActions?: WorkspaceGitActions
   onJumpToCommit?: (commit: CommitInfo) => void
+  autoRefresh?: boolean
+  onAutoRefreshChange?: (value: boolean) => void
+  /** 组件挂载期间把「完整手动刷新」注册给父级（工具栏按钮调用），卸载时回传 null */
+  onRegisterManualRefresh?: (fn: (() => Promise<void>) | null) => void
+  onOpenCommitsTab?: () => void
+  onOpenFilesTab?: () => void
+  /** 远程拉取/推送进行中，禁用同步条按钮 */
+  remoteBusy?: boolean
 }
+
+/** 后台静默刷新周期（秒） */
+export const REFRESH_INTERVAL_SEC = 10
 
 interface WorkspaceStatusData {
   staged_files: FileChange[]
@@ -63,6 +75,12 @@ export function WorkspaceStatus({
   onFetchChanges,
   gitActions,
   onJumpToCommit,
+  autoRefresh: autoRefreshProp = true,
+  onAutoRefreshChange,
+  onRegisterManualRefresh,
+  onOpenCommitsTab,
+  onOpenFilesTab,
+  remoteBusy = false,
 }: WorkspaceStatusProps) {
   const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatusData | null>(null)
   const [commitMessage, setCommitMessage] = useState('')
@@ -81,8 +99,9 @@ export function WorkspaceStatus({
   const [syncInfo, setSyncInfo] = useState<string | null>(null)
   const [syncStep, setSyncStep] = useState<string | null>(null)
   const [abortingMerge, setAbortingMerge] = useState(false)
-  const [autoRefresh, setAutoRefresh] = useState(true)
-  const [refreshIntervalSec] = useState(10)
+  /** 提交主按钮右侧 ▾ 菜单（仅提交 / 推送） */
+  const [commitMenuOpen, setCommitMenuOpen] = useState(false)
+  const autoRefresh = autoRefreshProp
   /** 避免自动刷新与上一次 IPC 重叠（大仓库 get_workspace_status 可能较慢） */
   const silentRefreshInFlightRef = useRef(false)
   /**
@@ -189,6 +208,13 @@ export function WorkspaceStatus({
     await fetchStashList()
     await Promise.resolve(onRefresh())
   }
+
+  useEffect(() => {
+    onRegisterManualRefresh?.(handleManualRefresh)
+    return () => {
+      onRegisterManualRefresh?.(null)
+    }
+  })
 
   // 打开贮藏对话框时加载列表
   useEffect(() => {
@@ -444,7 +470,7 @@ export function WorkspaceStatus({
       }
     }
 
-    const intervalMs = refreshIntervalSec * 1000
+    const intervalMs = REFRESH_INTERVAL_SEC * 1000
     const intervalId = window.setInterval(() => {
       void runPull(true)
     }, intervalMs)
@@ -453,7 +479,7 @@ export function WorkspaceStatus({
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [repoInfo, repoInfo?.head_short_id, autoRefresh, refreshIntervalSec])
+  }, [repoInfo, repoInfo?.head_short_id, autoRefresh])
 
   // 暂存文件（等刷新完成再更新列表，行内按钮可显示 loading，避免「添加/暂存」无反馈）
   const stageFile = async (filePath: string) => {
@@ -716,6 +742,13 @@ export function WorkspaceStatus({
   const handlePushFromCard = async () => {
     if (!repoInfo) return
 
+    // 父级注入了带状态条的推送：由 App 的非模态提示负责进度，避免与本卡片横幅叠两层
+    if (onPushChanges) {
+      await Promise.resolve(onPushChanges())
+      await syncParentRepo()
+      return
+    }
+
     try {
       setLoading(true)
       setSyncLoading(true)
@@ -723,17 +756,13 @@ export function WorkspaceStatus({
       setSyncInfo(null)
       setSyncStep('正在推送本地提交…')
 
-      if (onPushChanges) {
-        await Promise.resolve(onPushChanges())
+      if (gitActions) {
+        await gitActions.pushChanges()
       } else {
-        if (gitActions) {
-          await gitActions.pushChanges()
-        } else {
-          const { invoke } = await import('@tauri-apps/api/tauri')
-          await invoke('push_changes', {
-            repoPath: repoInfo.path,
-          })
-        }
+        const { invoke } = await import('@tauri-apps/api/tauri')
+        await invoke('push_changes', {
+          repoPath: repoInfo.path,
+        })
       }
 
       await syncParentRepo()
@@ -964,33 +993,6 @@ export function WorkspaceStatus({
 
   return (
     <div className="space-y-4">
-      {/* 刷新与自动刷新控制栏 */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleManualRefresh}
-            disabled={loading || unstagingLoading || stagingLoading || !repoInfo}
-          >
-            刷新
-          </Button>
-          <label className="flex items-center gap-2 text-sm select-none cursor-pointer">
-            <input
-              type="checkbox"
-              checked={autoRefresh}
-              onChange={(e) => setAutoRefresh(e.target.checked)}
-            />
-            自动刷新
-          </label>
-        </div>
-        {autoRefresh && (
-          <div className="text-xs text-muted-foreground">
-            每 {refreshIntervalSec}s 自动刷新（后台无全屏加载）
-          </div>
-        )}
-      </div>
-
       {error && (
         <div
           className="fixed left-1/2 top-20 z-[100] w-[min(90vw,42rem)] -translate-x-1/2 px-4"
@@ -1051,12 +1053,10 @@ export function WorkspaceStatus({
           behind={repoInfo.behind}
           hasUpstream={repoInfo.has_upstream ?? true}
           hasOriginRemote={repoInfo.has_origin_remote ?? true}
-          disabled={loading}
-          refreshSpinning={loading}
+          showPush={false}
+          disabled={loading || remoteBusy}
           onFetchChanges={onFetchChanges}
           onPullChanges={onPullChanges}
-          onRefresh={handleManualRefresh}
-          refreshTitle="刷新远程状态与工作区文件"
           repoPath={repoInfo.path}
           onPendingCommitClick={onJumpToCommit}
         />
@@ -1130,58 +1130,87 @@ export function WorkspaceStatus({
               )}
               AI 生成
             </Button>
-            <Button 
-              onClick={() => void runCommit()}
-              disabled={
-                !commitMessage.trim() || loading || stagingLoading || unstagingLoading || !workspaceStatus?.staged_files?.length
-              }
-            >
-              提交
-            </Button>
-            <Button 
-              onClick={() => void commitAndSync()}
-              disabled={
-                loading ||
-                syncLoading ||
-                stagingLoading ||
-                unstagingLoading ||
-                !repoInfo ||
-                (hasStagedFiles ? !commitMessage.trim() : !hasSyncDelta)
-              }
-              variant="default"
-              aria-busy={syncLoading && !!syncStep}
-              className="min-w-[7.5rem]"
-            >
-              {syncLoading && syncStep ? (
-                <>
-                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                  同步中…
-                </>
-              ) : (
-                '提交并同步'
-              )}
-            </Button>
-            <div className="relative">
-              <Button 
-                variant="outline"
-                onClick={() => void handlePushFromCard()}
-                disabled={loading || !repoInfo || repoInfo.ahead <= 0}
-                aria-busy={syncLoading && !!syncStep && syncStep.includes('推送')}
+            <div className="flex shrink-0 items-center">
+              <Button
+                onClick={() => void commitAndSync()}
+                disabled={
+                  loading ||
+                  syncLoading ||
+                  stagingLoading ||
+                  unstagingLoading ||
+                  !repoInfo ||
+                  (hasStagedFiles ? !commitMessage.trim() : !hasSyncDelta)
+                }
+                aria-busy={syncLoading && !!syncStep}
+                className="min-w-[7.5rem] rounded-r-none"
               >
-                {syncLoading && syncStep && syncStep.includes('推送') ? (
+                {syncLoading && syncStep ? (
                   <>
                     <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                    推送中…
+                    同步中…
                   </>
                 ) : (
-                  '推送'
+                  '提交并同步'
                 )}
               </Button>
-              {repoInfo && repoInfo.ahead > 0 && (
-                <span className="absolute -top-2 -right-2 bg-blue-600 text-white text-xs rounded-full h-5 w-5 flex items-center justify-center font-medium">
-                  {repoInfo.ahead}
-                </span>
-              )}
+              <Popover open={commitMenuOpen} onOpenChange={setCommitMenuOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    aria-label="更多提交操作"
+                    title="仅提交 / 推送"
+                    className="w-7 shrink-0 rounded-l-none p-0"
+                    disabled={!repoInfo}
+                  >
+                    <ChevronDown className="h-4 w-4" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-56 p-1">
+                  <button
+                    type="button"
+                    className="flex w-full items-start gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted/60 disabled:pointer-events-none disabled:opacity-50"
+                    onClick={() => {
+                      setCommitMenuOpen(false)
+                      void runCommit()
+                    }}
+                    disabled={
+                      !commitMessage.trim() ||
+                      loading ||
+                      stagingLoading ||
+                      unstagingLoading ||
+                      !workspaceStatus?.staged_files?.length
+                    }
+                  >
+                    <span>
+                      仅提交
+                      <span className="block font-normal text-xs text-muted-foreground">
+                        只创建本地提交，不推送
+                      </span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-start gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted/60 disabled:pointer-events-none disabled:opacity-50"
+                    onClick={() => {
+                      setCommitMenuOpen(false)
+                      void handlePushFromCard()
+                    }}
+                    disabled={loading || !repoInfo || repoInfo.ahead <= 0}
+                    aria-busy={syncLoading && !!syncStep && syncStep.includes('推送')}
+                  >
+                    <span>
+                      {syncLoading && syncStep && syncStep.includes('推送') ? '推送中…' : '推送'}
+                      {repoInfo && repoInfo.ahead > 0 && (
+                        <span className="ml-1 font-normal text-muted-foreground">
+                          ({repoInfo.ahead})
+                        </span>
+                      )}
+                      <span className="block font-normal text-xs text-muted-foreground">
+                        把本地提交推送到远程仓库
+                      </span>
+                    </span>
+                  </button>
+                </PopoverContent>
+              </Popover>
             </div>
           </div>
         </CardContent>
@@ -1844,14 +1873,18 @@ export function WorkspaceStatus({
         <Card>
           <CardContent className="text-center py-8">
             <p className="text-muted-foreground">工作区干净，没有未提交的更改</p>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void fetchWorkspaceStatus()}
-              className="mt-2"
-            >
-              刷新
-            </Button>
+            <div className="mt-3 flex items-center justify-center gap-2">
+              {onOpenCommitsTab && (
+                <Button variant="outline" size="sm" onClick={onOpenCommitsTab}>
+                  查看最近提交
+                </Button>
+              )}
+              {onOpenFilesTab && (
+                <Button variant="outline" size="sm" onClick={onOpenFilesTab}>
+                  打开文件树
+                </Button>
+              )}
+            </div>
           </CardContent>
         </Card>
       )}

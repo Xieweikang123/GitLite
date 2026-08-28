@@ -10,6 +10,13 @@ interface OperationsPanelProps {
   /** 来自 useGit 时传入，提交/同步与元数据刷新走统一封装 */
   gitActions?: WorkspaceGitActions
   onJumpToCommit?: (commit: CommitInfo) => void
+  autoRefresh?: boolean
+  onAutoRefreshChange?: (value: boolean) => void
+  onRegisterManualRefresh?: (fn: (() => Promise<void>) | null) => void
+  onOpenCommitsTab?: () => void
+  onOpenFilesTab?: () => void
+  /** 远程拉取/推送进行中，禁用同步条按钮 */
+  remoteBusy?: boolean
 }
 
 // 轻量外壳：左侧操作区（提交/暂存/未跟踪），复用现有 WorkspaceStatus 能力
@@ -21,6 +28,12 @@ export function OperationsPanel({
   onFetchChanges,
   gitActions,
   onJumpToCommit,
+  autoRefresh,
+  onAutoRefreshChange,
+  onRegisterManualRefresh,
+  onOpenCommitsTab,
+  onOpenFilesTab,
+  remoteBusy,
 }: OperationsPanelProps) {
   return (
     <div className="space-y-4">
@@ -32,6 +45,12 @@ export function OperationsPanel({
         onFetchChanges={onFetchChanges}
         gitActions={gitActions}
         onJumpToCommit={onJumpToCommit}
+        autoRefresh={autoRefresh}
+        onAutoRefreshChange={onAutoRefreshChange}
+        onRegisterManualRefresh={onRegisterManualRefresh}
+        onOpenCommitsTab={onOpenCommitsTab}
+        onOpenFilesTab={onOpenFilesTab}
+        remoteBusy={remoteBusy}
       />
     </div>
   )

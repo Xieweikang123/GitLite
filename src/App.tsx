@@ -13,6 +13,7 @@ import { CommitList } from './components/CommitList'
 import { FileList } from './components/FileList'
 import { UnifiedCommitView } from './components/UnifiedCommitView'
 import { LogModal } from './components/LogModal'
+import { OperationStatusToast, type OperationLogEntry, type RemoteOpStatus } from './components/OperationStatusToast'
 import { ProxyConfigModal } from './components/ProxyConfigModal'
 import { AiConfigModal } from './components/AiConfigModal'
 import { RemoteManageModal } from './components/RemoteManageModal'
@@ -44,6 +45,7 @@ function App() {
     deleteBranch,
     renameBranch,
     mergeBranch,
+    fastForwardLocalBranch,
     getRemoteManagementInfo,
     addRemote,
     updateRemote,
@@ -95,8 +97,11 @@ function App() {
   // 日志弹窗状态
   const [logModalOpen, setLogModalOpen] = useState(false)
   const [logModalTitle, setLogModalTitle] = useState('')
-  const [logs, setLogs] = useState<Array<{timestamp: string, level: 'INFO' | 'DEBUG' | 'WARN' | 'ERROR' | 'SUCCESS', message: string}>>([])
+  const [logs, setLogs] = useState<OperationLogEntry[]>([])
   const [isOperationRunning, setIsOperationRunning] = useState(false)
+  const [opStatus, setOpStatus] = useState<RemoteOpStatus>('hidden')
+  const [opSummary, setOpSummary] = useState('')
+  const opRunningRef = React.useRef(false)
   
   // 代理 / AI 配置弹窗状态
   const [proxyConfigOpen, setProxyConfigOpen] = useState(false)
@@ -407,13 +412,28 @@ function App() {
 
   const handleRefresh = async () => {
     if (!repoInfo) return
-    
+
     try {
       // 重新获取仓库信息以更新提交列表
       await openRepositoryByPath(repoInfo.path)
       // 仓库信息会通过 useEffect 自动更新
     } catch (error) {
       console.error('Failed to refresh repository:', error)
+    }
+  }
+
+  /** 工作区页挂载时会把「完整刷新」注册进来；未挂载（其他 tab）时回退到仅刷新仓库信息 */
+  const workspaceManualRefreshRef = React.useRef<(() => Promise<void>) | null>(null)
+  const [workspaceAutoRefresh, setWorkspaceAutoRefresh] = useState(true)
+  const [workspaceRefreshing, setWorkspaceRefreshing] = useState(false)
+
+  const handleToolbarManualRefresh = async () => {
+    if (!repoInfo || workspaceRefreshing) return
+    setWorkspaceRefreshing(true)
+    try {
+      await (workspaceManualRefreshRef.current?.() ?? handleRefresh())
+    } finally {
+      setWorkspaceRefreshing(false)
     }
   }
 
@@ -434,178 +454,184 @@ function App() {
     }
   }
 
+  const dismissOpToast = React.useCallback(() => {
+    if (opRunningRef.current) return
+    setOpStatus('hidden')
+  }, [])
+
+  const beginRemoteOp = (title: string) => {
+    if (!repoInfo || opRunningRef.current) return false
+    opRunningRef.current = true
+    setLogModalTitle(title)
+    setLogs([])
+    setOpSummary('')
+    setOpStatus('running')
+    setIsOperationRunning(true)
+    setLogModalOpen(false)
+    return true
+  }
+
+  const finishRemoteOp = (
+    status: Exclude<RemoteOpStatus, 'hidden' | 'running'>,
+    summary: string
+  ) => {
+    opRunningRef.current = false
+    setIsOperationRunning(false)
+    setOpStatus(status)
+    setOpSummary(summary)
+  }
+
+  const toUiLogs = (logData: Array<[string, string, string]>): OperationLogEntry[] =>
+    logData.map(([timestamp, level, message]) => ({
+      timestamp,
+      level: (level as OperationLogEntry['level']) || 'INFO',
+      message,
+    }))
+
   const handlePullChanges = async () => {
     if (!repoInfo) return
-    
-    // 打开日志弹窗
-    setLogModalTitle('拉取远程更改')
-    setLogs([])
-    setLogModalOpen(true)
-    setIsOperationRunning(true)
-    
+    if (!beginRemoteOp('拉取远程更改')) return
+
     try {
       void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][App] handlePull start path=${repoInfo.path}` }).catch(()=>{})
       const { logs: logData, outcome } = await pullChangesWithLogs()
       void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][App] handlePull outcome kind=${outcome.kind} msg=${outcome.message} staged=${outcome.staged_count} unstaged=${outcome.unstaged_count}` }).catch(()=>{})
-      
-      // 转换日志格式，并附加结构化结果摘要（与 SourceTree 一致：拉取后工作区计数）
-      const formattedLogs = logData.map(([timestamp, level, message]) => ({
-        timestamp,
-        level: level as 'INFO' | 'DEBUG' | 'WARN' | 'ERROR',
-        message
-      }))
+
+      const formattedLogs = toUiLogs(logData)
       formattedLogs.push({
         timestamp: new Date().toLocaleTimeString(),
-        level: 'INFO',
+        level: outcome.kind === 'merge_conflict' || outcome.conflicted_count > 0 ? 'WARN' : 'INFO',
         message: `拉取结果 [${outcome.kind}] ${outcome.message} — 暂存区 ${outcome.staged_count} 项，未暂存 ${outcome.unstaged_count} 项，冲突 ${outcome.conflicted_count} 项，未跟踪 ${outcome.untracked_count} 项`,
       })
-      
       setLogs(formattedLogs)
-      setIsOperationRunning(false)
-      
-      // 拉取成功后只重置选中态，不清空列表；incoming/local 由 repoInfo 驱动
-      // 否则与 useGit.ts:940 setRepoInfo + App.tsx:654/661 的回灌竞态，导致待拉残留
+
       setSelectedCommit(null)
       setCommitFiles([])
       setSelectedFile(null)
+
+      const isConflict = outcome.kind === 'merge_conflict' || outcome.conflicted_count > 0
+      finishRemoteOp(isConflict ? 'conflict' : 'success', outcome.message)
     } catch (error) {
       console.error('拉取失败:', error)
       void invoke('append_gitlite_log', { level: 'ERROR', message: `[DIAG][pull][App] handlePull error ${String(error)}` }).catch(()=>{})
-      setIsOperationRunning(false)
-      
-      // 添加错误日志
-      const errorLog = {
+      const message = error instanceof Error ? error.message : '未知错误'
+      const errorLog: OperationLogEntry = {
         timestamp: new Date().toLocaleTimeString(),
-        level: 'ERROR' as const,
-        message: `拉取失败: ${error instanceof Error ? error.message : '未知错误'}`
+        level: 'ERROR',
+        message: `拉取失败: ${message}`,
       }
-      setLogs(prev => [...prev, errorLog])
+      setLogs((prev) => [...prev, errorLog])
+      finishRemoteOp('error', `拉取失败: ${message}`)
     }
   }
 
   const handleFetchChanges = async () => {
     if (!repoInfo) return
-    
-    // 打开日志弹窗
-    setLogModalTitle('获取远程更改')
-    setLogs([])
-    setLogModalOpen(true)
-    setIsOperationRunning(true)
-    
+    if (!beginRemoteOp('获取远程更改')) return
+
     try {
       const logData: Array<[string, string, string]> = await fetchChangesWithLogs()
-      
-      // 转换日志格式
-      const formattedLogs = logData.map(([timestamp, level, message]) => ({
-        timestamp,
-        level: level as 'INFO' | 'DEBUG' | 'WARN' | 'ERROR',
-        message
-      }))
-      
-      setLogs(formattedLogs)
-      setIsOperationRunning(false)
-      
-      // 获取不改变工作区，仅清选中；列表由 App.tsx:654 的 incoming 回灌驱动
+      setLogs(toUiLogs(logData))
+
       setSelectedCommit(null)
       setCommitFiles([])
       setSelectedFile(null)
+      finishRemoteOp('success', '已获取远程最新信息')
     } catch (error) {
       console.error('获取失败:', error)
-      setIsOperationRunning(false)
-      
-      // 添加错误日志
-      const errorLog = {
+      const message = error instanceof Error ? error.message : '未知错误'
+      const errorLog: OperationLogEntry = {
         timestamp: new Date().toLocaleTimeString(),
-        level: 'ERROR' as const,
-        message: `获取失败: ${error instanceof Error ? error.message : '未知错误'}`
+        level: 'ERROR',
+        message: `获取失败: ${message}`,
       }
-      setLogs(prev => [...prev, errorLog])
+      setLogs((prev) => [...prev, errorLog])
+      finishRemoteOp('error', `获取失败: ${message}`)
     }
   }
 
-  // 通用的Git操作日志处理函数
-  const handleGitOperationWithLogs = async (
-    operation: () => Promise<Array<[string, string, string]>>,
-    title: string,
-    resetState: boolean = false
-  ) => {
-    if (!repoInfo) return
-    
-    // 打开日志弹窗
-    setLogModalTitle(title)
-    setLogs([])
-    setLogModalOpen(true)
-    setIsOperationRunning(true)
-    
-    try {
-      const logData: Array<[string, string, string]> = await operation()
-      
-      // 转换日志格式
-      const formattedLogs = logData.map(([timestamp, level, message]) => ({
-        timestamp,
-        level: level as 'INFO' | 'DEBUG' | 'WARN' | 'ERROR',
-        message
-      }))
-      
-      setLogs(formattedLogs)
-      setIsOperationRunning(false)
-      
-      // 如果需要重置状态
-      if (resetState) {
-        setSelectedCommit(null)
-        setCommitFiles([])
-        setSelectedFile(null)
-        setIncomingCommits([])
-        setLocalCommits([])
-        setHasMoreCommits(true)
-      }
-    } catch (error) {
-      console.error(`${title}失败:`, error)
-      setIsOperationRunning(false)
-      
-      // 添加错误日志
-      const errorLog = {
-        timestamp: new Date().toLocaleTimeString(),
-        level: 'ERROR' as const,
-        message: `${title}失败: ${error instanceof Error ? error.message : '未知错误'}`
-      }
-      setLogs(prev => [...prev, errorLog])
-    }
-  }
-
-
-  // 实时推送处理函数
   const handlePushChangesRealtime = async () => {
     if (!repoInfo) return
-    
-    // 打开日志弹窗
-    setLogModalTitle('推送本地更改 - 实时日志')
-    setLogs([])
-    setLogModalOpen(true)
-    setIsOperationRunning(true)
-    
+    if (!beginRemoteOp('推送本地更改')) return
+
     try {
       await pushChangesWithRealtimeLogs()
-      setIsOperationRunning(false)
-      
-      // 重置状态
       setSelectedCommit(null)
       setCommitFiles([])
       setSelectedFile(null)
       setIncomingCommits([])
       setLocalCommits([])
       setHasMoreCommits(true)
+      finishRemoteOp('success', '推送完成')
     } catch (error) {
       console.error('推送失败:', error)
-      setIsOperationRunning(false)
-      
-      // 添加错误日志
-      const errorLog = {
+      const message = error instanceof Error ? error.message : '未知错误'
+      const errorLog: OperationLogEntry = {
         timestamp: new Date().toLocaleTimeString(),
-        level: 'ERROR' as const,
-        message: `推送失败: ${error instanceof Error ? error.message : '未知错误'}`
+        level: 'ERROR',
+        message: `推送失败: ${message}`,
       }
-      setLogs(prev => [...prev, errorLog])
+      setLogs((prev) => [...prev, errorLog])
+      finishRemoteOp('error', `推送失败: ${message}`)
+    }
+  }
+
+  const handleFastForwardViewedBranch = async (branchName: string) => {
+    const name = branchName.trim()
+    if (!repoInfo || !name) return false
+    if (!beginRemoteOp(`快进更新 ${name}`)) return false
+    try {
+      const msg = await fastForwardLocalBranch(name)
+      finishRemoteOp('success', msg)
+      return true
+    } catch (error) {
+      const message = formatTauriInvokeError(error, '快进更新失败')
+      setLogs((prev) => [
+        ...prev,
+        {
+          timestamp: new Date().toLocaleTimeString(),
+          level: 'ERROR',
+          message,
+        },
+      ])
+      finishRemoteOp('error', message)
+      return false
+    }
+  }
+
+  const handleCheckoutAndPullBranch = async (branchName: string) => {
+    const name = branchName.trim()
+    if (!repoInfo || !name) return false
+    if (!beginRemoteOp(`切换到 ${name} 并拉取`)) return false
+    try {
+      await invoke('checkout_branch', {
+        repoPath: repoInfo.path,
+        branchName: name,
+      })
+      setCommitLogRev(null)
+      const { logs: logData, outcome } = await pullChangesWithLogs()
+      const formattedLogs = toUiLogs(logData)
+      formattedLogs.push({
+        timestamp: new Date().toLocaleTimeString(),
+        level: outcome.kind === 'merge_conflict' || outcome.conflicted_count > 0 ? 'WARN' : 'INFO',
+        message: outcome.message,
+      })
+      setLogs(formattedLogs)
+      const isConflict = outcome.kind === 'merge_conflict' || outcome.conflicted_count > 0
+      finishRemoteOp(isConflict ? 'conflict' : 'success', outcome.message)
+      return !isConflict
+    } catch (error) {
+      const message = formatTauriInvokeError(error, '切换并拉取失败')
+      setLogs((prev) => [
+        ...prev,
+        {
+          timestamp: new Date().toLocaleTimeString(),
+          level: 'ERROR',
+          message,
+        },
+      ])
+      finishRemoteOp('error', message)
+      return false
     }
   }
 
@@ -981,6 +1007,10 @@ function App() {
           }
           loading={loading}
           repoInfo={repoInfo}
+          onManualRefresh={handleToolbarManualRefresh}
+          refreshing={workspaceRefreshing}
+          autoRefresh={workspaceAutoRefresh}
+          onToggleAutoRefresh={setWorkspaceAutoRefresh}
         >
           <nav className="flex shrink-0 items-center gap-0.5" aria-label="单仓库页面">
             {(
@@ -1047,6 +1077,14 @@ function App() {
               onJumpToCommit={(commit) =>
                 handleStatsCommitJump({ commit, scope: 'head', rev: null })
               }
+              autoRefresh={workspaceAutoRefresh}
+              onAutoRefreshChange={setWorkspaceAutoRefresh}
+              onRegisterManualRefresh={(fn) => {
+                workspaceManualRefreshRef.current = fn
+              }}
+              onOpenCommitsTab={() => setActiveTab('commits')}
+              onOpenFilesTab={() => setActiveTab('files')}
+              remoteBusy={isOperationRunning}
             />
           </div>
         ) : activeTab === 'files' ? (
@@ -1103,12 +1141,18 @@ function App() {
                     ? 0
                     : incomingCommits.length
                 }
-                behindCount={repoInfo?.behind}
+                behindCount={
+                  commitLogScope === 'all' || commitLogRev
+                    ? 0
+                    : repoInfo?.behind
+                }
                 onFetchChanges={handleFetchChanges}
                 onPullChanges={handlePullChanges}
                 onPushChanges={handlePushChangesRealtime}
                 onRefreshRepo={handleRefresh}
-                syncBusy={loading}
+                onFastForwardViewedBranch={handleFastForwardViewedBranch}
+                onCheckoutAndPullViewedBranch={handleCheckoutAndPullBranch}
+                syncBusy={loading || isOperationRunning}
                 onGetCommitFiles={getCommitFiles}
                 onGetDiff={getFileDiff}
                 onGetSingleFileDiff={getSingleFileDiff}
@@ -1136,7 +1180,21 @@ function App() {
         )}
       </div>
       
-      {/* 日志弹窗 */}
+      {!logModalOpen && (
+        <OperationStatusToast
+          title={logModalTitle}
+          status={opStatus}
+          summary={opSummary}
+          logs={logs}
+          onDismiss={dismissOpToast}
+          onOpenLogs={() => setLogModalOpen(true)}
+          onOpenWorkspace={() => {
+            setActiveTab('workspace')
+            dismissOpToast()
+          }}
+        />
+      )}
+
       <LogModal
         isOpen={logModalOpen}
         onClose={() => setLogModalOpen(false)}
