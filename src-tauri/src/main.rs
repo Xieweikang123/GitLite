@@ -2086,6 +2086,85 @@ async fn remove_recent_scanned_dir(path: String) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MultiRepoAutoFetchConfig {
+    pub enabled: bool,
+    #[serde(default = "default_multi_repo_fetch_interval_minutes")]
+    pub interval_minutes: u32,
+}
+
+fn default_multi_repo_fetch_interval_minutes() -> u32 {
+    30
+}
+
+fn default_multi_repo_auto_fetch_config() -> MultiRepoAutoFetchConfig {
+    MultiRepoAutoFetchConfig {
+        enabled: false,
+        interval_minutes: default_multi_repo_fetch_interval_minutes(),
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MultiRepoFetchState {
+    #[serde(default = "default_multi_repo_auto_fetch_config")]
+    pub auto_fetch: MultiRepoAutoFetchConfig,
+    pub last_fetch_at: Option<String>,
+}
+
+fn multi_repo_fetch_state_file() -> PathBuf {
+    get_config_dir().join("multi_repo_fetch.json")
+}
+
+fn load_multi_repo_fetch_state() -> MultiRepoFetchState {
+    let file = multi_repo_fetch_state_file();
+    if !file.exists() {
+        return MultiRepoFetchState {
+            auto_fetch: default_multi_repo_auto_fetch_config(),
+            last_fetch_at: None,
+        };
+    }
+    fs::read_to_string(&file)
+        .ok()
+        .and_then(|s| serde_json::from_str::<MultiRepoFetchState>(&s).ok())
+        .unwrap_or_else(|| MultiRepoFetchState {
+            auto_fetch: default_multi_repo_auto_fetch_config(),
+            last_fetch_at: None,
+        })
+}
+
+fn save_multi_repo_fetch_state(state: &MultiRepoFetchState) -> Result<(), String> {
+    let config_dir = get_config_dir();
+    fs::create_dir_all(&config_dir).map_err(|e| format!("创建配置目录失败: {}", e))?;
+    let content = serde_json::to_string_pretty(state)
+        .map_err(|e| format!("序列化多仓库获取状态失败: {}", e))?;
+    fs::write(multi_repo_fetch_state_file(), content)
+        .map_err(|e| format!("写入多仓库获取状态失败: {}", e))
+}
+
+#[tauri::command]
+async fn get_multi_repo_fetch_state() -> Result<MultiRepoFetchState, String> {
+    Ok(load_multi_repo_fetch_state())
+}
+
+#[tauri::command]
+async fn save_multi_repo_auto_fetch_config(config: MultiRepoAutoFetchConfig) -> Result<(), String> {
+    let mut state = load_multi_repo_fetch_state();
+    state.auto_fetch = MultiRepoAutoFetchConfig {
+        enabled: config.enabled,
+        interval_minutes: config.interval_minutes.max(1),
+    };
+    save_multi_repo_fetch_state(&state)
+}
+
+#[tauri::command]
+async fn record_multi_repo_fetch() -> Result<String, String> {
+    let mut state = load_multi_repo_fetch_state();
+    let now = chrono::Utc::now().to_rfc3339();
+    state.last_fetch_at = Some(now.clone());
+    save_multi_repo_fetch_state(&state)?;
+    Ok(now)
+}
+
 // 获取配置目录
 fn get_config_dir() -> std::path::PathBuf {
     let mut config_dir = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
@@ -7960,7 +8039,10 @@ fn main() {
             get_git_config_info,
             get_recent_scanned_dirs,
             save_recent_scanned_dir,
-            remove_recent_scanned_dir
+            remove_recent_scanned_dir,
+            get_multi_repo_fetch_state,
+            save_multi_repo_auto_fetch_config,
+            record_multi_repo_fetch
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

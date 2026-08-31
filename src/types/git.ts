@@ -159,6 +159,16 @@ export interface AutoSnapshotConfig {
   interval_minutes: number
 }
 
+export interface MultiRepoAutoFetchConfig {
+  enabled: boolean
+  interval_minutes: number
+}
+
+export interface MultiRepoFetchState {
+  auto_fetch: MultiRepoAutoFetchConfig
+  last_fetch_at: string | null
+}
+
 export interface WorkspaceStatus {
   staged_files: FileChange[]
   unstaged_files: FileChange[]

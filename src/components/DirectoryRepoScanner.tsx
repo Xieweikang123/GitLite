@@ -7,7 +7,7 @@ import { Card, CardHeader, CardTitle, CardContent } from './ui/card'
 import { Badge } from './ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { MonacoDiffEditor } from './MonacoDiffEditor'
-import { DirectoryRepoEntry, CommitInfo, WorkspaceStatus } from '../types/git'
+import { DirectoryRepoEntry, CommitInfo, WorkspaceStatus, MultiRepoAutoFetchConfig } from '../types/git'
 import { MultiRepoBranchSelect } from './MultiRepoBranchSelect'
 import { getClientCalendarOffsetEastMinutes } from '../utils/clientCalendarOffset'
 import {
@@ -36,9 +36,12 @@ import {
   Upload,
   Eye,
   FileText,
+  Timer,
 } from 'lucide-react'
 import { shortenPathMiddle } from '../lib/utils'
 import { formatTauriInvokeError } from '../utils/tauriError'
+import { Switch } from './ui/switch'
+import { Label } from './ui/label'
 
 interface DirectoryRepoScannerProps {
   onOpenRepo: (path: string) => void
@@ -101,6 +104,12 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
   const [fetchingPath, setFetchingPath] = useState<string | null>(null)
   const [fetchingPaths, setFetchingPaths] = useState<Set<string>>(new Set())
   const [fetchDoneCount, setFetchDoneCount] = useState(0)
+  const [autoFetchConfig, setAutoFetchConfig] = useState<MultiRepoAutoFetchConfig>({ enabled: false, interval_minutes: 30 })
+  const [lastFetchAt, setLastFetchAt] = useState<string | null>(null)
+  const [autoFetchSaving, setAutoFetchSaving] = useState(false)
+  const [, setLastFetchTick] = useState(0)
+  const handleFetchAllRef = useRef<(() => Promise<void>) | null>(null)
+  const fetchAllInFlightRef = useRef(false)
   const [expandedPath, setExpandedPath] = useState<string | null>(null)
   const [activeDetailTab, setActiveDetailTab] = useState<'incoming' | 'outgoing' | 'workspace' | 'recent'>('incoming')
   const [detailTabCache, setDetailTabCache] = useState<Record<string, 'incoming' | 'outgoing' | 'workspace' | 'recent'>>({})
@@ -148,6 +157,40 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
       return []
     }
   }, [])
+
+  useEffect(() => {
+    invoke<{ auto_fetch: MultiRepoAutoFetchConfig; last_fetch_at: string | null }>('get_multi_repo_fetch_state')
+      .then((state) => {
+        setAutoFetchConfig(state.auto_fetch)
+        setLastFetchAt(state.last_fetch_at)
+      })
+      .catch(() => {})
+  }, [])
+
+  const saveAutoFetchConfig = useCallback(async (next: MultiRepoAutoFetchConfig) => {
+    setAutoFetchSaving(true)
+    try {
+      await invoke('save_multi_repo_auto_fetch_config', { config: next })
+      setAutoFetchConfig(next)
+    } catch (err) {
+      setError(formatTauriInvokeError(err, '保存定时获取设置失败'))
+    } finally {
+      setAutoFetchSaving(false)
+    }
+  }, [])
+
+  const recordLastFetch = useCallback(async () => {
+    try {
+      const at = await invoke<string>('record_multi_repo_fetch')
+      setLastFetchAt(at)
+    } catch {}
+  }, [])
+
+  useEffect(() => {
+    if (!lastFetchAt) return
+    const id = window.setInterval(() => setLastFetchTick((t) => t + 1), 60_000)
+    return () => window.clearInterval(id)
+  }, [lastFetchAt])
 
   const persistRecentScannedFallback = (path: string, rec: boolean) => {
     try {
@@ -406,7 +449,8 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
   }, [entries, scannedDir, handlePush])
 
   const handleFetchAll = useCallback(async () => {
-    if (!entries || !scannedDir) return
+    if (!entries || !scannedDir || fetchAllInFlightRef.current) return
+    fetchAllInFlightRef.current = true
     setFetchingAll(true)
     setFetchingPath(entries[0]?.path ?? null)
     setFetchingPaths(new Set(entries.map((e) => e.path)))
@@ -445,15 +489,28 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
       setIncomingCache({})
       setOutgoingCache({})
       setRecentCache({})
+      await recordLastFetch()
       void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][fetch][multi] all done` }).catch(()=>{})
     } catch (err) {
       setError(formatTauriInvokeError(err, '全部获取失败'))
     } finally {
+      fetchAllInFlightRef.current = false
       setFetchingAll(false)
       setFetchingPath(null)
       setFetchingPaths(new Set())
     }
-  }, [entries, scannedDir, doScan])
+  }, [entries, scannedDir, doScan, recordLastFetch])
+
+  handleFetchAllRef.current = handleFetchAll
+
+  useEffect(() => {
+    if (!autoFetchConfig.enabled || !entries?.length) return
+    const ms = autoFetchConfig.interval_minutes * 60 * 1000
+    const id = window.setInterval(() => {
+      void handleFetchAllRef.current?.()
+    }, ms)
+    return () => window.clearInterval(id)
+  }, [autoFetchConfig.enabled, autoFetchConfig.interval_minutes, entries?.length])
 
   const fetchOutgoingIfNeeded = useCallback(async (repoPath: string) => {
     if (outgoingCache[repoPath] || outgoingLoading) return
@@ -1178,27 +1235,66 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
           </Card>
         ) : (
           <Card className="overflow-hidden border shadow-sm">
-            <div className="flex items-center justify-between gap-2 border-b bg-muted/30 px-4 py-2">
-              <div className="text-xs text-muted-foreground flex items-center gap-2 min-w-0">
-                <span>
-                  共 <span className="font-medium text-foreground">{entries.length}</span> 个仓库
-                  {filter && filteredEntries && filteredEntries.length !== entries.length && (
-                    <span> · 已过滤 {filteredEntries.length} 个</span>
-                  )}
-                  {stats && stats.needSync > 0 && <span className="ml-2 text-amber-600 dark:text-amber-400">· {stats.needSync} 个待同步</span>}
-                </span>
-                {fetchingAll && (
-                  <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] text-primary truncate max-w-[260px]" title={Array.from(fetchingPaths).join(', ')}>
-                    <RefreshCw className="h-3 w-3 animate-spin shrink-0" />
-                    <span className="truncate">
-                      {fetchingPaths.size > 0
-                        ? `并发获取中 ${fetchDoneCount}/${entries.length} · 剩余 ${fetchingPaths.size} 个`
-                        : `获取中 ${fetchDoneCount}/${entries.length}`}
-                    </span>
+            <div className="flex flex-col gap-2 border-b bg-muted/30 px-4 py-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="text-xs text-muted-foreground flex flex-col gap-1.5 min-w-0 sm:flex-row sm:items-center sm:gap-3">
+                <span className="flex items-center gap-2 min-w-0 flex-wrap">
+                  <span>
+                    共 <span className="font-medium text-foreground">{entries.length}</span> 个仓库
+                    {filter && filteredEntries && filteredEntries.length !== entries.length && (
+                      <span> · 已过滤 {filteredEntries.length} 个</span>
+                    )}
+                    {stats && stats.needSync > 0 && <span className="ml-2 text-amber-600 dark:text-amber-400">· {stats.needSync} 个待同步</span>}
                   </span>
-                )}
+                  {lastFetchAt && (
+                    <span className="inline-flex items-center gap-1 text-[11px]" title={new Date(lastFetchAt).toLocaleString()}>
+                      <Clock className="h-3 w-3 shrink-0" />
+                      上次获取 {timeAgo(lastFetchAt)}
+                    </span>
+                  )}
+                  {fetchingAll && (
+                    <span className="inline-flex items-center gap-1.5 text-[11px] text-primary truncate max-w-[260px]" title={Array.from(fetchingPaths).join(', ')}>
+                      <RefreshCw className="h-3 w-3 animate-spin shrink-0" />
+                      <span className="truncate">
+                        {fetchingPaths.size > 0
+                          ? `并发获取中 ${fetchDoneCount}/${entries.length} · 剩余 ${fetchingPaths.size} 个`
+                          : `获取中 ${fetchDoneCount}/${entries.length}`}
+                      </span>
+                    </span>
+                  )}
+                </span>
+                <span className="inline-flex items-center gap-2 shrink-0">
+                  <Timer className="h-3 w-3 text-muted-foreground" aria-hidden />
+                  <Label className="text-[11px] text-muted-foreground whitespace-nowrap">定时获取</Label>
+                  <Switch
+                    checked={autoFetchConfig.enabled}
+                    disabled={autoFetchSaving || fetchingAll}
+                    onCheckedChange={(checked) => {
+                      void saveAutoFetchConfig({ ...autoFetchConfig, enabled: checked })
+                    }}
+                  />
+                  {autoFetchConfig.enabled && (
+                    <select
+                      value={autoFetchConfig.interval_minutes}
+                      disabled={autoFetchSaving}
+                      onChange={(e) => {
+                        void saveAutoFetchConfig({
+                          ...autoFetchConfig,
+                          interval_minutes: Number(e.target.value),
+                        })
+                      }}
+                      className="h-6 rounded-md border border-input bg-background px-1.5 text-[11px]"
+                      title="定时获取间隔"
+                    >
+                      <option value={5}>5 分钟</option>
+                      <option value={10}>10 分钟</option>
+                      <option value={15}>15 分钟</option>
+                      <option value={30}>30 分钟</option>
+                      <option value={60}>1 小时</option>
+                    </select>
+                  )}
+                </span>
               </div>
-              <div className="flex gap-1.5">
+              <div className="flex gap-1.5 shrink-0">
                 <Button
                   variant="outline"
                   size="sm"
