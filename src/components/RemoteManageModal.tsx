@@ -3,6 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
+import { SimpleSelect } from './SimpleSelect'
 import type { RemoteManagementInfo } from '../types/git'
 
 interface RemoteManageModalProps {
@@ -316,40 +317,36 @@ export function RemoteManageModal({
               <div className="grid gap-2">
                 <div className="grid gap-1.5">
                   <Label htmlFor="upstream-branch">本地分支</Label>
-                  <select
+                  <SimpleSelect
                     id="upstream-branch"
-                    className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                    size="sm"
+                    triggerClassName="h-9 px-3 text-sm"
                     value={selectedBranch}
-                    onChange={(e) => setSelectedBranch(e.target.value)}
+                    onValueChange={setSelectedBranch}
                     disabled={busy || loading}
-                  >
-                    {(data?.branches ?? []).map((b) => (
-                      <option key={b.name} value={b.name}>
-                        {b.name}
-                        {b.is_current ? ' (当前)' : ''}
-                        {b.upstream ? ` -> ${b.upstream}` : ''}
-                      </option>
-                    ))}
-                  </select>
+                    options={(data?.branches ?? []).map((b) => ({
+                      value: b.name,
+                      label: `${b.name}${b.is_current ? ' (当前)' : ''}${b.upstream ? ` -> ${b.upstream}` : ''}`,
+                    }))}
+                  />
                 </div>
 
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <div className="grid gap-1.5">
                     <Label htmlFor="upstream-remote">远程</Label>
-                    <select
+                    <SimpleSelect
                       id="upstream-remote"
-                      className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+                      size="sm"
+                      triggerClassName="h-9 px-3 text-sm"
                       value={upstreamRemote}
-                      onChange={(e) => setUpstreamRemote(e.target.value)}
+                      onValueChange={setUpstreamRemote}
                       disabled={busy || loading}
-                    >
-                      <option value="">请选择</option>
-                      {remoteNames.map((name) => (
-                        <option key={name} value={name}>
-                          {name}
-                        </option>
-                      ))}
-                    </select>
+                      placeholder="请选择"
+                      options={[
+                        { value: '', label: '请选择' },
+                        ...remoteNames.map((name) => ({ value: name, label: name })),
+                      ]}
+                    />
                   </div>
                   <div className="grid gap-1.5">
                     <Label htmlFor="upstream-remote-branch">远程分支名</Label>

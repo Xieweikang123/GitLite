@@ -8,6 +8,7 @@ import { cn, shortenPathMiddle } from '../lib/utils'
 import type { OperationLogRecord, AutoSnapshotConfig } from '../types/git'
 import { Switch } from './ui/switch'
 import { Label } from './ui/label'
+import { SimpleSelect } from './SimpleSelect'
 
 interface ReliabilityPanelProps {
   isOpen: boolean
@@ -193,20 +194,21 @@ export function ReliabilityPanel({ isOpen, onClose, repoPath }: ReliabilityPanel
             {snapshotConfig.enabled && (
               <div className="mt-2 flex items-center gap-3">
                 <Label className="text-xs text-muted-foreground">间隔</Label>
-                <select
-                  value={snapshotConfig.interval_minutes}
-                  onChange={(e) => {
-                    const next = { ...snapshotConfig, interval_minutes: Number(e.target.value) }
+                <SimpleSelect
+                  size="xs"
+                  value={String(snapshotConfig.interval_minutes)}
+                  onValueChange={(v) => {
+                    const next = { ...snapshotConfig, interval_minutes: Number(v) }
                     void saveSnapshotConfig(next)
                   }}
-                  className="h-7 rounded-md border border-input bg-background px-2 text-xs"
-                >
-                  <option value={5}>5 分钟</option>
-                  <option value={10}>10 分钟</option>
-                  <option value={15}>15 分钟</option>
-                  <option value={30}>30 分钟</option>
-                  <option value={60}>1 小时</option>
-                </select>
+                  options={[
+                    { value: '5', label: '5 分钟' },
+                    { value: '10', label: '10 分钟' },
+                    { value: '15', label: '15 分钟' },
+                    { value: '30', label: '30 分钟' },
+                    { value: '60', label: '1 小时' },
+                  ]}
+                />
                 <Button
                   type="button"
                   variant="outline"
@@ -233,19 +235,19 @@ export function ReliabilityPanel({ isOpen, onClose, repoPath }: ReliabilityPanel
               placeholder="搜索仓库、分支、操作或静默贮藏"
               className="h-8 text-sm"
             />
-            <select
+            <SimpleSelect
+              size="sm"
               value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value)}
-              className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+              onValueChange={setTypeFilter}
               aria-label="筛选操作类型"
-            >
-              <option value="">全部操作</option>
-              {operationTypes.map((type) => (
-                <option key={type} value={type}>
-                  {operationLabel(type)}
-                </option>
-              ))}
-            </select>
+              options={[
+                { value: '', label: '全部操作' },
+                ...operationTypes.map((type) => ({
+                  value: type,
+                  label: operationLabel(type),
+                })),
+              ]}
+            />
             <Button
               type="button"
               variant="outline"

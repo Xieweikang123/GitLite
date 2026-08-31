@@ -75,6 +75,7 @@ import {
   type FileStatusFilter,
 } from './FileChangeFilterBar'
 import { CommitGraphStrip, COMMIT_GRAPH_ROW_HEIGHT } from './CommitGraphStrip'
+import { SimpleSelect } from './SimpleSelect'
 
 /** 提交页分栏：左侧提交列表宽度 list；右侧内「文件列表 | diff」中文件列宽度 file */
 const PANES_STORAGE_KEY = 'gitlite:unifiedCommitView:panes'
@@ -1075,6 +1076,33 @@ export function UnifiedCommitView({
     () => branchesSorted.filter((b) => b.is_remote),
     [branchesSorted]
   )
+
+  const branchLogSelectGroups = useMemo(() => {
+    const groups: { label: string; options: { value: string; label: string }[] }[] = []
+    if (localBranchesForLog.length > 0) {
+      groups.push({
+        label: '本地',
+        options: localBranchesForLog.map((b) => {
+          const spec = branchRevSpec(b.name, false)
+          const isCheckout = spec === checkoutHeadRef
+          return {
+            value: spec,
+            label: isCheckout ? `${b.name}（检出）` : b.name,
+          }
+        }),
+      })
+    }
+    if (remoteBranchesForLog.length > 0) {
+      groups.push({
+        label: '远程',
+        options: remoteBranchesForLog.map((b) => ({
+          value: branchRevSpec(b.name, true),
+          label: b.name,
+        })),
+      })
+    }
+    return groups
+  }, [localBranchesForLog, remoteBranchesForLog, checkoutHeadRef])
 
   const commitListCountLabel = isSearchMode
     ? `搜索 ${commits.length}`
@@ -2352,45 +2380,21 @@ export function UnifiedCommitView({
                       <span className="shrink-0 text-[10px] text-muted-foreground">
                         {browsingNonCheckout ? '浏览' : '跟随'}
                       </span>
-                      <select
-                        className="h-5 min-w-0 flex-1 border-0 bg-transparent py-0 pl-0 pr-1 text-xs text-foreground shadow-none focus-visible:outline-none"
+                      <SimpleSelect
+                        size="inline"
+                        className="min-w-0 flex-1"
                         value={commitLogBranchSelectValue}
-                        onChange={(e) => {
-                          const v = e.target.value.trim()
+                        onValueChange={(v) => {
                           if (checkoutHeadRef && v === checkoutHeadRef) {
                             onCommitLogRevChange(null)
                           } else {
-                            onCommitLogRevChange(v || null)
+                            onCommitLogRevChange(v)
                           }
                         }}
+                        groups={branchLogSelectGroups}
+                        contentClassName="min-w-[10rem] max-w-[18rem]"
                         aria-label="选择要查看历史的分支（不切换检出）"
-                      >
-                        {localBranchesForLog.length > 0 && (
-                          <optgroup label="本地">
-                            {localBranchesForLog.map((b) => {
-                              const spec = branchRevSpec(b.name, false)
-                              const isCheckout = spec === checkoutHeadRef
-                              return (
-                                <option key={`l:${b.name}`} value={spec}>
-                                  {isCheckout ? `${b.name}（检出）` : b.name}
-                                </option>
-                              )
-                            })}
-                          </optgroup>
-                        )}
-                        {remoteBranchesForLog.length > 0 && (
-                          <optgroup label="远程">
-                            {remoteBranchesForLog.map((b) => (
-                              <option
-                                key={`r:${b.name}`}
-                                value={branchRevSpec(b.name, true)}
-                              >
-                                {b.name}
-                              </option>
-                            ))}
-                          </optgroup>
-                        )}
-                      </select>
+                      />
                     </div>
                   )}
                 {browsingNonCheckout && onCommitLogRevChange ? (

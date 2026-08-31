@@ -41,6 +41,7 @@ import {
 import { shortenPathMiddle } from '../lib/utils'
 import { formatTauriInvokeError } from '../utils/tauriError'
 import { Switch } from './ui/switch'
+import { SimpleSelect } from './SimpleSelect'
 import { Label } from './ui/label'
 
 interface DirectoryRepoScannerProps {
@@ -1273,24 +1274,25 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                     }}
                   />
                   {autoFetchConfig.enabled && (
-                    <select
-                      value={autoFetchConfig.interval_minutes}
+                    <SimpleSelect
+                      size="xs"
+                      triggerClassName="h-6 px-1.5 text-[11px]"
+                      value={String(autoFetchConfig.interval_minutes)}
                       disabled={autoFetchSaving}
-                      onChange={(e) => {
+                      onValueChange={(v) => {
                         void saveAutoFetchConfig({
                           ...autoFetchConfig,
-                          interval_minutes: Number(e.target.value),
+                          interval_minutes: Number(v),
                         })
                       }}
-                      className="h-6 rounded-md border border-input bg-background px-1.5 text-[11px]"
-                      title="定时获取间隔"
-                    >
-                      <option value={5}>5 分钟</option>
-                      <option value={10}>10 分钟</option>
-                      <option value={15}>15 分钟</option>
-                      <option value={30}>30 分钟</option>
-                      <option value={60}>1 小时</option>
-                    </select>
+                      options={[
+                        { value: '5', label: '5 分钟' },
+                        { value: '10', label: '10 分钟' },
+                        { value: '15', label: '15 分钟' },
+                        { value: '30', label: '30 分钟' },
+                        { value: '60', label: '1 小时' },
+                      ]}
+                    />
                   )}
                 </span>
               </div>

@@ -5,6 +5,7 @@ import { Settings2, X, RotateCcw } from 'lucide-react'
 import { getMonacoLanguageFromPath } from '@/utils/monacoLanguage'
 import { isUnifiedDiffNewFile, parseUnifiedDiffToPair } from '@/utils/parseUnifiedDiff'
 import { useMinimapConfig } from '@/utils/minimapConfig'
+import { SimpleSelect } from './SimpleSelect'
 
 /** Shift + 滚轮：转为横向滚动；兼容 deltaMode 与触控板横向 deltaX */
 function shiftWheelHorizontalDelta(e: WheelEvent): number {
@@ -77,41 +78,71 @@ function MinimapConfigPanel({
         </label>
         <label className="flex items-center justify-between gap-2 text-xs">
           <span>位置 side</span>
-          <select value={config.side} onChange={(e) => update({ side: e.target.value as 'left' | 'right' })} className="h-7 rounded-md border bg-background px-2 text-xs">
-            <option value="right">右侧</option>
-            <option value="left">左侧</option>
-          </select>
+          <SimpleSelect
+            size="xs"
+            className="max-w-[16rem]"
+            value={config.side}
+            onValueChange={(v) => update({ side: v as 'left' | 'right' })}
+            options={[
+              { value: 'right', label: '右侧' },
+              { value: 'left', label: '左侧' },
+            ]}
+          />
         </label>
         <label className="flex items-center justify-between gap-2 text-xs">
           <span>大小 size</span>
-          <select value={config.size} onChange={(e) => update({ size: e.target.value as 'proportional' | 'fill' | 'fit' })} className="h-7 rounded-md border bg-background px-2 text-xs">
-            <option value="proportional">proportional - 跟内容等高(可滚动)</option>
-            <option value="fill">fill - 拉伸填满高度</option>
-            <option value="fit">fit - 自适应不超出</option>
-          </select>
+          <SimpleSelect
+            size="xs"
+            className="max-w-[16rem]"
+            value={config.size}
+            onValueChange={(v) => update({ size: v as 'proportional' | 'fill' | 'fit' })}
+            options={[
+              { value: 'proportional', label: 'proportional - 跟内容等高(可滚动)' },
+              { value: 'fill', label: 'fill - 拉伸填满高度' },
+              { value: 'fit', label: 'fit - 自适应不超出' },
+            ]}
+          />
         </label>
         <label className="flex items-center justify-between gap-2 text-xs">
           <span>自动隐藏 autohide</span>
-          <select value={config.autohide} onChange={(e) => update({ autohide: e.target.value as 'none' | 'mouseover' | 'scroll' })} className="h-7 rounded-md border bg-background px-2 text-xs">
-            <option value="none">none - 常显</option>
-            <option value="mouseover">mouseover - 悬停显</option>
-            <option value="scroll">scroll - 滚动时显</option>
-          </select>
+          <SimpleSelect
+            size="xs"
+            className="max-w-[16rem]"
+            value={config.autohide}
+            onValueChange={(v) => update({ autohide: v as 'none' | 'mouseover' | 'scroll' })}
+            options={[
+              { value: 'none', label: 'none - 常显' },
+              { value: 'mouseover', label: 'mouseover - 悬停显' },
+              { value: 'scroll', label: 'scroll - 滚动时显' },
+            ]}
+          />
         </label>
         <label className="flex items-center justify-between gap-2 text-xs">
           <span>缩放 scale</span>
-          <select value={config.scale} onChange={(e) => update({ scale: Number(e.target.value) })} className="h-7 rounded-md border bg-background px-2 text-xs">
-            <option value={1}>1 - 最小</option>
-            <option value={2}>2 - 中等</option>
-            <option value={3}>3 - 最大</option>
-          </select>
+          <SimpleSelect
+            size="xs"
+            className="max-w-[16rem]"
+            value={String(config.scale)}
+            onValueChange={(v) => update({ scale: Number(v) })}
+            options={[
+              { value: '1', label: '1 - 最小' },
+              { value: '2', label: '2 - 中等' },
+              { value: '3', label: '3 - 最大' },
+            ]}
+          />
         </label>
         <label className="flex items-center justify-between gap-2 text-xs">
           <span>滑块 showSlider</span>
-          <select value={config.showSlider} onChange={(e) => update({ showSlider: e.target.value as 'always' | 'mouseover' })} className="h-7 rounded-md border bg-background px-2 text-xs">
-            <option value="always">常显</option>
-            <option value="mouseover">悬停</option>
-          </select>
+          <SimpleSelect
+            size="xs"
+            className="max-w-[16rem]"
+            value={config.showSlider}
+            onValueChange={(v) => update({ showSlider: v as 'always' | 'mouseover' })}
+            options={[
+              { value: 'always', label: '常显' },
+              { value: 'mouseover', label: '悬停' },
+            ]}
+          />
         </label>
         <label className="flex items-center justify-between gap-2 text-xs">
           <span>真实字符 renderCharacters</span>

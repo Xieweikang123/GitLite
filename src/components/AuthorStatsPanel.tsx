@@ -37,6 +37,7 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
 import { Button } from './ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
+import { SimpleSelect } from './SimpleSelect'
 import { cn } from '../lib/utils'
 import { branchRevSpec } from '../utils/branchDisplayName'
 import type {
@@ -902,25 +903,20 @@ export function AuthorStatsPanel({
                 {statsScope === 'head' && branchNamesSorted.length > 0 && (
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="hidden text-[11px] text-muted-foreground sm:inline sm:text-xs">分支</span>
-                    <select
-                      className="h-8 max-w-[min(100%,16rem)] flex-1 rounded-md border border-input bg-background px-2 text-[11px] shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:text-xs"
+                    <SimpleSelect
+                      size="sm"
+                      className="max-w-[min(100%,16rem)] flex-1"
                       value={statsRev ?? ''}
-                      onChange={(e) => {
-                        const v = e.target.value
-                        setStatsRev(v === '' ? null : v)
-                      }}
+                      onValueChange={(v) => setStatsRev(v === '' ? null : v)}
                       aria-label="选择分支历史"
-                    >
-                      <option value="">当前检出（HEAD）</option>
-                      {branchesSorted.map((b) => (
-                        <option
-                          key={`${b.is_remote ? 'r' : 'l'}:${b.name}`}
-                          value={branchRevSpec(b.name, b.is_remote)}
-                        >
-                          {b.name}
-                        </option>
-                      ))}
-                    </select>
+                      options={[
+                        { value: '', label: '当前检出（HEAD）' },
+                        ...branchesSorted.map((b) => ({
+                          value: branchRevSpec(b.name, b.is_remote),
+                          label: b.name,
+                        })),
+                      ]}
+                    />
                   </div>
                 )}
               </>
@@ -929,21 +925,17 @@ export function AuthorStatsPanel({
             {reportTab === 'branches' && (
               <div className="flex min-w-0 items-center gap-1.5">
                 <span className="hidden text-[11px] text-muted-foreground sm:inline sm:text-xs">基准分支</span>
-                <select
-                  className="h-8 max-w-[min(100%,16rem)] flex-1 rounded-md border border-input bg-background px-2 text-[11px] shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:text-xs"
+                <SimpleSelect
+                  size="sm"
+                  className="max-w-[min(100%,16rem)] flex-1"
                   value={baseBranch ?? ''}
-                  onChange={(e) => {
-                    const v = e.target.value.trim()
-                    setBaseBranch(v || null)
-                  }}
+                  onValueChange={(v) => setBaseBranch(v.trim() || null)}
                   aria-label="选择基准分支"
-                >
-                  {branchNamesSorted.map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
-                </select>
+                  options={branchNamesSorted.map((name) => ({
+                    value: name,
+                    label: name,
+                  }))}
+                />
               </div>
             )}
 
