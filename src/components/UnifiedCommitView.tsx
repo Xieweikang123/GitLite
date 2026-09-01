@@ -3287,7 +3287,7 @@ export function UnifiedCommitView({
                     /* 固定同一套 DOM，避免 loading 切换时卸载/重挂 Monaco（否则会闪一帧深色画布像「黑框」） */
                     <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-white dark:bg-gray-900">
                       {diff ? (
-                        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                        <div className="flex min-h-[280px] flex-1 flex-col overflow-hidden">
                           <VSCodeDiff
                             diff={diff}
                             filePath={selectedFile}

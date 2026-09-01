@@ -5791,6 +5791,20 @@ async fn get_commit_files(repo_path: String, commit_id: String) -> Result<Vec<Fi
     Ok(files)
 }
 
+/// 将 libgit2 diff 行格式化为 unified diff 文本（含 +/- 前缀）。
+fn append_diff_patch_line(buf: &mut String, line: &git2::DiffLine<'_>) {
+    let prefix = match line.origin() {
+        '+' => "+",
+        '-' => "-",
+        ' ' => " ",
+        _ => "",
+    };
+    let content = std::str::from_utf8(line.content()).unwrap_or("[INVALID UTF-8]");
+    buf.push_str(prefix);
+    buf.push_str(content);
+    buf.push('\n');
+}
+
 // 获取单个文件的差异
 #[tauri::command]
 async fn get_single_file_diff(repo_path: String, commit_id: String, file_path: String) -> Result<String, String> {
@@ -5826,30 +5840,38 @@ async fn get_single_file_diff(repo_path: String, commit_id: String, file_path: S
 
     let mut text = String::new();
     diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
-        text.push_str(&format!("{}\n", std::str::from_utf8(line.content()).unwrap_or("")));
+        append_diff_patch_line(&mut text, &line);
         true
     }).map_err(|e| format!("Failed to print diff: {}", e))?;
 
     // Fallback: 如果含有 hunk 但几乎没有 +/- 行，尝试调用 git 原生命令生成统一补丁
-    let plus = text.lines().filter(|l| l.starts_with('+')).count();
-    let minus = text.lines().filter(|l| l.starts_with('-')).count();
+    let plus = text
+        .lines()
+        .filter(|l| l.starts_with('+') && !l.starts_with("+++"))
+        .count();
+    let minus = text
+        .lines()
+        .filter(|l| l.starts_with('-') && !l.starts_with("---"))
+        .count();
     let has_hunk = text.lines().any(|l| l.starts_with("@@"));
     if has_hunk && (plus + minus) < 3 {
-        if commit.parent_count() > 0 {
-            let parent_id = commit.parent_id(0).ok();
-            if let Some(pid) = parent_id {
-                let pid_s = format!("{}", pid);
-                let output = run_git_in_repo(
-                    &repo_path,
-                    &["diff", pid_s.as_str(), commit_id.as_str(), "--", file_path.as_str()],
-                );
-                if let Ok(out) = output {
-                    if out.status.success() {
-                        let t = String::from_utf8_lossy(&out.stdout).to_string();
-                        if !t.trim().is_empty() {
-                            text = t;
-                        }
-                    }
+        let git_out = if commit.parent_count() > 0 {
+            let parent_id = format!("{}", commit.parent_id(0).unwrap());
+            run_git_in_repo(
+                &repo_path,
+                &["diff", parent_id.as_str(), commit_id.as_str(), "--", file_path.as_str()],
+            )
+        } else {
+            run_git_in_repo(
+                &repo_path,
+                &["show", commit_id.as_str(), "--", file_path.as_str()],
+            )
+        };
+        if let Ok(out) = git_out {
+            if out.status.success() {
+                let t = String::from_utf8_lossy(&out.stdout).to_string();
+                if !t.trim().is_empty() {
+                    text = t;
                 }
             }
         }
@@ -5887,7 +5909,7 @@ async fn get_file_diff(repo_path: String, commit_id: String) -> Result<String, S
     
     let mut diff_text = String::new();
     diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
-        diff_text.push_str(&format!("{}\n", std::str::from_utf8(line.content()).unwrap_or("")));
+        append_diff_patch_line(&mut diff_text, &line);
         true
     }).map_err(|e| format!("Failed to print diff: {}", e))?;
     
@@ -7511,11 +7533,6 @@ async fn pull_changes_with_logs(repo_path: String) -> Result<PullWithLogsResult,
     outcome.map(|outcome| PullWithLogsResult { logs, outcome })
 }
 
-/// 与 git 侧路径比较（统一为正斜杠，避免 Windows 下 `a\b` 与 `a/b` 不相等导致差异为空）
-fn git_paths_equal(a: &str, b: &str) -> bool {
-    a.replace('\\', "/") == b.replace('\\', "/")
-}
-
 // 获取已暂存文件的差异
 #[tauri::command]
 async fn get_staged_file_diff(repo_path: String, file_path: String) -> Result<String, String> {
@@ -7533,29 +7550,14 @@ async fn get_staged_file_diff(repo_path: String, file_path: String) -> Result<St
     let index = repo.index()
         .map_err(|e| format!("Failed to get index: {}", e))?;
     
-    let diff = repo.diff_tree_to_index(Some(&head_tree), Some(&index), None)
+    let mut opts = git2::DiffOptions::new();
+    opts.pathspec(&file_path);
+    let diff = repo.diff_tree_to_index(Some(&head_tree), Some(&index), Some(&mut opts))
         .map_err(|e| format!("Failed to create diff: {}", e))?;
     
     let mut diff_text = String::new();
-    diff.print(git2::DiffFormat::Patch, |delta, _hunk, line| {
-        // 检查是否是目标文件
-        let current_file = delta.new_file().path()
-            .or_else(|| delta.old_file().path())
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        
-        if git_paths_equal(&current_file, &file_path) {
-            // 添加diff行前缀
-            let prefix = match line.origin() {
-                '+' => "+",
-                '-' => "-",
-                ' ' => " ",
-                _ => "",
-            };
-            // 安全地处理 UTF-8 编码
-            let content = std::str::from_utf8(line.content()).unwrap_or("[INVALID UTF-8]");
-            diff_text.push_str(&format!("{}{}\n", prefix, content));
-        }
+    diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+        append_diff_patch_line(&mut diff_text, &line);
         true
     }).map_err(|e| format!("Failed to print diff: {}", e))?;
     

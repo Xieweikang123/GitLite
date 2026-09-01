@@ -72,7 +72,10 @@ export function parseUnifiedDiffToPair(diffText: string): { original: string; mo
     } else if (ch === '+') {
       newLines.push(content)
     } else {
-      inHunk = false
+      // git2 DiffFormat::Patch 的 hunk 正文有时不带 +/- 前缀
+      const body = normalized.replace(/\r$/, '')
+      oldLines.push(body)
+      newLines.push(body)
     }
   }
 

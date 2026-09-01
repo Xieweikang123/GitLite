@@ -133,10 +133,12 @@ export function DiffViewer({ commit, selectedFile, onGetDiff, onGetSingleFileDif
         )}
         
         {!loading && !error && diff && (
-          <VSCodeDiff
-            diff={diff}
-            filePath={selectedFile ?? undefined}
-          />
+          <div className="min-h-[280px] w-full overflow-hidden">
+            <VSCodeDiff
+              diff={diff}
+              filePath={selectedFile ?? undefined}
+            />
+          </div>
         )}
         
         {!loading && !error && !diff && (

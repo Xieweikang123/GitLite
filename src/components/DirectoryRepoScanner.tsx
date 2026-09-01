@@ -1898,14 +1898,16 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                   </Button>
                 )}
               </div>
-              <div className="flex-1 min-h-0 overflow-hidden bg-background">
+              <div className="flex-1 min-h-[280px] overflow-hidden bg-background">
                 {detailDiffLoading ? (
                   <div className="flex items-center justify-center gap-2 p-8 text-xs text-muted-foreground">
                     <RefreshCw className="h-4 w-4 animate-spin" />
                     加载差异中…
                   </div>
                 ) : detailDiff ? (
-                  <MonacoDiffEditor diff={detailDiff} filePath={detailSelectedFile ?? undefined} />
+                  <div className="h-full min-h-[280px] w-full overflow-hidden">
+                    <MonacoDiffEditor diff={detailDiff} filePath={detailSelectedFile ?? undefined} />
+                  </div>
                 ) : (
                   <div className="p-8 text-center text-xs text-muted-foreground">无差异或二进制文件</div>
                 )}
@@ -1947,13 +1949,15 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                 </Button>
               )}
             </div>
-            <div className="flex-1 min-h-0 overflow-hidden">
+            <div className="flex-1 min-h-[280px] overflow-hidden">
               {wsDiffLoading ? (
                 <div className="flex items-center justify-center gap-2 p-8 text-xs text-muted-foreground">
                   <RefreshCw className="h-4 w-4 animate-spin" /> 加载中…
                 </div>
               ) : wsDiff ? (
-                <MonacoDiffEditor diff={wsDiff} filePath={wsDetail?.filePath} />
+                <div className="h-full min-h-[280px] w-full overflow-hidden">
+                  <MonacoDiffEditor diff={wsDiff} filePath={wsDetail?.filePath} />
+                </div>
               ) : (
                 <div className="p-8 text-center text-xs text-muted-foreground">无内容</div>
               )}
