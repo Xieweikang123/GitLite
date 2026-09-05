@@ -62,6 +62,7 @@ function App() {
     getSingleFileDiff,
     fetchChangesWithLogs,
     fetchChanges,
+    fetchOriginAndSyncOverview,
     pushChangesWithRealtimeLogs,
     pullChangesWithLogs,
     commitChanges,
@@ -255,15 +256,31 @@ function App() {
   }
 
   const handleMergeBranch = async (sourceBranch: string, ffOnly: boolean) => {
-    const ok = await mergeBranch(sourceBranch, ffOnly)
-    if (!ok) return false
-    setSelectedCommit(null)
-    setCommitFiles([])
-    setSelectedFile(null)
-    setIncomingCommits([])
-    setLocalCommits([])
-    setHasMoreCommits(true)
-    return true
+    if (!repoInfo || !beginRemoteOp(`合并 ${sourceBranch} 到 ${repoInfo.current_branch}`)) return false
+    try {
+      const message = await mergeBranch(sourceBranch, ffOnly)
+      setSelectedCommit(null)
+      setCommitFiles([])
+      setSelectedFile(null)
+      setIncomingCommits([])
+      setLocalCommits([])
+      setHasMoreCommits(true)
+      finishRemoteOp('success', message)
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '合并分支失败'
+      setLogs((prev) => [
+        ...prev,
+        {
+          timestamp: new Date().toLocaleTimeString(),
+          level: 'ERROR',
+          message,
+        },
+      ])
+      const isConflict = message.includes('冲突')
+      finishRemoteOp(isConflict ? 'conflict' : 'error', message)
+      return false
+    }
   }
 
   const handleCherryPickCommit = async (commitId: string) => {
@@ -1005,6 +1022,7 @@ function App() {
           onDeleteBranch={handleDeleteBranch}
           onRenameBranch={handleRenameBranch}
           onMergeBranch={handleMergeBranch}
+          onFetchRemoteOverview={fetchOriginAndSyncOverview}
           onOpenRemoteRepository={handleOpenRemoteRepository}
           onOpenRemoteManage={() => setRemoteManageOpen(true)}
           onPendingCommitClick={(commit) =>

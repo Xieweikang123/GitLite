@@ -5120,6 +5120,58 @@ async fn get_branch_sync_status(
     .map_err(|e| format!("任务已中断: {}", e))?
 }
 
+/// 每个本地分支与其上游（或 origin/同名）的同步概览
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BranchSyncOverview {
+    pub name: String,
+    pub ahead: u32,
+    pub behind: u32,
+    pub has_upstream: bool,
+}
+
+/// 执行 `git fetch origin`（不合并、不动工作区），随后返回所有本地分支相对上游的 ahead/behind。
+/// 供分支面板「一键检查远端更新」使用。
+#[tauri::command]
+async fn fetch_origin_and_branch_sync_overview(
+    repo_path: String,
+) -> Result<Vec<BranchSyncOverview>, String> {
+    tokio::task::spawn_blocking(move || {
+        let repo = Repository::open(&repo_path)
+            .map_err(|e| format!("无法打开仓库: {}", e))?;
+        repo.find_remote("origin")
+            .map_err(|_| "未找到远程 origin。".to_string())?;
+
+        let fetch_out = run_git_in_repo(&repo_path, &["fetch", "origin"])
+            .map_err(|e| format!("无法执行 git fetch: {}", e))?;
+        if !fetch_out.status.success() {
+            return Err(format!("git fetch 失败: {}", git_output_detail(&fetch_out)));
+        }
+
+        let repo = Repository::open(&repo_path)
+            .map_err(|e| format!("fetch 后无法重新打开仓库: {}", e))?;
+        let mut overview: Vec<BranchSyncOverview> = Vec::new();
+        let branches = repo
+            .branches(Some(git2::BranchType::Local))
+            .map_err(|e| format!("无法枚举本地分支: {}", e))?;
+        for item in branches {
+            let (branch, _) = item.map_err(|e| format!("枚举分支失败: {}", e))?;
+            let Some(name) = branch.name().ok().flatten() else {
+                continue;
+            };
+            let status = branch_sync_status_for(&repo, name)?;
+            overview.push(BranchSyncOverview {
+                name: name.to_string(),
+                ahead: status.ahead,
+                behind: status.behind,
+                has_upstream: status.has_upstream,
+            });
+        }
+        Ok(overview)
+    })
+    .await
+    .map_err(|e| format!("任务已中断: {}", e))?
+}
+
 /// 在不切换检出的前提下，将某本地分支快进到其上游（`git fetch` + 快进引用）。
 /// 工作区 / 当前 HEAD 不变。本地已有独有提交时拒绝，需先检出再拉取。
 fn execute_fast_forward_local_branch(repo_path: &str, branch_rev: &str) -> Result<String, String> {
@@ -7974,6 +8026,7 @@ fn main() {
             get_head_file_paths,
             get_branch_ref_tips,
             get_branch_sync_status,
+            fetch_origin_and_branch_sync_overview,
             fast_forward_local_branch,
             get_commits_branch_labels,
             checkout_branch,

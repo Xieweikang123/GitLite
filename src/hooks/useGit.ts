@@ -18,6 +18,7 @@ import {
   BranchActivityLifecycleReport,
   RemoteManagementInfo,
   DirectoryRepoEntry,
+  BranchSyncOverview,
 } from '../types/git'
 import { formatTauriInvokeError } from '../utils/tauriError'
 import { getClientCalendarOffsetEastMinutes } from '../utils/clientCalendarOffset'
@@ -347,23 +348,22 @@ export function useGit() {
   )
 
   const mergeBranch = useCallback(
-    async (sourceBranch: string, ffOnly: boolean = true): Promise<boolean> => {
-      if (!repoInfo) return false
+    async (sourceBranch: string, ffOnly: boolean = true): Promise<string> => {
+      if (!repoInfo) throw new Error('未打开仓库')
 
       try {
         setLoading(true)
         setError(null)
-        await invoke('merge_branch', {
+        const message = await invoke<string>('merge_branch', {
           repoPath: repoInfo.path,
           sourceBranch: sourceBranch.trim(),
           ffOnly,
         })
         const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
         setRepoInfo(updatedRepoInfo)
-        return true
+        return message || '合并完成'
       } catch (err) {
-        setError(formatTauriInvokeError(err, '合并分支失败'))
-        return false
+        throw new Error(formatTauriInvokeError(err, '合并分支失败'))
       } finally {
         setLoading(false)
       }
@@ -891,19 +891,35 @@ export function useGit() {
 
   const fetchChangesWithLogs = useCallback(async () => {
     if (!repoInfo) throw new Error('No repository open')
-    
+
     try {
       const logs: Array<[string, string, string]> = await invoke('fetch_changes_with_logs', {
         repoPath: repoInfo.path,
       })
-      
+
       // 获取成功后，重新获取仓库信息以更新状态
       const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
       setRepoInfo(updatedRepoInfo)
-      
+
       return logs
     } catch (err) {
       throw new Error(formatTauriInvokeError(err, '获取失败'))
+    }
+  }, [repoInfo])
+
+  /** fetch origin 后返回各本地分支相对上游的 ahead/behind（供分支面板一键检查远端更新） */
+  const fetchOriginAndSyncOverview = useCallback(async (): Promise<BranchSyncOverview[]> => {
+    if (!repoInfo) throw new Error('No repository open')
+
+    try {
+      const overview = await invoke<BranchSyncOverview[]>('fetch_origin_and_branch_sync_overview', {
+        repoPath: repoInfo.path,
+      })
+      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+      setRepoInfo(updatedRepoInfo)
+      return overview
+    } catch (err) {
+      throw new Error(formatTauriInvokeError(err, '获取远端状态失败'))
     }
   }, [repoInfo])
 
@@ -1038,6 +1054,7 @@ export function useGit() {
     refreshRepoInfo,
     fetchChanges,
     fetchChangesWithLogs,
+    fetchOriginAndSyncOverview,
     pushChangesWithLogs,
     pushChangesWithRealtimeLogs,
     pullChangesWithLogs,

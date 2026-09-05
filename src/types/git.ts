@@ -124,6 +124,14 @@ export interface BranchSyncStatus {
   upstream_short_id?: string | null
 }
 
+/** fetch 后每个本地分支与上游的同步概览 */
+export interface BranchSyncOverview {
+  name: string
+  ahead: number
+  behind: number
+  has_upstream: boolean
+}
+
 export interface FileChange {
   path: string
   status: string // "added", "modified", "deleted", "renamed"

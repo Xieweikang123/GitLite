@@ -3,7 +3,7 @@ import { GitBranch, Network, RotateCcw, Timer } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { BranchSwitcher } from './BranchSwitcher'
 import { Button } from './ui/button'
-import { BranchInfo, CommitInfo } from '../types/git'
+import { BranchInfo, BranchSyncOverview, CommitInfo } from '../types/git'
 import { PendingCommitsPopover } from './PendingCommitsPopover'
 
 interface TopToolbarProps {
@@ -12,6 +12,7 @@ interface TopToolbarProps {
   onDeleteBranch?: (branchName: string, force: boolean) => Promise<boolean>
   onRenameBranch?: (oldName: string, newName: string) => Promise<boolean>
   onMergeBranch?: (sourceBranch: string, ffOnly: boolean) => Promise<boolean>
+  onFetchRemoteOverview?: () => Promise<BranchSyncOverview[]>
   onOpenRemoteRepository?: () => void
   onOpenRemoteManage?: () => void
   onPendingCommitClick?: (commit: CommitInfo) => void
@@ -33,6 +34,7 @@ export function TopToolbar({
   onDeleteBranch,
   onRenameBranch,
   onMergeBranch,
+  onFetchRemoteOverview,
   onOpenRemoteRepository,
   onOpenRemoteManage,
   onPendingCommitClick,
@@ -73,6 +75,7 @@ export function TopToolbar({
               onDeleteBranch={onDeleteBranch}
               onRenameBranch={onRenameBranch}
               onMergeBranch={onMergeBranch}
+              onFetchRemoteOverview={onFetchRemoteOverview}
             />
             {onOpenRemoteRepository && repoInfo.remote_url && (
               <Button

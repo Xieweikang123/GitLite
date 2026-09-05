@@ -9,7 +9,9 @@ import {
 import {
   Check,
   ChevronDown,
+  Download,
   GitMerge,
+  Loader2,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -23,7 +25,7 @@ import { Input } from './ui/input'
 import { Label } from './ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 import { Switch } from './ui/switch'
-import { BranchInfo, CommitInfo } from '../types/git'
+import { BranchInfo, BranchSyncOverview, CommitInfo } from '../types/git'
 import { cn } from '../lib/utils'
 
 type BranchStartPick =
@@ -377,6 +379,7 @@ export interface BranchSwitcherProps {
   onDeleteBranch?: (branchName: string, force: boolean) => Promise<boolean>
   onRenameBranch?: (oldName: string, newName: string) => Promise<boolean>
   onMergeBranch?: (sourceBranch: string, ffOnly: boolean) => Promise<boolean>
+  onFetchRemoteOverview?: () => Promise<BranchSyncOverview[]>
 }
 
 export function BranchSwitcher({
@@ -390,6 +393,7 @@ export function BranchSwitcher({
   onDeleteBranch,
   onRenameBranch,
   onMergeBranch,
+  onFetchRemoteOverview,
 }: BranchSwitcherProps) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
@@ -406,6 +410,12 @@ export function BranchSwitcher({
   const [mergeOpen, setMergeOpen] = useState(false)
   const [mergeSource, setMergeSource] = useState<BranchInfo | null>(null)
   const [mergeFfOnly, setMergeFfOnly] = useState(false)
+  const [mergeBusy, setMergeBusy] = useState(false)
+  const [mergeError, setMergeError] = useState<string | null>(null)
+
+  const [fetchingRemote, setFetchingRemote] = useState(false)
+  const [syncOverview, setSyncOverview] = useState<Map<string, BranchSyncOverview>>(new Map())
+  const [fetchRemoteError, setFetchRemoteError] = useState<string | null>(null)
 
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameFrom, setRenameFrom] = useState('')
@@ -469,9 +479,42 @@ export function BranchSwitcher({
   const openMerge = (branch: BranchInfo) => {
     setMergeSource(branch)
     setMergeFfOnly(false)
+    setMergeError(null)
     closePanel()
     setMergeOpen(true)
   }
+
+  const handleFetchRemoteOverview = async () => {
+    if (!onFetchRemoteOverview || fetchingRemote) return
+    setFetchingRemote(true)
+    setFetchRemoteError(null)
+    try {
+      const overview = await onFetchRemoteOverview()
+      const map = new Map<string, BranchSyncOverview>()
+      for (const item of overview) map.set(item.name, item)
+      setSyncOverview(map)
+    } catch (err) {
+      setFetchRemoteError(err instanceof Error ? err.message : '获取远端状态失败')
+    } finally {
+      setFetchingRemote(false)
+    }
+  }
+
+  // 面板打开时自动获取一次远端状态（静默进行，不阻塞面板交互）
+  const fetchOverviewRef = useRef(onFetchRemoteOverview)
+  fetchOverviewRef.current = onFetchRemoteOverview
+  const autoFetchedForOpenRef = useRef(false)
+  useEffect(() => {
+    if (!open) {
+      autoFetchedForOpenRef.current = false
+      return
+    }
+    if (autoFetchedForOpenRef.current) return
+    autoFetchedForOpenRef.current = true
+    void handleFetchRemoteOverview()
+    // 仅在面板打开瞬间触发一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
 
   const openRename = (name: string) => {
     setRenameFrom(name)
@@ -499,9 +542,16 @@ export function BranchSwitcher({
   }
 
   const handleSubmitMerge = async () => {
-    if (!onMergeBranch || !mergeSource) return
+    if (!onMergeBranch || !mergeSource || mergeBusy) return
+    setMergeBusy(true)
+    setMergeError(null)
     const ok = await onMergeBranch(mergeSource.name, mergeFfOnly)
-    if (ok) setMergeOpen(false)
+    setMergeBusy(false)
+    if (ok) {
+      setMergeOpen(false)
+    } else {
+      setMergeError('合并未完成：请查看顶部通知里的日志了解原因（最常见的是存在冲突或未提交改动）。')
+    }
   }
 
   const handleSubmitRename = async () => {
@@ -597,10 +647,33 @@ export function BranchSwitcher({
                   新建
                 </Button>
               )}
+              {onFetchRemoteOverview && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-8 shrink-0 px-2 text-xs"
+                  disabled={loading || fetchingRemote}
+                  title="从远程获取最新状态（不改动本地分支与工作区），并显示各分支可拉取的更新"
+                  onClick={() => void handleFetchRemoteOverview()}
+                >
+                  {fetchingRemote ? (
+                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Download className="mr-1 h-3.5 w-3.5" />
+                  )}
+                  {fetchingRemote ? '获取中…' : '获取远端'}
+                </Button>
+              )}
             </div>
             <p className="px-0.5 text-[11px] leading-snug text-muted-foreground">
               点名称切换到该分支。合并会把选中分支合进当前的「{currentBranch}」。
             </p>
+            {fetchRemoteError && (
+              <p className="break-words rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-[11px] leading-relaxed text-destructive">
+                {fetchRemoteError}
+              </p>
+            )}
             <div
               ref={listRef}
               className="max-h-[min(55vh,360px)] overflow-y-auto overflow-x-hidden rounded-md border border-border/60"
@@ -662,6 +735,20 @@ export function BranchSwitcher({
                                 远程
                               </Badge>
                             )}
+                            {!branch.is_remote &&
+                              (() => {
+                                const sync = syncOverview.get(branch.name)
+                                if (!sync || sync.behind <= 0) return null
+                                return (
+                                  <Badge
+                                    variant="outline"
+                                    className="border-amber-500/40 px-1.5 py-0 text-[10px] text-amber-700 dark:text-amber-300"
+                                    title={`${branch.name} 落后其上游 ${sync.behind} 个提交，可切过去拉取或快进更新`}
+                                  >
+                                    可拉取 {sync.behind}
+                                  </Badge>
+                                )
+                              })()}
                           </span>
                         </button>
                         <div className="flex shrink-0 items-center gap-0.5 pr-1">
@@ -834,15 +921,27 @@ export function BranchSwitcher({
                 id="merge-ff-only"
                 checked={mergeFfOnly}
                 onCheckedChange={setMergeFfOnly}
-                disabled={loading}
+                disabled={mergeBusy || loading}
               />
             </div>
+            {mergeError && (
+              <p className="break-words rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs leading-relaxed text-destructive">
+                {mergeError}
+              </p>
+            )}
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="outline" onClick={() => setMergeOpen(false)} disabled={loading}>
+              <Button type="button" variant="outline" onClick={() => setMergeOpen(false)} disabled={mergeBusy || loading}>
                 取消
               </Button>
-              <Button type="button" onClick={() => void handleSubmitMerge()} disabled={loading || !mergeSource}>
-                合并
+              <Button type="button" onClick={() => void handleSubmitMerge()} disabled={mergeBusy || loading || !mergeSource}>
+                {mergeBusy ? (
+                  <>
+                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                    合并中…
+                  </>
+                ) : (
+                  '合并'
+                )}
               </Button>
             </div>
           </div>
