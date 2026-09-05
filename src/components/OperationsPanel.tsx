@@ -1,8 +1,8 @@
 import { WorkspaceStatus } from './WorkspaceStatus'
-import type { CommitInfo, WorkspaceGitActions } from '../types/git'
+import type { CommitInfo, RepoInfo, WorkspaceGitActions } from '../types/git'
 
 interface OperationsPanelProps {
-  repoInfo: any
+  repoInfo: RepoInfo | null
   onRefresh: () => void
   onPushChanges?: () => void
   onPullChanges?: () => void
@@ -11,7 +11,6 @@ interface OperationsPanelProps {
   gitActions?: WorkspaceGitActions
   onJumpToCommit?: (commit: CommitInfo) => void
   autoRefresh?: boolean
-  onAutoRefreshChange?: (value: boolean) => void
   onRegisterManualRefresh?: (fn: (() => Promise<void>) | null) => void
   onOpenCommitsTab?: () => void
   onOpenFilesTab?: () => void
@@ -29,7 +28,6 @@ export function OperationsPanel({
   gitActions,
   onJumpToCommit,
   autoRefresh,
-  onAutoRefreshChange,
   onRegisterManualRefresh,
   onOpenCommitsTab,
   onOpenFilesTab,
@@ -46,7 +44,6 @@ export function OperationsPanel({
         gitActions={gitActions}
         onJumpToCommit={onJumpToCommit}
         autoRefresh={autoRefresh}
-        onAutoRefreshChange={onAutoRefreshChange}
         onRegisterManualRefresh={onRegisterManualRefresh}
         onOpenCommitsTab={onOpenCommitsTab}
         onOpenFilesTab={onOpenFilesTab}

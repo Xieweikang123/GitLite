@@ -79,7 +79,7 @@ export function parseUnifiedDiffToPair(diffText: string): { original: string; mo
     }
   }
 
-  let original = oldLines.join('\n')
+  const original = oldLines.join('\n')
   let modified = newLines.join('\n')
 
   if (original === '' && modified === '' && trimmed.length > 0) {

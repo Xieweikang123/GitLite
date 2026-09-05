@@ -14,7 +14,7 @@ function stripGit2DebugSuffix(message: string): string {
  * 将常见 git2 / 后端错误串整理为简短、可读的中文说明（保留路径等关键信息）。
  */
 function humanizeInvokeErrorMessage(raw: string): string {
-  let msg = stripGit2DebugSuffix(raw)
+  const msg = stripGit2DebugSuffix(raw)
   const openRepoPrefix = 'Failed to open repository: '
   const inner = msg.startsWith(openRepoPrefix) ? msg.slice(openRepoPrefix.length) : msg
 

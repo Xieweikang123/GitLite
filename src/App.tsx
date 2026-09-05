@@ -8,9 +8,6 @@ import { getCurrent } from '@tauri-apps/api/window'
 import { TopToolbar } from './components/TopToolbar'
 import { MenuToolbar } from './components/MenuToolbar'
 import { OperationsPanel } from './components/OperationsPanel'
-import { Button } from './components/ui/button'
-import { CommitList } from './components/CommitList'
-import { FileList } from './components/FileList'
 import { UnifiedCommitView } from './components/UnifiedCommitView'
 import { LogModal } from './components/LogModal'
 import { OperationStatusToast, type OperationLogEntry, type RemoteOpStatus } from './components/OperationStatusToast'
@@ -58,7 +55,6 @@ function App() {
     getCommitFiles, 
     getCommitsPaginated,
     searchCommits,
-    getFileDiff,
     getSingleFileDiff,
     fetchChangesWithLogs,
     fetchChanges,
@@ -79,9 +75,9 @@ function App() {
   } = useGit()
   
   const { isDark, toggleDarkMode } = useDarkMode()
-  const [selectedCommit, setSelectedCommit] = useState<CommitInfo | null>(null)
-  const [commitFiles, setCommitFiles] = useState<FileChange[]>([])
-  const [selectedFile, setSelectedFile] = useState<string | null>(null)
+  const [, setSelectedCommit] = useState<CommitInfo | null>(null)
+  const [, setCommitFiles] = useState<FileChange[]>([])
+  const [, setSelectedFile] = useState<string | null>(null)
   /** 待拉取区间（远端领先于 HEAD 的提交），与本地分页列表分开，便于 load more 的 offset 仍指向 HEAD 历史 */
   const [incomingCommits, setIncomingCommits] = useState<CommitInfo[]>([])
   const [localCommits, setLocalCommits] = useState<CommitInfo[]>([])
@@ -110,8 +106,6 @@ function App() {
   const [remoteManageOpen, setRemoteManageOpen] = useState(false)
   const [reliabilityOpen, setReliabilityOpen] = useState(false)
 
-  /** 提交文件列表请求序号：避免快速切换提交时后返回的请求覆盖当前选中 */
-  const commitFilesReqRef = React.useRef(0)
   /** 提交页：搜索 / 加载更多失败时的可读提示 */
   const [commitListError, setCommitListError] = useState<string | null>(null)
   /** 提交列表数据代次：切换范围/仓库或手动重置列表时递增，用于丢弃过期异步结果 */
@@ -132,26 +126,6 @@ function App() {
     },
     []
   )
-
-  const handleCommitSelect = async (commit: CommitInfo) => {
-    setSelectedCommit(commit)
-    setSelectedFile(null) // 清除选中的文件
-    const req = ++commitFilesReqRef.current
-    
-    try {
-      const files = await getCommitFiles(commit.id)
-      if (req !== commitFilesReqRef.current) return
-      setCommitFiles(files)
-    } catch (err) {
-      if (req !== commitFilesReqRef.current) return
-      console.error('获取文件列表失败:', err)
-      setCommitFiles([])
-    }
-  }
-
-  const handleFileSelect = (filePath: string) => {
-    setSelectedFile(filePath)
-  }
 
   const handleBranchSelect = async (branchName: string) => {
     await checkoutBranch(branchName)
@@ -345,7 +319,7 @@ function App() {
     setCommitListError(null)
   }
 
-  const handleLoadMore = async () => {
+  const handleLoadMore = React.useCallback(async () => {
     if (loadMoreInFlightRef.current || loadingMore || !hasMoreCommits || !repoInfo) return
     const activeJump = jumpRequestActiveRef.current
     const currentPendingJump = pendingJumpCommitIdRef.current
@@ -425,7 +399,20 @@ function App() {
       loadMoreInFlightRef.current = false
       setLoadingMore(false)
     }
-  }
+  }, [
+    loadingMore,
+    hasMoreCommits,
+    repoInfo,
+    jumpRequestActiveRef,
+    pendingJumpCommitIdRef,
+    commitLogScope,
+    commitLogRev,
+    localCommitsRef,
+    appendJumpLog,
+    commitListEpochRef,
+    loadMoreInFlightRef,
+    getCommitsPaginated,
+  ])
 
   const handleRefresh = async () => {
     if (!repoInfo) return
@@ -457,7 +444,7 @@ function App() {
   const handleOpenRemoteRepository = async () => {
     if (repoInfo?.remote_url) {
       try {
-        const isTauriRuntime = typeof (window as any).__TAURI_IPC__ === 'function'
+        const isTauriRuntime = typeof (window as unknown as { __TAURI_IPC__?: unknown }).__TAURI_IPC__ === 'function'
         if (isTauriRuntime) {
           // 在 Tauri 中必须走后端命令，避免 window.open 导致 about:blank 上下文
           await invoke('open_external_url', { url: repoInfo.remote_url })
@@ -703,11 +690,11 @@ function App() {
   React.useEffect(() => {
     if (!repoInfo) return
     if (commitLogScope !== 'head' || commitLogRev) {
-      void invoke('append_gitlite_log', { level: 'DEBUG', message: `[DIAG][pull][App] skip incoming scope=${commitLogScope} rev=${commitLogRev ?? 'null'} behind=${(repoInfo as any).behind}` }).catch(()=>{})
+      void invoke('append_gitlite_log', { level: 'DEBUG', message: `[DIAG][pull][App] skip incoming scope=${commitLogScope} rev=${commitLogRev ?? 'null'} behind=${repoInfo.behind}` }).catch(()=>{})
       return
     }
     const incLen = (repoInfo.incoming_commits ?? []).length
-    void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][App] setIncoming behind=${(repoInfo as any).behind} incoming=${incLen} head=${repoInfo.commits?.[0]?.id?.slice(0,7)}` }).catch(()=>{})
+    void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][App] setIncoming behind=${repoInfo.behind} incoming=${incLen} head=${repoInfo.commits?.[0]?.id?.slice(0,7)}` }).catch(()=>{})
     setIncomingCommits(repoInfo.incoming_commits ?? [])
   }, [repoInfo, commitLogScope, commitLogRev])
 
@@ -750,7 +737,7 @@ function App() {
       const headMoved = localHeadId !== '' && repoHeadId !== '' && localHeadId !== repoHeadId
       const canHydrateFromRepoInfo =
         localCommitsRef.current.length === 0 || headMoved
-      void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][App] hydrate check localLen=${localCommitsRef.current.length} localHead=${localHeadId.slice(0,7)} repoHead=${repoHeadId.slice(0,7)} headMoved=${headMoved} canHydrate=${canHydrateFromRepoInfo} repoBehind=${(repoInfo as any).behind}` }).catch(()=>{})
+      void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][App] hydrate check localLen=${localCommitsRef.current.length} localHead=${localHeadId.slice(0,7)} repoHead=${repoHeadId.slice(0,7)} headMoved=${headMoved} canHydrate=${canHydrateFromRepoInfo} repoBehind=${repoInfo.behind}` }).catch(()=>{})
       if (!canHydrateFromRepoInfo) {
         void invoke('append_gitlite_log', { level: 'DEBUG', message: `[DIAG][pull][App] skip hydrate` }).catch(()=>{})
         return
@@ -821,25 +808,25 @@ function App() {
       cancelled = true
     }
     // 依赖项不含整个 repoInfo：仅 ahead/behind 刷新时不重置「加载更多」
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoInfo?.path, commitLogScope, commitLogRev, headFirstCommitId, getCommitsPaginated])
 
-  const mergedCommitsForView =
-    searchResults ??
-    (commitLogScope === 'all' || commitLogRev
-      ? localCommits
-      : [...incomingCommits, ...localCommits])
-
   const mergedCommitsForViewDeduped = React.useMemo(() => {
-    if (mergedCommitsForView.length <= 1) return mergedCommitsForView
+    const merged =
+      searchResults ??
+      (commitLogScope === 'all' || commitLogRev
+        ? localCommits
+        : [...incomingCommits, ...localCommits])
+    if (merged.length <= 1) return merged
     const seen = new Set<string>()
     const out: CommitInfo[] = []
-    for (const c of mergedCommitsForView) {
+    for (const c of merged) {
       if (seen.has(c.id)) continue
       seen.add(c.id)
       out.push(c)
     }
     return out
-  }, [mergedCommitsForView])
+  }, [searchResults, commitLogScope, commitLogRev, localCommits, incomingCommits])
 
   const jumpToCommitSeqRef = React.useRef(0)
   const [jumpToCommitRequest, setJumpToCommitRequest] = useState<{
@@ -864,7 +851,9 @@ function App() {
   useEffect(() => {
     try {
       localStorage.setItem('gitlite:activeTab', activeTab)
-    } catch {}
+    } catch {
+      /* 忽略 localStorage 写入失败 */
+    }
   }, [activeTab])
   const [statsReportTab, setStatsReportTab] = useState<
     | 'authors'
@@ -1101,7 +1090,6 @@ function App() {
                 handleStatsCommitJump({ commit, scope: 'head', rev: null })
               }
               autoRefresh={workspaceAutoRefresh}
-              onAutoRefreshChange={setWorkspaceAutoRefresh}
               onRegisterManualRefresh={(fn) => {
                 workspaceManualRefreshRef.current = fn
               }}
@@ -1177,7 +1165,6 @@ function App() {
                 onCheckoutAndPullViewedBranch={handleCheckoutAndPullBranch}
                 syncBusy={loading || isOperationRunning}
                 onGetCommitFiles={getCommitFiles}
-                onGetDiff={getFileDiff}
                 onGetSingleFileDiff={getSingleFileDiff}
                 repoPath={repoInfo.path}
                 currentBranch={repoInfo.current_branch}

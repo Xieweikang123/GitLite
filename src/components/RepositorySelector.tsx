@@ -1,6 +1,8 @@
+import type { RepoInfo } from '../types/git'
+
 interface RepositorySelectorProps {
   loading: boolean
-  repoInfo: any
+  repoInfo: RepoInfo | null
 }
 
 export function RepositorySelector({ 

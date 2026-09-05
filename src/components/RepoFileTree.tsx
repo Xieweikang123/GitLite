@@ -189,7 +189,7 @@ export function RepoFileTree({ repoPath }: Props) {
       }
       return next
     })
-  }, [pathsKey, tree])
+  }, [pathsKey, tree, paths])
 
   const openFileInPreview = useCallback(
     async (filePath: string) => {

@@ -82,7 +82,7 @@ function writeStored(c: MinimapConfig) {
     cachedConfig = { ...c }
     localStorage.setItem(MINIMAP_STORAGE_KEY, raw)
     window.dispatchEvent(new CustomEvent(MINIMAP_STORAGE_EVENT))
-  } catch {}
+  } catch { /* 忽略存储失败 */ }
 }
 
 function subscribeMinimap(cb: () => void) {

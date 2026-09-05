@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
-import { FileChange, type WorkspaceGitActions, type CommitInfo } from '../types/git'
+import { FileChange, type RepoInfo, type WorkspaceGitActions, type CommitInfo } from '../types/git'
 import { FileDiffModal } from './FileDiffModal'
 import { Eye, Archive, ArchiveRestore, Trash2, CheckCircle, AlertCircle, Loader2, Sparkles, RotateCcw, ChevronDown } from 'lucide-react'
 import { shortenPathMiddle } from '../lib/utils'
@@ -14,7 +14,7 @@ import { RemoteSyncBar } from './RemoteSyncBar'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 
 interface WorkspaceStatusProps {
-  repoInfo: any
+  repoInfo: RepoInfo | null
   onRefresh: () => void
   onPushChanges?: () => void
   onPullChanges?: () => void
@@ -22,7 +22,6 @@ interface WorkspaceStatusProps {
   gitActions?: WorkspaceGitActions
   onJumpToCommit?: (commit: CommitInfo) => void
   autoRefresh?: boolean
-  onAutoRefreshChange?: (value: boolean) => void
   /** 组件挂载期间把「完整手动刷新」注册给父级（工具栏按钮调用），卸载时回传 null */
   onRegisterManualRefresh?: (fn: (() => Promise<void>) | null) => void
   onOpenCommitsTab?: () => void
@@ -76,7 +75,6 @@ export function WorkspaceStatus({
   gitActions,
   onJumpToCommit,
   autoRefresh: autoRefreshProp = true,
-  onAutoRefreshChange,
   onRegisterManualRefresh,
   onOpenCommitsTab,
   onOpenFilesTab,
@@ -147,7 +145,7 @@ export function WorkspaceStatus({
   const [aiCommitMessageLoading, setAiCommitMessageLoading] = useState(false)
 
   // 获取工作区状态（silent：后台定时刷新，不占满屏 loading，减轻卡顿）
-  const fetchWorkspaceStatus = async (options?: { silent?: boolean }) => {
+  const fetchWorkspaceStatus = useCallback(async (options?: { silent?: boolean }) => {
     const silent = options?.silent ?? false
     if (!repoInfo) return
 
@@ -180,10 +178,10 @@ export function WorkspaceStatus({
         setLoading(false)
       }
     }
-  }
+  }, [repoInfo])
 
   // 获取贮藏列表
-  const fetchStashList = async () => {
+  const fetchStashList = useCallback(async () => {
     if (!repoInfo) return
 
     const showListSpinner = stashDialogOpen
@@ -200,7 +198,7 @@ export function WorkspaceStatus({
     } finally {
       if (showListSpinner) setStashListLoading(false)
     }
-  }
+  }, [repoInfo, stashDialogOpen])
 
   /** 工作区页完整刷新：文件变更 + stash + 父级仓库信息（ahead/behind 等）。RemoteSyncBar 的刷新也走此路径，避免只刷新远程数字、列表仍陈旧。 */
   const handleManualRefresh = async () => {
@@ -219,9 +217,9 @@ export function WorkspaceStatus({
   // 打开贮藏对话框时加载列表
   useEffect(() => {
     if (stashDialogOpen) {
-      fetchStashList()
+      void fetchStashList()
     }
-  }, [stashDialogOpen])
+  }, [stashDialogOpen, fetchStashList])
 
   useEffect(() => {
     if (!syncInfo) return
@@ -479,7 +477,7 @@ export function WorkspaceStatus({
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [repoInfo, repoInfo?.head_short_id, autoRefresh])
+  }, [repoInfo, repoInfo?.head_short_id, autoRefresh, fetchWorkspaceStatus, fetchStashList])
 
   // 暂存文件（等刷新完成再更新列表，行内按钮可显示 loading，避免「添加/暂存」无反馈）
   const stageFile = async (filePath: string) => {
@@ -834,7 +832,7 @@ export function WorkspaceStatus({
             return invoke('open_repository', {
               path: repoInfo.path,
               clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
-            }) as Promise<any>
+            }) as Promise<RepoInfo>
           })()
 
       if (updatedRepoInfo.behind > 0) {
@@ -857,7 +855,7 @@ export function WorkspaceStatus({
               return invoke('open_repository', {
                 path: repoInfo.path,
                 clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
-              }) as Promise<any>
+              }) as Promise<RepoInfo>
             })()
       }
 

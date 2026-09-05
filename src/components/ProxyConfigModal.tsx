@@ -121,7 +121,7 @@ export function ProxyConfigModal({ isOpen, onClose }: ProxyConfigModalProps) {
     }
   }
 
-  const handleInputChange = (field: keyof ProxyConfig, value: any) => {
+  const handleInputChange = (field: keyof ProxyConfig, value: string | number | boolean | undefined) => {
     setConfig(prev => ({
       ...prev,
       [field]: value

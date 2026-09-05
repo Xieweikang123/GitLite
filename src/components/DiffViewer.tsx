@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card'
 import { Button } from './ui/button'
 import { CommitInfo } from '../types/git'
@@ -17,44 +17,50 @@ export function DiffViewer({ commit, selectedFile, onGetDiff, onGetSingleFileDif
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const loadDiff = useCallback(
+    async (commitId: string) => {
+      try {
+        setLoading(true)
+        setError(null)
+        const diffContent = await onGetDiff(commitId)
+        setDiff(diffContent)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '加载差异失败')
+      } finally {
+        setLoading(false)
+      }
+    },
+    [onGetDiff]
+  )
+
+  const loadSingleFileDiff = useCallback(
+    async (commitId: string, filePath: string) => {
+      try {
+        setLoading(true)
+        setError(null)
+        const diffContent = await onGetSingleFileDiff(commitId, filePath)
+        setDiff(diffContent)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '加载文件差异失败')
+      } finally {
+        setLoading(false)
+      }
+    },
+    [onGetSingleFileDiff]
+  )
+
   useEffect(() => {
     if (commit) {
       if (selectedFile) {
-        loadSingleFileDiff(commit.id, selectedFile)
+        void loadSingleFileDiff(commit.id, selectedFile)
       } else {
-        loadDiff(commit.id)
+        void loadDiff(commit.id)
       }
     } else {
       setDiff('')
       setError(null)
     }
-  }, [commit, selectedFile])
-
-  const loadDiff = async (commitId: string) => {
-    try {
-      setLoading(true)
-      setError(null)
-      const diffContent = await onGetDiff(commitId)
-      setDiff(diffContent)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '加载差异失败')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const loadSingleFileDiff = async (commitId: string, filePath: string) => {
-    try {
-      setLoading(true)
-      setError(null)
-      const diffContent = await onGetSingleFileDiff(commitId, filePath)
-      setDiff(diffContent)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '加载文件差异失败')
-    } finally {
-      setLoading(false)
-    }
-  }
+  }, [commit, selectedFile, loadDiff, loadSingleFileDiff])
 
   const copyToClipboard = async () => {
     try {

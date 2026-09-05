@@ -3,7 +3,6 @@ import {
   useEffect,
   useRef,
   useMemo,
-  useCallback,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react'
 import { Button } from './ui/button'
@@ -25,7 +24,7 @@ import {
   Sun,
 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
-import { RecentRepo } from '../types/git'
+import { RecentRepo, type RepoInfo } from '../types/git'
 import { cn, shortenPathMiddle } from '../lib/utils'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { Input } from './ui/input'
@@ -66,7 +65,7 @@ interface MenuToolbarProps {
   autoOpenEnabled: boolean
   onToggleAutoOpen: (enabled: boolean) => void
   loading: boolean
-  repoInfo: any
+  repoInfo: RepoInfo | null
   onInitRepository?: (path: string, initialBranch?: string) => Promise<boolean>
   onCloneRepository?: (
     remoteUrl: string,

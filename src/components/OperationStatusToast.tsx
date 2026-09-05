@@ -13,7 +13,7 @@ export interface OperationLogEntry {
 
 export type RemoteOpStatus = 'hidden' | 'running' | 'success' | 'error' | 'conflict'
 
-export function logLevelClassName(level: string): string {
+function logLevelClassName(level: string): string {
   switch (level) {
     case 'ERROR':
       return 'text-destructive'

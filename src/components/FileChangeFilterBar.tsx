@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { FileText, GitBranch, Copy, Plus, Edit, Trash2, Search, X } from 'lucide-react'
+import { Search, X } from 'lucide-react'
 import { FileChange } from '../types/git'
 import { cn } from '../lib/utils'
 import { Input } from './ui/input'
@@ -52,6 +52,7 @@ function statusToBucket(status: string): FileStatusFilter {
 }
 
 /** 统计各状态的文件数，仅保留出现的状态（供筛选条渲染 chip） */
+// eslint-disable-next-line react-refresh/only-export-components
 export function countFileChangeStatuses(files: FileChange[]): FileStatusBucket[] {
   const counts = new Map<FileStatusFilter, number>()
   for (const f of files) {
@@ -65,6 +66,7 @@ export function countFileChangeStatuses(files: FileChange[]): FileStatusBucket[]
 }
 
 /** 按状态 + 关键字过滤；关键字按空白拆词，全词命中（大小写不敏感，匹配完整路径） */
+// eslint-disable-next-line react-refresh/only-export-components
 export function filterFileChanges(
   files: FileChange[],
   query: string,
@@ -80,27 +82,9 @@ export function filterFileChanges(
   })
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function isFileFilterActive(query: string, status: FileStatusFilter): boolean {
   return query.trim() !== '' || status !== 'all'
-}
-
-function StatusIcon({ status }: { status: FileStatusFilter }) {
-  switch (status) {
-    case 'added':
-      return <Plus className="h-3 w-3" />
-    case 'modified':
-      return <Edit className="h-3 w-3" />
-    case 'deleted':
-      return <Trash2 className="h-3 w-3" />
-    case 'renamed':
-      return <GitBranch className="h-3 w-3" />
-    case 'copied':
-      return <Copy className="h-3 w-3" />
-    case 'other':
-      return <FileText className="h-3 w-3" />
-    default:
-      return null
-  }
 }
 
 interface FileChangeFilterBarProps {

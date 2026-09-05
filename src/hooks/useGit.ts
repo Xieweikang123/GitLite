@@ -57,6 +57,15 @@ export function useGit() {
     }
   }, [autoOpenEnabled])
 
+  const loadRecentRepos = useCallback(async () => {
+    try {
+      const repos: RecentRepo[] = await invoke('get_recent_repos')
+      setRecentRepos(repos)
+    } catch (err) {
+      console.error('Failed to load recent repos:', err)
+    }
+  }, [])
+
   const openRepository = useCallback(async () => {
     const myGen = ++repoLoadGenRef.current
     try {
@@ -84,7 +93,7 @@ export function useGit() {
         setLoading(false)
       }
     }
-  }, [])
+  }, [loadRecentRepos])
 
   const openRepositoryByPath = useCallback(async (path: string) => {
     const myGen = ++repoLoadGenRef.current
@@ -106,16 +115,7 @@ export function useGit() {
         setLoading(false)
       }
     }
-  }, [])
-
-  const loadRecentRepos = useCallback(async () => {
-    try {
-      const repos: RecentRepo[] = await invoke('get_recent_repos')
-      setRecentRepos(repos)
-    } catch (err) {
-      console.error('Failed to load recent repos:', err)
-    }
-  }, [])
+  }, [loadRecentRepos])
 
   /** 重新拉取仓库元数据（ahead/behind 等），不触发全局 loading，供提交面板等轻量刷新 */
   const refreshRepoInfo = useCallback(async (): Promise<RepoInfo> => {
@@ -162,7 +162,7 @@ export function useGit() {
   // 组件加载时获取最近仓库列表
   useEffect(() => {
     loadRecentRepos()
-  }, [])
+  }, [loadRecentRepos])
 
   // 当最近仓库列表加载完成后，自动打开最新的仓库
   useEffect(() => {
@@ -964,15 +964,15 @@ export function useGit() {
     
     try {
       const beforeHead = repoInfo.commits?.[0]?.id?.slice(0,7) ?? '?'
-      const beforeBehind = (repoInfo as any).behind ?? '?'
+      const beforeBehind = repoInfo.behind ?? '?'
       void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][useGit] before path=${repoInfo.path} head=${beforeHead} behind=${beforeBehind}` }).catch(()=>{})
       const result: PullWithLogsResult = await invoke('pull_changes_with_logs', {
         repoPath: repoInfo.path,
       })
-      void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][useGit] pull outcome kind=${(result as any)?.outcome?.kind} msg=${(result as any)?.outcome?.message}` }).catch(()=>{})
+      void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][useGit] pull outcome kind=${result?.outcome?.kind} msg=${result?.outcome?.message}` }).catch(()=>{})
       
       const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
-      void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][useGit] after head=${updatedRepoInfo.commits?.[0]?.id?.slice(0,7)} behind=${(updatedRepoInfo as any).behind} incoming=${(updatedRepoInfo as any).incoming_commits?.length} ahead=${(updatedRepoInfo as any).ahead}` }).catch(()=>{})
+      void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][useGit] after head=${updatedRepoInfo.commits?.[0]?.id?.slice(0,7)} behind=${updatedRepoInfo.behind} incoming=${updatedRepoInfo.incoming_commits?.length} ahead=${updatedRepoInfo.ahead}` }).catch(()=>{})
       setRepoInfo(updatedRepoInfo)
       
       return result

@@ -538,4 +538,6 @@ export function CommitGraphStrip({
   )
 }
 
+// 行高常量被外部消费（滚动定位/占位计算），作为模块级导出保留
+// eslint-disable-next-line react-refresh/only-export-components
 export const COMMIT_GRAPH_ROW_HEIGHT = ROW_H

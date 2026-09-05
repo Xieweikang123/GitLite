@@ -397,7 +397,6 @@ interface UnifiedCommitViewProps {
   /** 仓库级操作进行中（如切换分支），用于禁用同步按钮 */
   syncBusy?: boolean
   onGetCommitFiles: (commitId: string) => Promise<FileChange[]>
-  onGetDiff: (commitId: string) => Promise<string>
   onGetSingleFileDiff: (commitId: string, filePath: string) => Promise<string>
   repoPath?: string
   /** 与路径一起用于在切换分支后重新统计提交总数 */
@@ -451,7 +450,6 @@ export function UnifiedCommitView({
   onCheckoutAndPullViewedBranch,
   syncBusy = false,
   onGetCommitFiles,
-  onGetDiff,
   onGetSingleFileDiff,
   repoPath,
   currentBranch,
@@ -739,7 +737,7 @@ export function UnifiedCommitView({
         const diffCollapsed = diffPanelCollapsedRef.current
         const minRight = diffCollapsed ? MIN_FILE_W : MIN_FILE_W + s + MIN_DIFF_W
         const maxList = Math.max(MIN_LIST_W, cw - s - minRight)
-        let l2 = Math.max(MIN_LIST_W, Math.min(l, maxList))
+        const l2 = Math.max(MIN_LIST_W, Math.min(l, maxList))
         if (selectedCommit) {
           const rightW = cw - l2 - s
           if (rightW <= 0) return { list: l2, file: f }
@@ -955,6 +953,7 @@ export function UnifiedCommitView({
     bumpViewedSync,
   ])
 
+  const viewedBranchHeadId = commits[0]?.id
   useEffect(() => {
     if (!repoPath || !viewedOtherLocalBranch) {
       setViewedBranchSync(null)
@@ -974,7 +973,7 @@ export function UnifiedCommitView({
     return () => {
       cancelled = true
     }
-  }, [repoPath, viewedOtherLocalBranch, viewedSyncNonce, commits[0]?.id])
+  }, [repoPath, viewedOtherLocalBranch, viewedSyncNonce, viewedBranchHeadId])
 
   /** 无 commitLogRev 时下列表展示为当前检出分支，语义仍为 HEAD（含上游待拉取合并展示） */
   const commitLogBranchSelectValue = useMemo(() => {
@@ -1251,7 +1250,7 @@ export function UnifiedCommitView({
     return () => {
       cancelled = true
     }
-  }, [repoPath, branchLabelIdsKey, currentBranch, commitLogScope])
+  }, [repoPath, branchLabelIdsKey, currentBranch, commitLogScope, filteredCommits])
 
   const branchTipRefreshKey = `${repoPath ?? ''}|${currentBranch ?? ''}|${commits.length}|${commits[0]?.id ?? ''}|${aheadCount}|${behindCount}`
 
@@ -2193,9 +2192,10 @@ export function UnifiedCommitView({
 
   // 清理定时器
   useEffect(() => {
+    const timeout = loadingTimeoutRef.current
     return () => {
-      if (loadingTimeoutRef.current) {
-        clearTimeout(loadingTimeoutRef.current)
+      if (timeout) {
+        clearTimeout(timeout)
       }
     }
   }, [])
@@ -3385,7 +3385,7 @@ export function UnifiedCommitView({
                     if (!confirm(`本地回退到 ${c.short_id} ${c.message.split('\n')[0]}？\n仅本地 --hard，不影响远端，之后可用“拉取”拉回。`)) return
                     try {
                       await onResetToCommit(c.id, 'hard')
-                    } catch {}
+                    } catch { /* 重置失败时交由调用方提示 */ }
                   }}
                 >
                   <RotateCcw className="h-3.5 w-3.5 shrink-0" />

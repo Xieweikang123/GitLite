@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog' 
 import { Button } from './ui/button'
 import { VSCodeDiff } from './CodeDiff'
@@ -17,11 +17,55 @@ export function FileDiffModal({ isOpen, onClose, filePath, repoPath, fileType }:
   const [error, setError] = useState<string | null>(null)
   const modalContentRef = useRef<HTMLDivElement>(null)
 
+  const loadFileDiff = useCallback(async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      
+      let diffContent: string
+      
+      if (fileType === 'staged') {
+        // 获取已暂存文件的差异（与HEAD的差异）
+        diffContent = await invoke('get_staged_file_diff', {
+          repoPath,
+          filePath
+        })
+      } else if (fileType === 'unstaged' || fileType === 'conflicted') {
+        // 未暂存 / 冲突：工作区与索引（冲突文件含 <<<<<< 等标记）
+        diffContent = await invoke('get_unstaged_file_diff', {
+          repoPath,
+          filePath
+        })
+      } else {
+        // 未跟踪文件显示文件内容
+        diffContent = await invoke('get_untracked_file_content', {
+          repoPath,
+          filePath
+        })
+      }
+      
+      console.log('FileDiffModal received diff content:', {
+        fileType,
+        filePath,
+        diffContent,
+        diffLength: diffContent?.length,
+        diffPreview: diffContent?.substring(0, 300) + '...'
+      })
+      setDiff(diffContent)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '获取文件差异失败')
+    } finally {
+      setLoading(false)
+    }
+  }, [fileType, filePath, repoPath])
+
   useEffect(() => {
     if (isOpen && filePath && repoPath) {
-      loadFileDiff()
+      void loadFileDiff()
     }
-  }, [isOpen, filePath, repoPath, fileType])
+  }, [isOpen, filePath, repoPath, fileType, loadFileDiff])
 
   // 添加ESC键关闭功能
   useEffect(() => {
@@ -78,50 +122,6 @@ export function FileDiffModal({ isOpen, onClose, filePath, repoPath, fileType }:
       modalContent.removeEventListener('wheel', handleWheel, { capture: true })
     }
   }, [isOpen])
-
-  const loadFileDiff = async () => {
-    try {
-      setLoading(true)
-      setError(null)
-      
-      const { invoke } = await import('@tauri-apps/api/tauri')
-      
-      let diffContent: string
-      
-      if (fileType === 'staged') {
-        // 获取已暂存文件的差异（与HEAD的差异）
-        diffContent = await invoke('get_staged_file_diff', {
-          repoPath,
-          filePath
-        })
-      } else if (fileType === 'unstaged' || fileType === 'conflicted') {
-        // 未暂存 / 冲突：工作区与索引（冲突文件含 <<<<<< 等标记）
-        diffContent = await invoke('get_unstaged_file_diff', {
-          repoPath,
-          filePath
-        })
-      } else {
-        // 未跟踪文件显示文件内容
-        diffContent = await invoke('get_untracked_file_content', {
-          repoPath,
-          filePath
-        })
-      }
-      
-      console.log('FileDiffModal received diff content:', {
-        fileType,
-        filePath,
-        diffContent,
-        diffLength: diffContent?.length,
-        diffPreview: diffContent?.substring(0, 300) + '...'
-      })
-      setDiff(diffContent)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '获取文件差异失败')
-    } finally {
-      setLoading(false)
-    }
-  }
 
   const getModalTitle = () => {
     switch (fileType) {

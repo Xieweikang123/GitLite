@@ -25,7 +25,6 @@ import {
   ChevronUp,
   ArrowUp,
   ArrowDown,
-  Link2,
   Unlink,
   ExternalLink,
   LogIn,
@@ -102,7 +101,6 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
   const [batchPulling, setBatchPulling] = useState(false)
   const [batchPushing, setBatchPushing] = useState(false)
   const [fetchingAll, setFetchingAll] = useState(false)
-  const [fetchingPath, setFetchingPath] = useState<string | null>(null)
   const [fetchingPaths, setFetchingPaths] = useState<Set<string>>(new Set())
   const [fetchDoneCount, setFetchDoneCount] = useState(0)
   const [autoFetchConfig, setAutoFetchConfig] = useState<MultiRepoAutoFetchConfig>({ enabled: false, interval_minutes: 30 })
@@ -154,7 +152,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
           setRecentScanned(list)
           return list
         }
-      } catch {}
+      } catch { /* 忽略读取失败 */ }
       return []
     }
   }, [])
@@ -184,7 +182,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
     try {
       const at = await invoke<string>('record_multi_repo_fetch')
       setLastFetchAt(at)
-    } catch {}
+    } catch { /* 忽略记录失败 */ }
   }, [])
 
   useEffect(() => {
@@ -202,7 +200,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
       if (list.length > 20) list.length = 20
       localStorage.setItem(RECENT_SCANNED_KEY, JSON.stringify(list))
       setRecentScanned(list)
-    } catch {}
+    } catch { /* 忽略保存失败 */ }
   }
 
   useEffect(() => {
@@ -221,7 +219,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
           })
           setEntries(result)
           setScannedDir(latest.path)
-        } catch {}
+        } catch { /* 忽略恢复失败 */ }
       } else if (!restored) {
         setRestored(true)
       }
@@ -247,14 +245,14 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
           if (obj.tab) setActiveDetailTab(obj.tab)
         }
       }
-    } catch {}
+    } catch { /* 忽略恢复失败 */ }
   }, [])
 
   useEffect(() => {
     if (!restoredRef.current) return
     try {
       localStorage.setItem(DETAIL_TAB_CACHE_KEY, JSON.stringify(detailTabCache))
-    } catch {}
+    } catch { /* 忽略保存失败 */ }
   }, [detailTabCache])
 
   useEffect(() => {
@@ -265,7 +263,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
       } else {
         localStorage.removeItem(EXPANDED_STATE_KEY)
       }
-    } catch {}
+    } catch { /* 忽略保存失败 */ }
   }, [expandedPath, activeDetailTab])
 
   const pickFolder = useCallback(async () => {
@@ -407,7 +405,6 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
     if (needPull.length === 0) return
     setBatchPulling(true)
     for (const e of needPull) {
-      // eslint-disable-next-line no-await-in-loop
       await handlePull(e.path)
     }
     setBatchPulling(false)
@@ -443,7 +440,6 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
     if (needPush.length === 0) return
     setBatchPushing(true)
     for (const e of needPush) {
-      // eslint-disable-next-line no-await-in-loop
       await handlePush(e.path)
     }
     setBatchPushing(false)
@@ -453,7 +449,6 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
     if (!entries || !scannedDir || fetchAllInFlightRef.current) return
     fetchAllInFlightRef.current = true
     setFetchingAll(true)
-    setFetchingPath(entries[0]?.path ?? null)
     setFetchingPaths(new Set(entries.map((e) => e.path)))
     setFetchDoneCount(0)
     setError(null)
@@ -464,7 +459,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
         entries.map(async (e) => {
           try {
             await invoke('fetch_changes', { repoPath: e.path })
-          } catch {}
+          } catch { /* 忽略单仓获取失败 */ }
           finally {
             // 逐个完成时更新进度与高亮
             setFetchingPaths((prev) => {
@@ -473,15 +468,6 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
               return n
             })
             setFetchDoneCount((c) => c + 1)
-            setFetchingPath((cur) => {
-              // 若当前高亮刚完成，切换到剩余集合中任意一个
-              if (cur === e.path) {
-                const remaining = entries.map((x) => x.path).filter((p) => p !== e.path)
-                // 延迟由下一轮 setFetchingPaths 驱动，这里简单置 null 由渲染取剩余
-                return remaining[0] ?? null
-              }
-              return cur
-            })
           }
         })
       )
@@ -497,7 +483,6 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
     } finally {
       fetchAllInFlightRef.current = false
       setFetchingAll(false)
-      setFetchingPath(null)
       setFetchingPaths(new Set())
     }
   }, [entries, scannedDir, doScan, recordLastFetch])
@@ -785,7 +770,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
         }
       })()
     }
-  }, [expandedPath, activeDetailTab, entries, workspaceCache, outgoingCache, recentCache, incomingCache, workspaceLoading, outgoingLoading, recentLoading, recentError, refreshWorkspace, fetchOutgoingIfNeeded, fetchRecentIfNeeded])
+  }, [expandedPath, activeDetailTab, entries, workspaceCache, outgoingCache, recentCache, incomingCache, workspaceLoading, outgoingLoading, recentLoading, recentError, incomingLoading, refreshWorkspace, fetchOutgoingIfNeeded, fetchRecentIfNeeded])
 
   // 回到前台时只刷新当前展开的工作区（IDE/终端改完文件后最常见）
   useEffect(() => {
@@ -1001,13 +986,13 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
   const openFolder = async (path: string) => {
     try {
       await invoke('open_folder', { path })
-    } catch {}
+    } catch { /* 忽略打开失败 */ }
   }
 
   const copyText = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text)
-    } catch {}
+    } catch { /* 忽略剪贴板写入失败 */ }
   }
 
   const filteredEntries = useMemo(() => {
@@ -1717,7 +1702,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                                     <div className="grid md:grid-cols-3 gap-3 p-3 max-h-64 overflow-auto">
                                       {[
                                         { title: `未暂存 ${workspaceCache[entry.path]!.unstaged_files.length}`, files: workspaceCache[entry.path]!.unstaged_files, kind: 'unstaged' as const },
-                                        { title: `未跟踪 ${workspaceCache[entry.path]!.untracked_files.length}`, files: workspaceCache[entry.path]!.untracked_files.map((p: string) => ({ path: p, status: 'untracked' })) as any, kind: 'untracked' as const },
+                                        { title: `未跟踪 ${workspaceCache[entry.path]!.untracked_files.length}`, files: workspaceCache[entry.path]!.untracked_files.map((p: string) => ({ path: p, status: 'untracked' as const })), kind: 'untracked' as const },
                                         { title: `暂存 ${workspaceCache[entry.path]!.staged_files.length}`, files: workspaceCache[entry.path]!.staged_files, kind: 'staged' as const },
                                       ].map((group) => (
                                         <div key={group.title} className="rounded border bg-muted/20 overflow-hidden">
@@ -1729,7 +1714,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                                             {group.files.length === 0 ? (
                                               <div className="px-2 py-6 text-xs text-muted-foreground text-center">无</div>
                                             ) : (
-                                              group.files.slice(0, 50).map((f: any) => (
+                                              group.files.slice(0, 50).map((f: { path: string }) => (
                                                 <button
                                                   key={f.path}
                                                   onClick={() => void handleWsFileClick(entry.path, f.path, group.kind)}
@@ -1997,8 +1982,8 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
               const m=detailFileMenu; if(!m || !detailCommit) return;
               const isWin = detailCommit.repoPath.includes('\\')
               const sep = isWin ? '\\' : '/'
-              const base = detailCommit.repoPath.replace(/[\/\\]+$/, '')
-              const rel = m.filePath.replace(/^[\/\\]+/, '').replace(/\//g, sep).replace(/\\/g, sep)
+              const base = detailCommit.repoPath.replace(/[/\\]+$/, '')
+              const rel = m.filePath.replace(/^[/\\]+/, '').replace(/\//g, sep).replace(/\\/g, sep)
               const full = base + sep + rel
               setDetailFileMenu(null); void copyText(full)
             }}
@@ -2024,8 +2009,8 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
               // 保留原分隔符，拼接为文件全路径，让后端 explorer /select 高亮文件（若文件不存在则打开父目录）
               const isWin = detailCommit.repoPath.includes('\\')
               const sep = isWin ? '\\' : '/'
-              const base = detailCommit.repoPath.replace(/[\/\\]+$/, '')
-              const rel = m.filePath.replace(/^[\/\\]+/, '').replace(/\//g, sep).replace(/\\/g, sep)
+              const base = detailCommit.repoPath.replace(/[/\\]+$/, '')
+              const rel = m.filePath.replace(/^[/\\]+/, '').replace(/\//g, sep).replace(/\\/g, sep)
               const full = base + sep + rel
               void openFolder(full)
             }}

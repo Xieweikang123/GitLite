@@ -55,7 +55,7 @@ function firstLine(message: string): string {
 function looksLikeGitRef(query: string): boolean {
   const q = query.trim()
   if (q.length < 4) return false
-  return /^[A-Za-z0-9][A-Za-z0-9._/\-]*$/.test(q)
+  return /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(q)
 }
 
 function branchKey(branch: BranchInfo): string {

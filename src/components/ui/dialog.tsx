@@ -100,7 +100,7 @@ const Dialog: React.FC<DialogProps> = ({ open, onOpenChange, children }) => {
           return React.cloneElement(child, {
             isOpen,
             onOpenChange: handleOpenChange,
-          } as any)
+          } as React.HTMLAttributes<HTMLElement>)
         }
         return child 
       })}

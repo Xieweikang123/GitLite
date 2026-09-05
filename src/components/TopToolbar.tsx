@@ -3,7 +3,7 @@ import { GitBranch, Network, RotateCcw, Timer } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { BranchSwitcher } from './BranchSwitcher'
 import { Button } from './ui/button'
-import { BranchInfo, BranchSyncOverview, CommitInfo } from '../types/git'
+import { BranchInfo, BranchSyncOverview, CommitInfo, type RepoInfo } from '../types/git'
 import { PendingCommitsPopover } from './PendingCommitsPopover'
 
 interface TopToolbarProps {
@@ -17,7 +17,7 @@ interface TopToolbarProps {
   onOpenRemoteManage?: () => void
   onPendingCommitClick?: (commit: CommitInfo) => void
   loading: boolean
-  repoInfo: any
+  repoInfo: RepoInfo | null
   children?: ReactNode
   onManualRefresh?: () => void | Promise<void>
   refreshing?: boolean

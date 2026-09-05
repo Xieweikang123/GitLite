@@ -286,7 +286,7 @@ export function MonacoDiffEditor({
         try {
           if (c.originalStartLineNumber) ed.getOriginalEditor().revealLineInCenter(c.originalStartLineNumber)
           if (c.modifiedStartLineNumber) ed.getModifiedEditor().revealLineInCenter(c.modifiedStartLineNumber)
-        } catch {}
+        } catch { /* 忽略编辑器定位异常 */ }
         return true
       }
       return false

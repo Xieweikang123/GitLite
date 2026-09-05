@@ -53,4 +53,6 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 )
 Button.displayName = "Button"
 
+// 变体定义作为样式令牌导出，供调用方复用
+// eslint-disable-next-line react-refresh/only-export-components
 export { Button, buttonVariants }

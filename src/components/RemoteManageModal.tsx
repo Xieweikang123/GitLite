@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useCallback } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
@@ -53,7 +53,7 @@ export function RemoteManageModal({
 
   const remoteNames = useMemo(() => data?.remotes.map((r) => r.name) ?? [], [data?.remotes])
 
-  const reload = async () => {
+  const reload = useCallback(async () => {
     if (!repoPath) return
     setBusy(true)
     setError(null)
@@ -71,12 +71,12 @@ export function RemoteManageModal({
     } finally {
       setBusy(false)
     }
-  }
+  }, [repoPath, getRemoteManagementInfo])
 
   useEffect(() => {
     if (!isOpen) return
     void reload()
-  }, [isOpen, repoPath])
+  }, [isOpen, reload])
 
   useEffect(() => {
     if (!data || !selectedBranch) return
