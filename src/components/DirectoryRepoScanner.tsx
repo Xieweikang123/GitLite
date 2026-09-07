@@ -30,7 +30,6 @@ import {
   LogIn,
   Filter,
   Copy,
-  Info,
   Download,
   Upload,
   Eye,
@@ -42,6 +41,7 @@ import { formatTauriInvokeError } from '../utils/tauriError'
 import { Switch } from './ui/switch'
 import { SimpleSelect } from './SimpleSelect'
 import { Label } from './ui/label'
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 
 interface DirectoryRepoScannerProps {
   onOpenRepo: (path: string) => void
@@ -95,6 +95,8 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
   const [recentScanned, setRecentScanned] = useState<ScannedDirRecord[]>([])
   const [restored, setRestored] = useState(false)
   const [filter, setFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'clean' | 'dirty' | 'sync'>('all')
+  const [recentOpen, setRecentOpen] = useState(false)
   const [pullingPath, setPullingPath] = useState<string | null>(null)
   const [pushingPath, setPushingPath] = useState<string | null>(null)
   const [checkoutPath, setCheckoutPath] = useState<string | null>(null)
@@ -998,15 +1000,19 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
   const filteredEntries = useMemo(() => {
     if (!entries) return null
     const q = filter.trim().toLowerCase()
-    if (!q) return entries
-    return entries.filter(
-      (e) =>
+    return entries.filter((e) => {
+      if (statusFilter === 'clean' && e.staged_count + e.unstaged_count + e.untracked_count + e.conflicted_count !== 0) return false
+      if (statusFilter === 'dirty' && e.staged_count + e.unstaged_count + e.untracked_count + e.conflicted_count === 0) return false
+      if (statusFilter === 'sync' && e.ahead === 0 && e.behind === 0) return false
+      if (!q) return true
+      return (
         e.name.toLowerCase().includes(q) ||
         e.path.toLowerCase().includes(q) ||
         e.current_branch.toLowerCase().includes(q) ||
         (e.remote_url ?? '').toLowerCase().includes(q)
-    )
-  }, [entries, filter])
+      )
+    })
+  }, [entries, filter, statusFilter])
 
   const stats = useMemo(() => {
     if (!entries) return null
@@ -1022,65 +1028,58 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
       {/* 控制区 - 紧凑化 */}
       <Card className="border-border/60 shadow-sm">
         <CardHeader className="py-3 pb-2">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div className="rounded-md bg-primary/10 p-1.5">
-                <Layers className="h-3.5 w-3.5 text-primary" />
-              </div>
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="rounded-md bg-primary/10 p-1.5">
+              <Layers className="h-3.5 w-3.5 text-primary" />
+            </div>
+            <div className="min-w-0">
               <CardTitle className="text-[13px] leading-none flex items-center gap-2 truncate">
-                目录扫描 — 多仓库一览
+                多仓库一览
                 {stats && (
                   <Badge variant="secondary" className="font-mono text-[10px] h-5 px-1.5">
                     {stats.total}
                   </Badge>
                 )}
               </CardTitle>
-              <span className="hidden lg:inline text-xs text-muted-foreground truncate">
+              <p className="mt-1 text-[11px] text-muted-foreground truncate">
                 选择父目录自动发现子仓库，支持一键打开
-              </span>
+              </p>
             </div>
-            {scannedDir && entries && (
-              <Button variant="ghost" size="sm" className="h-6 text-xs shrink-0 px-2" onClick={handleRefresh} disabled={loading}>
-                <RefreshCw className={`h-3 w-3 mr-1 ${loading ? 'animate-spin' : ''}`} />
-                刷新
-              </Button>
-            )}
           </div>
         </CardHeader>
         <CardContent className="flex flex-col gap-2 pt-0">
           {/* 输入行 + 选项 同行 */}
-          <div className="flex gap-2 items-center">
+          <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
             <div className="relative flex-1">
               <FolderOpen className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={dirPath}
                 onChange={(e) => setDirPath(e.target.value)}
                 placeholder="D:\project  或  /home/user/projects"
-                className="pl-8 font-mono text-xs h-8 bg-muted/20 focus:bg-background"
+                className="pl-8 font-mono text-xs h-8 border-border/50 bg-muted/20 hover:bg-muted/30 focus:border-primary/40 focus:bg-background focus-visible:ring-0 focus-visible:ring-offset-0"
                 spellCheck={false}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') void doScan()
                 }}
               />
             </div>
-            <Button variant="outline" size="sm" className="h-8 px-3 text-xs" onClick={pickFolder} disabled={loading}>
+            <Button variant="outline" size="sm" className="h-8 px-3 text-xs shrink-0" onClick={pickFolder} disabled={loading}>
               浏览…
             </Button>
-            <Button size="sm" className="h-8 px-4 text-xs shadow-sm" onClick={() => void doScan()} disabled={loading || !dirPath.trim()}>
+            <Button size="sm" className="h-8 px-4 text-xs shadow-sm shrink-0" onClick={() => void doScan()} disabled={loading || !dirPath.trim()}>
               {loading ? <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1" /> : <Search className="h-3.5 w-3.5 mr-1" />}
               扫描
             </Button>
-            <label className="hidden sm:flex items-center gap-1.5 text-xs cursor-pointer select-none group shrink-0 ml-1">
-              <input
-                type="checkbox"
+            <label className="flex h-8 items-center gap-2 text-xs cursor-pointer select-none group shrink-0">
+              <Switch
                 checked={recursive}
-                onChange={(e) => setRecursive(e.target.checked)}
-                className="rounded border-input h-3 w-3 accent-primary"
+                onCheckedChange={setRecursive}
+                className="h-5 w-9 border-0 [&>span]:h-4 [&>span]:w-4"
               />
-              <span className="group-hover:text-foreground">递归</span>
+              <span className="leading-none text-muted-foreground group-hover:text-foreground">递归</span>
             </label>
             {entries && (
-              <div className="relative hidden md:block">
+              <div className="relative min-w-0">
                 <Filter className="pointer-events-none absolute left-2.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={filter}
@@ -1090,21 +1089,19 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                 />
               </div>
             )}
-          </div>
-          {/* 移动端递归/过滤 */}
-          <div className="flex sm:hidden items-center justify-between gap-2">
-            <label className="flex items-center gap-1.5 text-xs cursor-pointer">
-              <input type="checkbox" checked={recursive} onChange={(e) => setRecursive(e.target.checked)} className="rounded h-3 w-3" />
-              递归扫描（3层）
-            </label>
-            {entries && (
-              <div className="relative flex-1 max-w-[140px]">
-                <Filter className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
-                <Input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="过滤" className="h-7 pl-6 text-xs" />
-              </div>
+            {scannedDir && entries && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 w-8 p-0 shrink-0"
+                onClick={handleRefresh}
+                disabled={loading}
+                title="刷新"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+              </Button>
             )}
           </div>
-
           {/* 状态条 - 单行紧凑 */}
           {error && (
             <div className="flex items-center gap-2 text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded-md px-2.5 py-1.5">
@@ -1113,77 +1110,99 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
             </div>
           )}
           {scannedDir && !error && entries && stats && (
-            <div className="flex flex-wrap items-center gap-2 text-xs border-t border-border/40 pt-2">
-              <span className="inline-flex items-center gap-1.5">
-                <span className="text-muted-foreground">已扫描</span>
-                <span className="font-mono font-medium max-w-[260px] truncate" title={scannedDir}>
-                  {shortenPathMiddle(scannedDir, 40)}
-                </span>
-                <Badge variant="secondary" className="h-5 text-[10px] px-1.5">
-                  {stats.total} 仓库
-                </Badge>
-              </span>
-              <span className="h-3 w-px bg-border hidden sm:inline" />
-              <span className="inline-flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5 border-t border-border/40 pt-2">
+              <button
+                type="button"
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${statusFilter === 'all' ? 'border-primary/45 bg-primary/10 text-primary' : 'border-border/60 text-muted-foreground hover:border-primary/30 hover:text-foreground'}`}
+                onClick={() => setStatusFilter('all')}
+              >
+                全部 <span className="font-mono">{stats.total}</span>
+              </button>
+              <button
+                type="button"
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${statusFilter === 'clean' ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : 'border-border/60 text-muted-foreground hover:border-emerald-500/30 hover:text-foreground'}`}
+                onClick={() => setStatusFilter(statusFilter === 'clean' ? 'all' : 'clean')}
+              >
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                干净 <span className="font-medium text-emerald-600 dark:text-emerald-400">{stats.clean}</span>
-              </span>
-              <span className="inline-flex items-center gap-1">
+                干净 <span className="font-mono">{stats.clean}</span>
+              </button>
+              <button
+                type="button"
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${statusFilter === 'dirty' ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400' : 'border-border/60 text-muted-foreground hover:border-amber-500/30 hover:text-foreground'}`}
+                onClick={() => setStatusFilter(statusFilter === 'dirty' ? 'all' : 'dirty')}
+              >
                 <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
-                有改动 <span className="font-medium">{stats.dirty}</span> / 待同步 <span className="font-medium">{stats.needSync}</span>
-              </span>
-            </div>
-          )}
+                有改动 <span className="font-mono">{stats.dirty}</span>
+              </button>
+              <button
+                type="button"
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] transition-colors ${statusFilter === 'sync' ? 'border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-400' : 'border-border/60 text-muted-foreground hover:border-sky-500/30 hover:text-foreground'}`}
+                onClick={() => setStatusFilter(statusFilter === 'sync' ? 'all' : 'sync')}
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-sky-500" />
+                待同步 <span className="font-mono">{stats.needSync}</span>
+              </button>
 
-          {/* 最近扫描 - 紧凑单行 */}
-          {recentScanned.length > 0 && (
-            <div className="flex items-center gap-2 flex-wrap text-xs border-t border-border/30 pt-2">
-              <span className="inline-flex items-center gap-1 text-muted-foreground shrink-0">
-                <Clock className="h-3 w-3" />
-                最近
-              </span>
-              <div className="flex flex-wrap gap-1.5 flex-1 min-w-0">
-                {recentScanned.slice(0, 6).map((r) => (
-                  <div key={r.path} className="group inline-flex items-center gap-1 rounded-full border bg-background pl-2 pr-0.5 py-0.5 text-xs hover:border-primary/30 transition-colors">
-                    <button
+              {recentScanned.length > 0 && (
+                <Popover open={recentOpen} onOpenChange={setRecentOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
                       type="button"
-                      className="font-mono text-[11px] truncate max-w-[200px]"
-                      title={`${r.path} · ${timeAgo(r.last_scanned)}`}
-                      onClick={() => {
-                        setDirPath(r.path)
-                        setRecursive(r.recursive)
-                        void doScan(r.path, r.recursive)
-                      }}
+                      variant="ghost"
+                      size="sm"
+                      className="ml-auto h-6 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground"
                     >
-                      {shortenPathMiddle(r.path, 28)}
-                    </button>
-                    {r.recursive && <span className="text-[9px] px-1 py-0 rounded bg-muted border">递</span>}
-                    <button
-                      type="button"
-                      className="rounded-full p-1 opacity-40 group-hover:opacity-100 hover:text-destructive"
-                      title="移除"
-                      onClick={async () => {
-                        try {
-                          await invoke('remove_recent_scanned_dir', { path: r.path })
-                          await loadRecentScanned()
-                        } catch {
-                          const raw = localStorage.getItem(RECENT_SCANNED_KEY)
-                          let list: ScannedDirRecord[] = raw ? JSON.parse(raw) : []
-                          list = list.filter((x) => x.path !== r.path)
-                          localStorage.setItem(RECENT_SCANNED_KEY, JSON.stringify(list))
-                          setRecentScanned(list)
-                        }
-                      }}
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-              <span className="hidden sm:inline-flex items-center gap-1 text-[10px] text-muted-foreground" title="已持久化到 recent_scanned_dirs.json">
-                <Info className="h-3 w-3" />
-                已持久化
-              </span>
+                      <Clock className="h-3 w-3" />
+                      最近 {recentScanned.length}
+                      {recentOpen ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="end" className="w-[320px] max-h-72 overflow-y-auto p-1">
+                    {recentScanned.map((r) => (
+                      <div
+                        key={r.path}
+                        className="group flex items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted/60"
+                      >
+                        <button
+                          type="button"
+                          className="min-w-0 flex-1 text-left"
+                          title={`${r.path} · ${timeAgo(r.last_scanned)}`}
+                          onClick={() => {
+                            setDirPath(r.path)
+                            setRecursive(r.recursive)
+                            void doScan(r.path, r.recursive)
+                            setRecentOpen(false)
+                          }}
+                        >
+                          <div className="truncate font-mono text-[11px]">{shortenPathMiddle(r.path, 34)}</div>
+                          <div className="text-[10px] text-muted-foreground">
+                            {timeAgo(r.last_scanned)}{r.recursive ? ' · 递归' : ''}
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-full p-1 opacity-40 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                          title="移除"
+                          onClick={async () => {
+                            try {
+                              await invoke('remove_recent_scanned_dir', { path: r.path })
+                              await loadRecentScanned()
+                            } catch {
+                              const raw = localStorage.getItem(RECENT_SCANNED_KEY)
+                              const list: ScannedDirRecord[] = raw ? JSON.parse(raw) : []
+                              const next = list.filter((x) => x.path !== r.path)
+                              localStorage.setItem(RECENT_SCANNED_KEY, JSON.stringify(next))
+                              setRecentScanned(next)
+                            }
+                          }}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </PopoverContent>
+                </Popover>
+              )}
             </div>
           )}
         </CardContent>
@@ -1191,7 +1210,31 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
 
       {/* 表格区 */}
       <div className="flex-1 min-h-0">
-        {!entries ? (
+        {!entries && loading ? (
+          <Card className="overflow-hidden border shadow-sm">
+            <div className="flex items-center gap-2 border-b bg-muted/30 px-4 py-2 text-xs text-muted-foreground">
+              <RefreshCw className="h-3 w-3 animate-spin" />
+              正在扫描 {shortenPathMiddle(dirPath, 40)}…
+            </div>
+            <div className="divide-y divide-border/60" aria-hidden>
+              {[0, 1, 2, 3, 4, 5].map((i) => (
+                <div key={i} className="flex items-center gap-4 px-3 py-3">
+                  <div className="flex flex-col gap-1.5 w-[36%] min-w-0">
+                    <div className="h-3.5 rounded bg-muted animate-pulse" style={{ width: `${45 + ((i * 13) % 30)}%` }} />
+                    <div className="h-2.5 rounded bg-muted/70 animate-pulse" style={{ width: `${60 + ((i * 7) % 25)}%` }} />
+                  </div>
+                  <div className="h-5 w-20 rounded bg-muted animate-pulse" />
+                  <div className="h-5 w-16 rounded bg-muted animate-pulse" />
+                  <div className="h-5 w-14 rounded bg-muted animate-pulse" />
+                  <div className="ml-auto flex gap-1.5">
+                    <div className="h-7 w-14 rounded-md bg-muted animate-pulse" />
+                    <div className="h-7 w-14 rounded-md bg-muted animate-pulse" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        ) : !entries ? (
           <Card className="border-dashed">
             <CardContent className="flex flex-col items-center justify-center py-16 text-sm text-muted-foreground gap-3">
               <div className="rounded-full bg-muted p-4">
