@@ -97,6 +97,7 @@ export function WorkspaceStatus({
   const [syncInfo, setSyncInfo] = useState<string | null>(null)
   const [syncStep, setSyncStep] = useState<string | null>(null)
   const [abortingMerge, setAbortingMerge] = useState(false)
+  const [resolvingConflictPath, setResolvingConflictPath] = useState<string | null>(null)
   /** 提交主按钮右侧 ▾ 菜单（仅提交 / 推送） */
   const [commitMenuOpen, setCommitMenuOpen] = useState(false)
   const autoRefresh = autoRefreshProp
@@ -367,6 +368,27 @@ export function WorkspaceStatus({
       setError(err instanceof Error ? err.message : '放弃合并失败')
     } finally {
       setAbortingMerge(false)
+    }
+  }
+
+  const resolveConflict = async (filePath: string, side: 'ours' | 'theirs') => {
+    if (!repoInfo) return
+    const normalized = normalizeFilePathForGit(filePath)
+    try {
+      setResolvingConflictPath(normalized)
+      setError(null)
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      await invoke('resolve_conflict', {
+        repoPath: repoInfo.path,
+        filePath: normalized,
+        side,
+      })
+      await fetchWorkspaceStatus()
+      onRefresh?.()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '解决冲突失败')
+    } finally {
+      setResolvingConflictPath(null)
     }
   }
 
@@ -1508,6 +1530,32 @@ export function WorkspaceStatus({
                   >
                     <Eye className="h-3 w-3" />
                     查看
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={resolvingConflictPath !== null}
+                    onClick={() => void resolveConflict(file.path, 'ours')}
+                    className="flex-shrink-0"
+                  >
+                    {resolvingConflictPath === normalizeFilePathForGit(file.path) ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      '保留本地'
+                    )}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={resolvingConflictPath !== null}
+                    onClick={() => void resolveConflict(file.path, 'theirs')}
+                    className="flex-shrink-0"
+                  >
+                    {resolvingConflictPath === normalizeFilePathForGit(file.path) ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      '保留远程'
+                    )}
                   </Button>
                 </div>
               ))}

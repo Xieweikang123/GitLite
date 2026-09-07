@@ -81,6 +81,7 @@ interface OperationStatusToastProps {
   title: string
   status: RemoteOpStatus
   summary?: string
+  progress?: string | null
   logs: OperationLogEntry[]
   onDismiss: () => void
   onOpenLogs: () => void
@@ -93,6 +94,7 @@ export function OperationStatusToast({
   title,
   status,
   summary,
+  progress,
   logs,
   onDismiss,
   onOpenLogs,
@@ -179,6 +181,9 @@ export function OperationStatusToast({
               <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground" title={latestLine.message}>
                 {latestLine.message}
               </p>
+            )}
+            {status === 'running' && progress && (
+              <p className="mt-0.5 text-xs text-muted-foreground">{progress}</p>
             )}
             {status === 'running' && !latestLine && (
               <p className="mt-0.5 text-xs text-muted-foreground">正在与远程仓库通信…</p>

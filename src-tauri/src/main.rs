@@ -4486,6 +4486,37 @@ async fn abort_merge(repo_path: String) -> Result<String, String> {
     result
 }
 
+#[tauri::command]
+async fn resolve_conflict(
+    repo_path: String,
+    file_path: String,
+    side: String,
+) -> Result<String, String> {
+    let started = Instant::now();
+    let side_arg = match side.as_str() {
+        "ours" => "--ours",
+        "theirs" => "--theirs",
+        _ => return Err("Invalid conflict side; expected ours or theirs".to_string()),
+    };
+
+    let checkout_output = run_git_in_repo(&repo_path, &["checkout", side_arg, "--", &file_path])
+        .map_err(|e| format!("Failed to execute git checkout: {}", e))?;
+    if !checkout_output.status.success() {
+        return Err(format!("Failed to checkout conflict side: {}", git_output_detail(&checkout_output)));
+    }
+
+    let add_output = run_git_in_repo(&repo_path, &["add", "--", &file_path])
+        .map_err(|e| format!("Failed to execute git add: {}", e))?;
+    let result = if add_output.status.success() {
+        Ok(format!("Resolved and staged {} using {}", file_path, side))
+    } else {
+        Err(format!("Failed to stage conflict resolution: {}", git_output_detail(&add_output)))
+    };
+
+    record_git_write_operation(&repo_path, "resolve-conflict", true, started, &result, None, None);
+    result
+}
+
 /// 将当前分支（或分离 HEAD）重置到指定提交，行为与 `git reset --soft|--mixed|--hard` 一致。
 #[tauri::command]
 async fn reset_to_commit(repo_path: String, commit_id: String, mode: String) -> Result<String, String> {
@@ -6813,8 +6844,11 @@ struct WorkspaceWatcherHandle {
 
 fn should_refresh_workspace_for_path(path: &Path) -> bool {
     let normalized = path.to_string_lossy().replace('\\', "/");
-    !normalized.split("/").any(|segment| segment == ".git")
-        && !normalized.ends_with("/logs/ai-summary.log")
+    let ignored_segments = [".git", "node_modules", "target", "dist", ".next"];
+    let ignored_suffixes = ["/logs/ai-summary.log", "/package-lock.json", "/pnpm-lock.yaml"];
+
+    !normalized.split("/").any(|segment| ignored_segments.contains(&segment))
+        && !ignored_suffixes.iter().any(|suffix| normalized.ends_with(suffix))
 }
 
 #[tauri::command]
@@ -6980,6 +7014,7 @@ fn main() {
             rename_branch,
             merge_branch,
             abort_merge,
+            resolve_conflict,
             reset_to_commit,
             cherry_pick_commit,
             revert_commit,
@@ -7238,6 +7273,75 @@ mod numstat_tests {
             .await
             .unwrap_err();
         assert!(pull_error.contains("origin"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workspace_watch_path_filter_ignores_generated_files() {
+        assert!(should_refresh_workspace_for_path(Path::new("src/main.rs")));
+        assert!(!should_refresh_workspace_for_path(Path::new(".git/index.lock")));
+        assert!(!should_refresh_workspace_for_path(Path::new("node_modules/pkg/index.js")));
+        assert!(!should_refresh_workspace_for_path(Path::new("repo/logs/ai-summary.log")));
+    }
+
+    #[tokio::test]
+    async fn conflict_resolution_stages_selected_side() {
+        let dir = tmp_repo("conflict-resolution");
+        let repo = Repository::open(&dir).unwrap();
+        write_file(&dir, "shared.txt", b"base\n");
+        commit_all(&repo, "initial");
+
+        repo.branch("base", &repo.head().unwrap().peel_to_commit().unwrap(), false)
+            .unwrap();
+
+        repo.branch("other", &repo.head().unwrap().peel_to_commit().unwrap(), false)
+            .unwrap();
+        checkout_branch(dir.to_string_lossy().to_string(), "base".to_string())
+            .await
+            .unwrap();
+        write_file(&dir, "shared.txt", b"ours\n");
+        commit_all(&Repository::open(&dir).unwrap(), "ours");
+        checkout_branch(dir.to_string_lossy().to_string(), "other".to_string())
+            .await
+            .unwrap();
+        write_file(&dir, "shared.txt", b"theirs\n");
+        commit_all(&Repository::open(&dir).unwrap(), "theirs");
+        checkout_branch(dir.to_string_lossy().to_string(), "base".to_string())
+            .await
+            .unwrap();
+        let merge_error = merge_branch(
+            dir.to_string_lossy().to_string(),
+            "other".to_string(),
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(merge_error.contains("conflict"));
+
+        let conflicted = get_workspace_status(dir.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        assert!(conflicted
+            .conflicted_files
+            .iter()
+            .any(|file| file.path == "shared.txt"));
+
+        resolve_conflict(
+            dir.to_string_lossy().to_string(),
+            "shared.txt".to_string(),
+            "ours".to_string(),
+        )
+        .await
+        .unwrap();
+
+        let resolved = get_workspace_status(dir.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        assert!(resolved.conflicted_files.is_empty());
+        assert_eq!(fs::read_to_string(dir.join("shared.txt")).unwrap().trim_end(), "ours");
+        assert!(resolved.staged_files.is_empty());
+        assert!(resolved.unstaged_files.is_empty());
 
         let _ = fs::remove_dir_all(&dir);
     }

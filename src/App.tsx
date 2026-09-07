@@ -98,6 +98,7 @@ function App() {
   const [isOperationRunning, setIsOperationRunning] = useState(false)
   const [opStatus, setOpStatus] = useState<RemoteOpStatus>('hidden')
   const [opSummary, setOpSummary] = useState('')
+  const [opProgress, setOpProgress] = useState<string | null>(null)
   const opRunningRef = React.useRef(false)
   
   // 代理 / AI 配置弹窗状态
@@ -469,6 +470,7 @@ function App() {
     setLogModalTitle(title)
     setLogs([])
     setOpSummary('')
+    setOpProgress('准备操作...')
     setOpStatus('running')
     setIsOperationRunning(true)
     setLogModalOpen(false)
@@ -481,6 +483,7 @@ function App() {
   ) => {
     opRunningRef.current = false
     setIsOperationRunning(false)
+    setOpProgress(null)
     setOpStatus(status)
     setOpSummary(summary)
   }
@@ -497,6 +500,7 @@ function App() {
     if (!beginRemoteOp('拉取远程更改')) return
 
     try {
+      setOpProgress('连接远端并拉取提交')
       void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][App] handlePull start path=${repoInfo.path}` }).catch(()=>{})
       const { logs: logData, outcome } = await pullChangesWithLogs()
       void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][App] handlePull outcome kind=${outcome.kind} msg=${outcome.message} staged=${outcome.staged_count} unstaged=${outcome.unstaged_count}` }).catch(()=>{})
@@ -534,6 +538,7 @@ function App() {
     if (!beginRemoteOp('获取远程更改')) return
 
     try {
+      setOpProgress('连接远端并获取引用')
       const logData: Array<[string, string, string]> = await fetchChangesWithLogs()
       setLogs(toUiLogs(logData))
 
@@ -559,6 +564,7 @@ function App() {
     if (!beginRemoteOp('推送本地更改')) return
 
     try {
+      setOpProgress('连接远端并推送提交')
       await pushChangesWithRealtimeLogs()
       setSelectedCommit(null)
       setCommitFiles([])
@@ -1195,6 +1201,7 @@ function App() {
           title={logModalTitle}
           status={opStatus}
           summary={opSummary}
+          progress={opProgress}
           logs={logs}
           onDismiss={dismissOpToast}
           onOpenLogs={() => setLogModalOpen(true)}
