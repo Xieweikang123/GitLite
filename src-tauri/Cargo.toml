@@ -22,6 +22,7 @@ anyhow = "1.0"
 dirs = "5.0"
 ureq = { version = "2.10", features = ["json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+notify = "6.1.1"
 
 [features]
 # this feature is used for production builds or when `devPath` points to the filesystem

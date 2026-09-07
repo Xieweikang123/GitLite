@@ -462,6 +462,7 @@ export function WorkspaceStatus({
     // 首次加载始终显示 loading（除非已有数据且仅切换自动刷新 — 仍简单处理为短时 loading）
     void runPull(false)
 
+
     if (!autoRefresh) {
       return () => {
         cancelled = true
@@ -480,6 +481,34 @@ export function WorkspaceStatus({
   }, [repoInfo, repoInfo?.head_short_id, autoRefresh, fetchWorkspaceStatus, fetchStashList])
 
   // 暂存文件（等刷新完成再更新列表，行内按钮可显示 loading，避免「添加/暂存」无反馈）
+    useEffect(() => {
+      if (!repoInfo) return
+
+      let cancelled = false
+      let unlisten: (() => void) | null = null
+
+      void (async () => {
+        try {
+          const { listen } = await import("@tauri-apps/api/event")
+          if (cancelled) return
+          unlisten = await listen("workspace-changed", () => {
+            void Promise.all([
+              fetchWorkspaceStatus({ silent: true }),
+              fetchStashList(),
+              Promise.resolve(onRefresh()),
+            ])
+          })
+        } catch (err) {
+          console.warn("Workspace change listener unavailable:", err)
+        }
+      })()
+
+      return () => {
+        cancelled = true
+        unlisten?.()
+      }
+    }, [repoInfo, fetchWorkspaceStatus, fetchStashList, onRefresh])
+
   const stageFile = async (filePath: string) => {
     if (!repoInfo) return
 

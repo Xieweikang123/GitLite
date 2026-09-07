@@ -1384,7 +1384,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                       <React.Fragment key={entry.path}>
                         <tr className={`group hover:bg-muted/30 transition-colors ${isDirty ? 'bg-amber-500/[0.02]' : ''} ${isExpanded ? 'bg-muted/20' : ''} ${isFetchingThis || isPushingThis ? 'bg-primary/[0.06] ring-1 ring-inset ring-primary/20' : ''}`}>
                         
-                        <td className="px-3 py-2.5 align-top">
+                        <td className="px-3 py-2.5 align-middle">
                           <div className="flex flex-col gap-1 min-w-0">
                             <div className="flex items-center gap-2 min-w-0">
                               <button
@@ -1414,7 +1414,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
 
                           </div>
                         </td>
-                        <td className="px-2 py-2.5 align-top">
+                        <td className="px-2 py-2.5 align-middle">
                           <MultiRepoBranchSelect
                             currentBranch={entry.current_branch}
                             headShortId={entry.head_short_id}
@@ -1425,7 +1425,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                             onNeedBranches={() => void refreshOneEntry(entry.path)}
                           />
                         </td>
-                        <td className="px-2 py-2.5 align-top">
+                        <td className="px-2 py-2.5 align-middle">
                           <div className="flex flex-wrap gap-1.5 items-center">
                             {isFetchingThis && (
                               <span className="inline-flex items-center gap-1 text-[11px] text-primary whitespace-nowrap">
@@ -1506,7 +1506,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                             )}
                           </div>
                         </td>
-                        <td className="px-2 py-2 align-top">
+                        <td className="px-2 py-2 align-middle">
                           <div className="flex items-center gap-1.5 flex-nowrap">
                             {entry.conflicted_count > 0 ? (
                               <Badge variant="destructive" className="gap-1 h-5 text-[11px] px-2 whitespace-nowrap shrink-0">
@@ -1528,7 +1528,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
                             )}
                           </div>
                         </td>
-                        <td className="px-3 py-2 align-top text-right">
+                        <td className="px-3 py-2 align-middle text-right">
                           <div className="flex justify-end gap-1 items-center flex-nowrap">
                             {entry.behind > 0 && (
                               <Button

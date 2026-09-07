@@ -1,10 +1,29 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use chrono::{Datelike, DateTime, FixedOffset, Utc};
+mod git;
+mod stats;
+mod util;
+
+use stats::{
+    AuthorCommitStat, BranchActivityLifecycleReport, DiffAggregateStats, FileTerritoryStat,
+    RecentChangedFileStat, TimeBucketStat,
+};
+
+fn commit_parent_ids(commit: &git2::Commit) -> Vec<String> {
+    git::commit_parent_ids(commit)
+}
+
+fn get_commit_history(
+    repo: &Repository,
+    client_calendar_offset_east_minutes: Option<i32>,
+) -> Result<Vec<CommitInfo>> {
+    git::get_commit_history(repo, client_calendar_offset_east_minutes)
+}
+
 use git2::{Oid, Repository, RepositoryState, StashFlags};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::fs;
 use anyhow::Result;
@@ -13,6 +32,9 @@ use std::sync::{Arc, Condvar, Mutex, Once, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tauri::{Manager, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem, CustomMenuItem, GlobalWindowEvent};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use std::sync::mpsc::{Receiver, Sender};
+use std::thread::JoinHandle;
 
 /// AI 总结排查日志路径：调试构建写入仓库 `logs/ai-summary.log`；发布构建写入本机 `%LOCALAPPDATA%/GitLite/logs/`。可用环境变量 `GITLITE_AI_SUMMARY_LOG` 覆盖为绝对路径。
 fn ai_summary_log_file_path() -> PathBuf {
@@ -87,551 +109,8 @@ pub struct CommitInfo {
     pub parent_ids: Vec<String>,
 }
 
-/// 按作者聚合的提交次数（与提交列表 scope / rev 语义一致）
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AuthorCommitStat {
-    pub author: String,
-    pub email: String,
-    pub commit_count: u64,
-}
-
-/// 时间维度的提交分布（按日 / 周 / 月分桶）
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct TimeBucketStat {
-    pub key: String,
-    pub commit_count: u64,
-}
-
-/// 作者在范围内的增删行（与首父 diff 一致，合并提交仅计相对于第一父级）
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct AuthorLineStat {
-    pub author: String,
-    pub email: String,
-    pub insertions: u64,
-    pub deletions: u64,
-    pub commit_count: u64,
-}
-
-/// 路径被提交触及的次数（单次提交内同一路径计 1）
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct PathTouchStat {
-    pub path: String,
-    pub touch_count: u64,
-}
-
-/// 一次遍历同时返回作者增删行与路径热度，避免重复 diff。
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DiffAggregateStats {
-    pub authors: Vec<AuthorLineStat>,
-    pub paths: Vec<PathTouchStat>,
-}
-
-/// 单个文件路径上的「主要维护者」：统计首父 diff 中该路径出现的**提交次数**（同一提交内多次出现计 1）
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct FileTerritoryStat {
-    pub path: String,
-    pub primary_author: String,
-    pub primary_email: String,
-    /// 主要维护者触及该文件的提交次数
-    pub primary_commits: u64,
-    /// 该文件在所有作者下的提交次数之和（即历史上有多少条提交改过此文件）
-    pub total_commits: u64,
-    /// primary_commits / total_commits（0–1）
-    pub primary_share: f64,
-}
-
-/// 文件最近一次被提交修改的信息（按提交时间由新到旧取每个路径的首次出现）。
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct RecentChangedFileStat {
-    pub path: String,
-    pub status: String,
-    pub last_commit_id: String,
-    pub last_commit_short_id: String,
-    pub last_commit_message: String,
-    pub author: String,
-    pub email: String,
-    pub changed_at: String,
-}
-
-/// 分支维度统计（活跃度 + 生命周期），默认以某个基准分支为参照。
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct BranchActivityLifecycleStat {
-    pub branch: String,
-    pub is_current: bool,
-    /// 相对基准分支尚未包含的提交数（基准分支自身为其全部历史提交数）
-    pub unique_commit_count: u64,
-    pub active_author_count: u64,
-    pub recent_7d_commits: u64,
-    pub previous_7d_commits: u64,
-    pub last_active_at: Option<String>,
-    pub first_commit_at: Option<String>,
-    pub branch_created_at: Option<String>,
-    pub alive_days: Option<u64>,
-    pub inactive_days: Option<u64>,
-    pub is_merged_into_base: bool,
-    pub merged_at: Option<String>,
-    pub first_commit_to_merge_days: Option<u64>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct BranchActivityLifecycleReport {
-    pub base_branch: String,
-    pub rows: Vec<BranchActivityLifecycleStat>,
-}
-
-/// Git 空树对象 id（用于根提交的 diff 一侧）
-const GIT_EMPTY_TREE_OID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-
-fn first_parent_tree_for_diff<'a>(
-    repo: &'a Repository,
-    commit: &'a git2::Commit,
-) -> Result<git2::Tree<'a>> {
-    if commit.parent_count() == 0 {
-        let oid = Oid::from_str(GIT_EMPTY_TREE_OID)
-            .map_err(|e| anyhow::anyhow!("empty tree oid: {}", e))?;
-        repo.find_tree(oid)
-            .map_err(|e| anyhow::anyhow!("find empty tree: {}", e))
-    } else {
-        commit
-            .parent(0)
-            .and_then(|p| p.tree())
-            .map_err(|e| anyhow::anyhow!("parent tree: {}", e))
-    }
-}
-
-fn diff_commit_to_first_parent<'a>(
-    repo: &'a Repository,
-    commit: &'a git2::Commit,
-) -> Result<git2::Diff<'a>> {
-    let old_tree = first_parent_tree_for_diff(repo, commit)?;
-    let new_tree = commit.tree().map_err(|e| anyhow::anyhow!("commit tree: {}", e))?;
-    repo.diff_tree_to_tree(Some(&old_tree), Some(&new_tree), None)
-        .map_err(|e| anyhow::anyhow!("diff_tree_to_tree: {}", e))
-}
-
-/// 将「以东经分钟数」转为 `FixedOffset`（与前端 `-Date.getTimezoneOffset()` 一致），并限制在合理范围。
-fn fixed_offset_from_east_minutes(minutes: i32) -> FixedOffset {
-    let clamped = minutes.clamp(-18 * 60, 18 * 60);
-    let secs = clamped.saturating_mul(60);
-    FixedOffset::east_opt(secs).unwrap_or_else(|| FixedOffset::east_opt(0).unwrap())
-}
-
-/// 提交作者时间戳对应的 UTC 时刻，再换算到指定时区墙上时钟。
-/// `client_offset_east_minutes`：`Some` 时使用界面本机时区（与热力图格子 `yyyy-MM-dd` 一致）；`None` 时使用 Git 作者签名中的时区偏移。
-fn commit_calendar_datetime(
-    commit: &git2::Commit,
-    client_offset_east_minutes: Option<i32>,
-) -> DateTime<FixedOffset> {
-    let when = commit.author().when();
-    let utc = DateTime::<Utc>::from_timestamp(when.seconds(), 0)
-        .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap());
-    match client_offset_east_minutes {
-        Some(m) => utc.with_timezone(&fixed_offset_from_east_minutes(m)),
-        None => {
-            let off = FixedOffset::east_opt(when.offset_minutes() * 60)
-                .unwrap_or_else(|| FixedOffset::east_opt(0).unwrap());
-            utc.with_timezone(&off)
-        }
-    }
-}
-
 fn commit_display_time(commit: &git2::Commit, client_offset_east_minutes: Option<i32>) -> String {
-    commit_calendar_datetime(commit, client_offset_east_minutes)
-        .format("%Y-%m-%d %H:%M:%S")
-        .to_string()
-}
-
-fn time_bucket_key(dt: &DateTime<FixedOffset>, granularity: &str) -> String {
-    let d = dt.date_naive();
-    match granularity {
-        "day" => d.format("%Y-%m-%d").to_string(),
-        "month" => d.format("%Y-%m").to_string(),
-        "week" => {
-            let iso = d.iso_week();
-            format!("{}-W{:02}", iso.year(), iso.week())
-        }
-        _ => d.format("%Y-%m").to_string(),
-    }
-}
-
-fn walk_scope_time_buckets(
-    repo: &Repository,
-    scope: CommitLogScope,
-    granularity: &str,
-    client_offset_east_minutes: Option<i32>,
-) -> Result<HashMap<String, u64>> {
-    let mut revwalk = repo
-        .revwalk()
-        .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
-    revwalk
-        .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
-        .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
-    revwalk_push_scope(repo, &mut revwalk, scope)?;
-
-    let g = if matches!(granularity, "day" | "week" | "month") {
-        granularity
-    } else {
-        "month"
-    };
-
-    let mut buckets: HashMap<String, u64> = HashMap::new();
-    for oid_result in revwalk {
-        let oid = oid_result.map_err(|e| anyhow::anyhow!("Failed to walk commits: {}", e))?;
-        let commit = repo
-            .find_commit(oid)
-            .map_err(|e| anyhow::anyhow!("Failed to find commit: {}", e))?;
-        let dt = commit_calendar_datetime(&commit, client_offset_east_minutes);
-        let key = time_bucket_key(&dt, g);
-        *buckets.entry(key).or_insert(0) += 1;
-    }
-    Ok(buckets)
-}
-
-fn sorted_time_bucket_vec(map: HashMap<String, u64>) -> Vec<TimeBucketStat> {
-    let mut v: Vec<TimeBucketStat> = map
-        .into_iter()
-        .map(|(key, commit_count)| TimeBucketStat { key, commit_count })
-        .collect();
-    v.sort_by(|a, b| a.key.cmp(&b.key));
-    v
-}
-
-fn author_line_and_path_stats_for_scope<F>(
-    repo: &Repository,
-    scope: CommitLogScope,
-    path_limit: usize,
-    mut on_progress: F,
-) -> Result<(Vec<AuthorLineStat>, Vec<PathTouchStat>)>
-where
-    F: FnMut(u32, u32),
-{
-    let oids = collect_revwalk_oids_for_scope(repo, scope)?;
-    let total = oids.len() as u32;
-    on_progress(0, total);
-    if total == 0 {
-        return Ok((Vec::new(), Vec::new()));
-    }
-
-    let mut author_lines: HashMap<String, (String, String, u64, u64, u64)> = HashMap::new();
-    let mut path_touches: HashMap<String, u64> = HashMap::new();
-
-    let step = (total / 120).max(1);
-    let mut idx: u32 = 0;
-
-    for oid in oids {
-        idx += 1;
-        if total > 0 && (idx == 1 || idx == total || idx % step == 0) {
-            on_progress(idx, total);
-        }
-
-        let commit = match repo.find_commit(oid) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        let author = commit.author();
-        let name = author.name().unwrap_or("Unknown").to_string();
-        let email = author.email().unwrap_or("").to_string();
-        let akey = if email.trim().is_empty() {
-            format!("n:{}", name)
-        } else {
-            format!("e:{}", email.trim().to_lowercase())
-        };
-
-        let diff = match diff_commit_to_first_parent(repo, &commit) {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
-
-        let stats = match diff.stats() {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let ins = stats.insertions() as u64;
-        let del = stats.deletions() as u64;
-
-        author_lines
-            .entry(akey.clone())
-            .and_modify(|(_n, _e, i, d, c)| {
-                *i += ins;
-                *d += del;
-                *c += 1;
-            })
-            .or_insert((name.clone(), email.clone(), ins, del, 1));
-
-        let _ = diff.foreach(
-            &mut |delta: git2::DiffDelta<'_>, _progress: f32| {
-                let path_opt = delta.new_file().path().map(std::path::Path::to_path_buf).or_else(|| {
-                    delta.old_file().path().map(std::path::Path::to_path_buf)
-                });
-                if let Some(p) = path_opt {
-                    *path_touches
-                        .entry(p.to_string_lossy().into_owned())
-                        .or_insert(0) += 1;
-                }
-                true
-            },
-            None,
-            None,
-            None,
-        );
-    }
-
-    on_progress(total, total);
-
-    let mut authors: Vec<AuthorLineStat> = author_lines
-        .into_values()
-        .map(|(author, email, insertions, deletions, commit_count)| AuthorLineStat {
-            author,
-            email,
-            insertions,
-            deletions,
-            commit_count,
-        })
-        .collect();
-    authors.sort_by(|a, b| {
-        (b.insertions + b.deletions)
-            .cmp(&(a.insertions + a.deletions))
-            .then_with(|| a.author.cmp(&b.author))
-    });
-
-    let mut paths: Vec<(String, u64)> = path_touches.into_iter().collect();
-    paths.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    paths.truncate(path_limit.max(1).min(200));
-    let path_stats: Vec<PathTouchStat> = paths
-        .into_iter()
-        .map(|(path, touch_count)| PathTouchStat { path, touch_count })
-        .collect();
-
-    Ok((authors, path_stats))
-}
-
-fn file_territory_stats_for_scope<F>(
-    repo: &Repository,
-    scope: CommitLogScope,
-    file_limit: usize,
-    mut on_progress: F,
-) -> Result<Vec<FileTerritoryStat>>
-where
-    F: FnMut(u32, u32),
-{
-    let oids = collect_revwalk_oids_for_scope(repo, scope)?;
-    let total = oids.len() as u32;
-    on_progress(0, total);
-    if total == 0 {
-        return Ok(Vec::new());
-    }
-
-    // 文件路径 -> 作者 key -> (显示名, 邮箱, 该作者在该文件上的提交次数)
-    let mut file_authors: HashMap<String, HashMap<String, (String, String, u64)>> = HashMap::new();
-
-    let step = (total / 120).max(1);
-    let mut idx: u32 = 0;
-
-    for oid in oids {
-        idx += 1;
-        if total > 0 && (idx == 1 || idx == total || idx % step == 0) {
-            on_progress(idx, total);
-        }
-
-        let commit = match repo.find_commit(oid) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        let author = commit.author();
-        let name = author.name().unwrap_or("Unknown").to_string();
-        let email = author.email().unwrap_or("").to_string();
-        let akey = if email.trim().is_empty() {
-            format!("n:{}", name)
-        } else {
-            format!("e:{}", email.trim().to_lowercase())
-        };
-
-        let diff = match diff_commit_to_first_parent(repo, &commit) {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
-
-        let _ = diff.foreach(
-            &mut |delta: git2::DiffDelta<'_>, _progress: f32| {
-                let path_opt = delta
-                    .new_file()
-                    .path()
-                    .map(std::path::Path::to_path_buf)
-                    .or_else(|| delta.old_file().path().map(std::path::Path::to_path_buf));
-                if let Some(p) = path_opt {
-                    let path_str = p.to_string_lossy();
-                    let normalized = path_str.replace('\\', "/");
-                    let fmap = file_authors.entry(normalized).or_insert_with(HashMap::new);
-                    match fmap.get_mut(&akey) {
-                        Some((n, e, c)) => {
-                            *c += 1;
-                            if n.is_empty() {
-                                *n = name.clone();
-                            }
-                            if e.is_empty() {
-                                *e = email.clone();
-                            }
-                        }
-                        None => {
-                            fmap.insert(akey.clone(), (name.clone(), email.clone(), 1));
-                        }
-                    }
-                }
-                true
-            },
-            None,
-            None,
-            None,
-        );
-    }
-
-    on_progress(total, total);
-
-    let mut rows: Vec<FileTerritoryStat> = Vec::new();
-    for (path, authors_map) in file_authors {
-        let total_commits: u64 = authors_map.values().map(|(_, _, c)| *c).sum();
-        if total_commits == 0 {
-            continue;
-        }
-
-        let mut best: Option<(u64, String, String)> = None;
-        for (_k, (aname, aemail, cnt)) in &authors_map {
-            match &best {
-                None => best = Some((*cnt, aname.clone(), aemail.clone())),
-                Some((bc, bn, _)) => {
-                    if *cnt > *bc || (*cnt == *bc && aname < bn) {
-                        best = Some((*cnt, aname.clone(), aemail.clone()));
-                    }
-                }
-            }
-        }
-
-        if let Some((primary_commits, primary_author, primary_email)) = best {
-            let primary_share = if total_commits > 0 {
-                (primary_commits as f64) / (total_commits as f64)
-            } else {
-                0.0
-            };
-            rows.push(FileTerritoryStat {
-                path,
-                primary_author,
-                primary_email,
-                primary_commits,
-                total_commits,
-                primary_share,
-            });
-        }
-    }
-
-    rows.sort_by(|a, b| {
-        b.total_commits
-            .cmp(&a.total_commits)
-            .then_with(|| a.path.cmp(&b.path))
-    });
-    rows.truncate(file_limit.max(1).min(200));
-    Ok(rows)
-}
-
-fn delta_status_label(status: git2::Delta) -> &'static str {
-    match status {
-        git2::Delta::Added => "added",
-        git2::Delta::Modified => "modified",
-        git2::Delta::Deleted => "deleted",
-        git2::Delta::Renamed => "renamed",
-        git2::Delta::Copied => "copied",
-        git2::Delta::Typechange => "typechanged",
-        _ => "unknown",
-    }
-}
-
-fn recent_changed_files_for_scope(
-    repo: &Repository,
-    scope: CommitLogScope,
-    limit: usize,
-    client_calendar_offset_east_minutes: Option<i32>,
-) -> Result<Vec<RecentChangedFileStat>> {
-    let mut revwalk = repo
-        .revwalk()
-        .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
-    revwalk
-        .set_sorting(git2::Sort::TIME | git2::Sort::TOPOLOGICAL)
-        .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
-    revwalk_push_scope(repo, &mut revwalk, scope)?;
-
-    let cap = limit.max(1).min(200);
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut rows: Vec<RecentChangedFileStat> = Vec::new();
-
-    for oid_result in revwalk {
-        if rows.len() >= cap {
-            break;
-        }
-        let oid = match oid_result {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let commit = match repo.find_commit(oid) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let diff = match diff_commit_to_first_parent(repo, &commit) {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
-
-        let author_sig = commit.author();
-        let author = author_sig.name().unwrap_or("Unknown").to_string();
-        let email = author_sig.email().unwrap_or("").to_string();
-        let message = commit
-            .message()
-            .unwrap_or("No message")
-            .lines()
-            .next()
-            .unwrap_or("")
-            .to_string();
-        let changed_at = commit_display_time(&commit, client_calendar_offset_east_minutes);
-        let commit_id = oid.to_string();
-        let commit_short_id = format!("{:.7}", oid);
-
-        let _ = diff.foreach(
-            &mut |delta: git2::DiffDelta<'_>, _progress: f32| {
-                if rows.len() >= cap {
-                    return false;
-                }
-                let path_opt = delta
-                    .new_file()
-                    .path()
-                    .map(std::path::Path::to_path_buf)
-                    .or_else(|| delta.old_file().path().map(std::path::Path::to_path_buf));
-                let Some(path_buf) = path_opt else {
-                    return true;
-                };
-                let path = path_buf.to_string_lossy().replace('\\', "/");
-                if path.is_empty() || seen.contains(&path) {
-                    return true;
-                }
-                seen.insert(path.clone());
-                rows.push(RecentChangedFileStat {
-                    path,
-                    status: delta_status_label(delta.status()).to_string(),
-                    last_commit_id: commit_id.clone(),
-                    last_commit_short_id: commit_short_id.clone(),
-                    last_commit_message: message.clone(),
-                    author: author.clone(),
-                    email: email.clone(),
-                    changed_at: changed_at.clone(),
-                });
-                true
-            },
-            None,
-            None,
-            None,
-        );
-    }
-
-    Ok(rows)
+    util::commit_display_time(commit, client_offset_east_minutes)
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -4045,504 +3524,17 @@ fn get_incoming_commits(
     out
 }
 
-fn commit_parent_ids(commit: &git2::Commit) -> Vec<String> {
-    (0..commit.parent_count())
-        .filter_map(|i| commit.parent_id(i).ok())
-        .map(|oid| oid.to_string())
-        .collect()
-}
-
-/// 提交列表范围：当前 HEAD 可达历史，或所有本地分支 / 远程跟踪 / 标签可达（类似 `git log --all` 的引用集合），或指定引用（如某本地分支名，不经检出）。
-#[derive(Clone, PartialEq, Eq)]
-enum CommitLogScope {
-    Head,
-    AllRefs,
-    /// `git rev-parse` 可解析的引用（分支名、origin/main 等）
-    Rev(String),
-}
-
-fn commit_log_scope_from_parts(scope: Option<&str>, rev: Option<&str>) -> CommitLogScope {
-    if let Some(r) = rev.map(str::trim).filter(|t| !t.is_empty()) {
-        return CommitLogScope::Rev(r.to_string());
-    }
-    match scope.map(str::trim).filter(|t| !t.is_empty()) {
-        Some("all") => CommitLogScope::AllRefs,
-        _ => CommitLogScope::Head,
-    }
-}
-
-/// 解析提交历史用的引用。误把远程跟踪写成 `refs/heads/origin/…` 时回退到 `refs/remotes/…`。
-fn revparse_history_object<'repo>(
-    repo: &'repo Repository,
-    ref_spec: &str,
-) -> Result<git2::Object<'repo>> {
-    match repo.revparse_single(ref_spec) {
-        Ok(obj) => Ok(obj),
-        Err(e) => {
-            if let Some(rest) = ref_spec.strip_prefix("refs/heads/") {
-                if let Ok(obj) = repo.revparse_single(&format!("refs/remotes/{rest}")) {
-                    return Ok(obj);
-                }
-            }
-            Err(anyhow::anyhow!("无法解析引用 \"{}\": {}", ref_spec, e))
-        }
-    }
-}
-
-fn revwalk_push_scope(
-    repo: &Repository,
-    revwalk: &mut git2::Revwalk,
-    scope: CommitLogScope,
-) -> Result<()> {
-    match scope {
-        CommitLogScope::Head => {
-            revwalk
-                .push_head()
-                .map_err(|e| anyhow::anyhow!("Failed to push HEAD: {}", e))?;
-        }
-        CommitLogScope::AllRefs => {
-            let mut tips: HashSet<Oid> = HashSet::new();
-            let refs = repo
-                .references()
-                .map_err(|e| anyhow::anyhow!("Failed to iterate refs: {}", e))?;
-            for r in refs {
-                let r = r.map_err(|e| anyhow::anyhow!("Failed to read ref: {}", e))?;
-                let name = r.name().unwrap_or("");
-                if !(name.starts_with("refs/heads/")
-                    || name.starts_with("refs/remotes/")
-                    || name.starts_with("refs/tags/"))
-                {
-                    continue;
-                }
-                if let Ok(obj) = r.peel(git2::ObjectType::Commit) {
-                    tips.insert(obj.id());
-                }
-            }
-            if tips.is_empty() {
-                revwalk
-                    .push_head()
-                    .map_err(|e| anyhow::anyhow!("Failed to push HEAD: {}", e))?;
-            } else {
-                for oid in tips {
-                    revwalk
-                        .push(oid)
-                        .map_err(|e| anyhow::anyhow!("Failed to push ref tip: {}", e))?;
-                }
-            }
-        }
-        CommitLogScope::Rev(ref_spec) => {
-            let obj = revparse_history_object(repo, ref_spec.as_str())?;
-            revwalk
-                .push(obj.id())
-                .map_err(|e| anyhow::anyhow!("Failed to push rev: {}", e))?;
-        }
-    }
-    Ok(())
-}
-
-#[derive(Clone)]
-struct LocalBranchTip {
-    name: String,
-    oid: Oid,
-    is_current: bool,
-}
-
-fn collect_local_branch_tips(repo: &Repository) -> Result<Vec<LocalBranchTip>> {
-    let current_branch = repo
-        .head()
-        .ok()
-        .and_then(|h| h.shorthand().map(|s| s.to_string()))
-        .unwrap_or_default();
-    let mut out: Vec<LocalBranchTip> = Vec::new();
-    let iter = repo
-        .branches(Some(git2::BranchType::Local))
-        .map_err(|e| anyhow::anyhow!("Failed to get local branches: {}", e))?;
-    for branch_result in iter {
-        let (branch, _) = branch_result
-            .map_err(|e| anyhow::anyhow!("Failed to iterate local branch: {}", e))?;
-        let name = branch
-            .name()
-            .map_err(|e| anyhow::anyhow!("Failed to read branch name: {}", e))?
-            .unwrap_or("unknown")
-            .to_string();
-        let Some(oid) = branch.get().target() else {
-            continue;
-        };
-        out.push(LocalBranchTip {
-            is_current: name == current_branch,
-            name,
-            oid,
-        });
-    }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(out)
-}
-
-fn choose_base_branch(branches: &[LocalBranchTip], preferred: Option<&str>) -> Option<String> {
-    let p = preferred.map(str::trim).filter(|s| !s.is_empty());
-    if let Some(name) = p {
-        if branches.iter().any(|b| b.name == name) {
-            return Some(name.to_string());
-        }
-    }
-    for name in ["main", "master", "develop"] {
-        if branches.iter().any(|b| b.name == name) {
-            return Some(name.to_string());
-        }
-    }
-    if let Some(cur) = branches.iter().find(|b| b.is_current) {
-        return Some(cur.name.clone());
-    }
-    branches.first().map(|b| b.name.clone())
-}
-
-fn display_time_from_unix_ts(secs: i64, client_calendar_offset_east_minutes: Option<i32>) -> String {
-    let utc = DateTime::<Utc>::from_timestamp(secs, 0)
-        .unwrap_or_else(|| DateTime::<Utc>::from_timestamp(0, 0).unwrap());
-    match client_calendar_offset_east_minutes {
-        Some(m) => utc
-            .with_timezone(&fixed_offset_from_east_minutes(m))
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string(),
-        None => utc.format("%Y-%m-%d %H:%M:%S").to_string(),
-    }
-}
-
-fn days_since(now_secs: i64, then_secs: i64) -> Option<u64> {
-    if now_secs < then_secs {
-        return Some(0);
-    }
-    Some(((now_secs - then_secs) / 86_400) as u64)
-}
-
-fn days_between(start_secs: i64, end_secs: i64) -> Option<u64> {
-    if end_secs < start_secs {
-        return Some(0);
-    }
-    Some(((end_secs - start_secs) / 86_400) as u64)
-}
-
-/// 在 base 分支第一父链上定位「首次包含 branch_tip 的提交时间」；可用于近似“合并时间”。
-fn first_contains_branch_time_on_base(repo: &Repository, base_tip: Oid, branch_tip: Oid) -> Option<i64> {
-    if !repo.graph_descendant_of(base_tip, branch_tip).ok()? {
-        return None;
-    }
-    let mut cursor = repo.find_commit(base_tip).ok()?;
-    let mut merge_ts: Option<i64> = None;
-    loop {
-        let contains = repo
-            .graph_descendant_of(cursor.id(), branch_tip)
-            .unwrap_or(false);
-        if !contains {
-            break;
-        }
-        merge_ts = Some(cursor.time().seconds());
-        if cursor.parent_count() == 0 {
-            break;
-        }
-        cursor = cursor.parent(0).ok()?;
-    }
-    merge_ts
-}
-
-fn branch_activity_lifecycle_stats(
-    repo: &Repository,
-    preferred_base_branch: Option<&str>,
-    client_calendar_offset_east_minutes: Option<i32>,
-) -> Result<BranchActivityLifecycleReport> {
-    let branches = collect_local_branch_tips(repo)?;
-    if branches.is_empty() {
-        return Ok(BranchActivityLifecycleReport {
-            base_branch: String::new(),
-            rows: Vec::new(),
-        });
-    }
-    let base_branch = choose_base_branch(&branches, preferred_base_branch)
-        .unwrap_or_else(|| branches[0].name.clone());
-    let base_tip = branches
-        .iter()
-        .find(|b| b.name == base_branch)
-        .map(|b| b.oid)
-        .unwrap_or(branches[0].oid);
-
-    let now_secs = Utc::now().timestamp();
-    let recent_cutoff = now_secs - 7 * 86_400;
-    let previous_cutoff = now_secs - 14 * 86_400;
-
-    let mut rows: Vec<BranchActivityLifecycleStat> = Vec::new();
-
-    for branch in branches {
-        let mut revwalk = repo
-            .revwalk()
-            .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
-        revwalk
-            .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
-            .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
-        revwalk
-            .push(branch.oid)
-            .map_err(|e| anyhow::anyhow!("Failed to push branch tip: {}", e))?;
-        if branch.name != base_branch {
-            let _ = revwalk.hide(base_tip);
-        }
-
-        let mut unique_commit_count: u64 = 0;
-        let mut recent_7d_commits: u64 = 0;
-        let mut previous_7d_commits: u64 = 0;
-        let mut first_commit_ts: Option<i64> = None;
-        let mut last_active_ts: Option<i64> = None;
-        let mut authors: HashSet<String> = HashSet::new();
-
-        for oid_result in revwalk {
-            let oid = match oid_result {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            let commit = match repo.find_commit(oid) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-            unique_commit_count += 1;
-            let author = commit.author();
-            let name = author.name().unwrap_or("Unknown").to_string();
-            let email = author.email().unwrap_or("").trim().to_lowercase();
-            let author_key = if email.is_empty() {
-                format!("n:{}", name)
-            } else {
-                format!("e:{}", email)
-            };
-            authors.insert(author_key);
-
-            let ts = commit.time().seconds();
-            first_commit_ts = Some(first_commit_ts.map_or(ts, |v| v.min(ts)));
-            last_active_ts = Some(last_active_ts.map_or(ts, |v| v.max(ts)));
-            if ts >= recent_cutoff {
-                recent_7d_commits += 1;
-            } else if ts >= previous_cutoff {
-                previous_7d_commits += 1;
-            }
-        }
-
-        // 若相对基准无“新增提交”，回退到分支 tip 时间，便于展示生命周期/闲置天数。
-        let tip_ts = repo
-            .find_commit(branch.oid)
-            .ok()
-            .map(|c| c.time().seconds());
-        let branch_created_ts = first_commit_ts.or(tip_ts);
-        let last_active_fallback_ts = last_active_ts.or(tip_ts);
-
-        let is_merged_into_base = branch.name != base_branch
-            && repo
-                .graph_descendant_of(base_tip, branch.oid)
-                .unwrap_or(false);
-        let merged_ts = if is_merged_into_base {
-            first_contains_branch_time_on_base(repo, base_tip, branch.oid)
-        } else {
-            None
-        };
-        let first_commit_to_merge_days = match (first_commit_ts, merged_ts) {
-            (Some(first), Some(merged)) => days_between(first, merged),
-            _ => None,
-        };
-
-        rows.push(BranchActivityLifecycleStat {
-            branch: branch.name,
-            is_current: branch.is_current,
-            unique_commit_count,
-            active_author_count: authors.len() as u64,
-            recent_7d_commits,
-            previous_7d_commits,
-            last_active_at: last_active_fallback_ts
-                .map(|s| display_time_from_unix_ts(s, client_calendar_offset_east_minutes)),
-            first_commit_at: first_commit_ts
-                .map(|s| display_time_from_unix_ts(s, client_calendar_offset_east_minutes)),
-            branch_created_at: branch_created_ts
-                .map(|s| display_time_from_unix_ts(s, client_calendar_offset_east_minutes)),
-            alive_days: branch_created_ts.and_then(|s| days_since(now_secs, s).map(|d| d + 1)),
-            inactive_days: last_active_fallback_ts.and_then(|s| days_since(now_secs, s)),
-            is_merged_into_base,
-            merged_at: merged_ts.map(|s| display_time_from_unix_ts(s, client_calendar_offset_east_minutes)),
-            first_commit_to_merge_days,
-        });
-    }
-
-    rows.sort_by(|a, b| {
-        b.unique_commit_count
-            .cmp(&a.unique_commit_count)
-            .then_with(|| b.recent_7d_commits.cmp(&a.recent_7d_commits))
-            .then_with(|| a.branch.cmp(&b.branch))
-    });
-
-    Ok(BranchActivityLifecycleReport { base_branch, rows })
-}
-
-// 获取分页提交历史
-fn get_commit_history_paginated(
-    repo: &Repository,
-    limit: Option<usize>,
-    offset: Option<usize>,
-    scope: CommitLogScope,
-    client_calendar_offset_east_minutes: Option<i32>,
-) -> Result<Vec<CommitInfo>> {
-    let mut revwalk = repo.revwalk()
-        .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
-    revwalk
-        .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
-        .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
-
-    revwalk_push_scope(repo, &mut revwalk, scope)?;
-    
-    let mut commits = Vec::new();
-    let limit = limit.unwrap_or(50);
-    let offset = offset.unwrap_or(0);
-    let mut count = 0;
-    let mut skipped = 0;
-    
-    for oid_result in revwalk {
-        if skipped < offset {
-            skipped += 1;
-            continue;
-        }
-        
-        if count >= limit {
-            break;
-        }
-        
-        let oid = oid_result
-            .map_err(|e| anyhow::anyhow!("Failed to get OID: {}", e))?;
-        
-        let commit = repo.find_commit(oid)
-            .map_err(|e| anyhow::anyhow!("Failed to find commit: {}", e))?;
-        
-        let author = commit.author();
-        let message = commit.message().unwrap_or("No message").to_string();
-        let date = commit_display_time(&commit, client_calendar_offset_east_minutes);
-        
-        commits.push(CommitInfo {
-            id: oid.to_string(),
-            short_id: format!("{:.7}", oid),
-            message: message.lines().next().unwrap_or("").to_string(),
-            author: author.name().unwrap_or("Unknown").to_string(),
-            email: author.email().unwrap_or("").to_string(),
-            date,
-            parent_ids: commit_parent_ids(&commit),
-        });
-        
-        count += 1;
-    }
-    
-    Ok(commits)
-}
-
-// 获取提交历史（初始加载，只获取前50个；始终为当前 HEAD，与打开仓库时列表一致）
-fn get_commit_history(
-    repo: &Repository,
-    client_calendar_offset_east_minutes: Option<i32>,
-) -> Result<Vec<CommitInfo>> {
-    get_commit_history_paginated(
-        repo,
-        Some(50),
-        Some(0),
-        CommitLogScope::Head,
-        client_calendar_offset_east_minutes,
-    )
-}
-
-/// 按范围统计可达提交总数（与分页遍历使用相同的 revwalk 起点与排序）。
-fn count_commits_scoped(repo: &Repository, scope: CommitLogScope) -> Result<usize> {
-    let mut revwalk = repo
-        .revwalk()
-        .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
-    revwalk
-        .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
-        .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
-    revwalk_push_scope(repo, &mut revwalk, scope)?;
-    let mut n = 0usize;
-    for oid_result in revwalk {
-        oid_result.map_err(|e| anyhow::anyhow!("Failed to walk commits: {}", e))?;
-        n += 1;
-    }
-    Ok(n)
-}
-
-/// 单次 revwalk 收集 scope 内全部提交 OID（排序与 `count_commits_scoped` / 分页一致）。
-/// 用于增删行统计等需知总数再逐条处理的任务，避免「先全量 count 再全量 diff」对历史遍历两遍。
-fn collect_revwalk_oids_for_scope(
-    repo: &Repository,
-    scope: CommitLogScope,
-) -> Result<Vec<Oid>> {
-    let mut revwalk = repo
-        .revwalk()
-        .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
-    revwalk
-        .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
-        .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
-    revwalk_push_scope(repo, &mut revwalk, scope)?;
-    let mut oids = Vec::new();
-    for oid_result in revwalk {
-        oids.push(
-            oid_result.map_err(|e| anyhow::anyhow!("Failed to get OID: {}", e))?,
-        );
-    }
-    Ok(oids)
-}
-
-/// 在指定历史范围内按作者（邮箱优先去重）统计提交次数，结果按次数降序。
-fn author_commit_stats_for_scope(repo: &Repository, scope: CommitLogScope) -> Result<Vec<AuthorCommitStat>> {
-    let mut revwalk = repo
-        .revwalk()
-        .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
-    revwalk
-        .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
-        .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
-    revwalk_push_scope(repo, &mut revwalk, scope)?;
-
-    let mut map: HashMap<String, (String, String, u64)> = HashMap::new();
-
-    for oid_result in revwalk {
-        let oid = oid_result.map_err(|e| anyhow::anyhow!("Failed to walk commits: {}", e))?;
-        let commit = repo
-            .find_commit(oid)
-            .map_err(|e| anyhow::anyhow!("Failed to find commit: {}", e))?;
-        let author = commit.author();
-        let name = author.name().unwrap_or("Unknown").to_string();
-        let email = author.email().unwrap_or("").to_string();
-        let key = if email.trim().is_empty() {
-            format!("n:{}", name)
-        } else {
-            format!("e:{}", email.trim().to_lowercase())
-        };
-        map.entry(key)
-            .and_modify(|(_, _, c)| *c += 1)
-            .or_insert((name, email, 1));
-    }
-
-    let mut stats: Vec<AuthorCommitStat> = map
-        .into_values()
-        .map(|(author, email, commit_count)| AuthorCommitStat {
-            author,
-            email,
-            commit_count,
-        })
-        .collect();
-    stats.sort_by(|a, b| {
-        b.commit_count
-            .cmp(&a.commit_count)
-            .then_with(|| a.author.cmp(&b.author))
-    });
-    Ok(stats)
-}
-
 #[tauri::command]
 async fn get_author_commit_stats(
     repo_path: String,
     scope: Option<String>,
     rev: Option<String>,
 ) -> Result<Vec<AuthorCommitStat>, String> {
-    let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
+    let s = git::commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
     tokio::task::spawn_blocking(move || {
         let repo =
             Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
-        author_commit_stats_for_scope(&repo, s).map_err(|e| format!("统计作者提交失败: {}", e))
+        stats::commands::author_commit_stats(&repo, s).map_err(|e| format!("统计作者提交失败: {}", e))
     })
     .await
     .map_err(|e| format!("任务已中断: {}", e))?
@@ -4556,14 +3548,13 @@ async fn get_commit_activity_stats(
     granularity: String,
     client_calendar_offset_east_minutes: Option<i32>,
 ) -> Result<Vec<TimeBucketStat>, String> {
-    let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
+    let s = git::commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
     let g = granularity.to_lowercase();
     tokio::task::spawn_blocking(move || {
         let repo =
             Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
-        let map = walk_scope_time_buckets(&repo, s, g.as_str(), client_calendar_offset_east_minutes)
-            .map_err(|e| format!("统计时间分布失败: {}", e))?;
-        Ok(sorted_time_bucket_vec(map))
+        stats::commands::commit_activity_stats(&repo, s, g.as_str(), client_calendar_offset_east_minutes)
+            .map_err(|e| format!("统计时间分布失败: {}", e))
     })
     .await
     .map_err(|e| format!("任务已中断: {}", e))?
@@ -4577,7 +3568,7 @@ async fn get_diff_aggregate_stats(
     rev: Option<String>,
     path_limit: Option<u32>,
 ) -> Result<DiffAggregateStats, String> {
-    let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
+    let s = git::commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
     let lim = path_limit.unwrap_or(40).max(1).min(200) as usize;
     let repo_path_buf = repo_path.clone();
     let app_clone = app.clone();
@@ -4596,7 +3587,7 @@ async fn get_diff_aggregate_stats(
         let repo =
             Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
 
-        let (authors, paths) = author_line_and_path_stats_for_scope(&repo, s, lim, |cur, tot| {
+        stats::commands::diff_aggregate_stats(&repo, s, lim, |cur, tot| {
             let _ = app_clone.emit_all(
                 "diff-aggregate-progress",
                 serde_json::json!({
@@ -4607,8 +3598,7 @@ async fn get_diff_aggregate_stats(
                 }),
             );
         })
-        .map_err(|e| format!("统计增删行与路径失败: {}", e))?;
-        Ok(DiffAggregateStats { authors, paths })
+        .map_err(|e| format!("统计增删行与路径失败: {}", e))
     })
     .await
     .map_err(|e| format!("任务已中断: {}", e))?
@@ -4622,7 +3612,7 @@ async fn get_file_territory_stats(
     rev: Option<String>,
     file_limit: Option<u32>,
 ) -> Result<Vec<FileTerritoryStat>, String> {
-    let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
+    let s = git::commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
     let lim = file_limit.unwrap_or(120).max(1).min(200) as usize;
     let repo_path_buf = repo_path.clone();
     let app_clone = app.clone();
@@ -4641,7 +3631,7 @@ async fn get_file_territory_stats(
         let repo =
             Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
 
-        file_territory_stats_for_scope(&repo, s, lim, |cur, tot| {
+        stats::commands::file_territory_stats(&repo, s, lim, |cur, tot| {
             let _ = app_clone.emit_all(
                 "diff-aggregate-progress",
                 serde_json::json!({
@@ -4666,12 +3656,12 @@ async fn get_recent_changed_files_stats(
     limit: Option<u32>,
     client_calendar_offset_east_minutes: Option<i32>,
 ) -> Result<Vec<RecentChangedFileStat>, String> {
-    let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
+    let s = git::commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
     let lim = limit.unwrap_or(80).max(1).min(200) as usize;
     tokio::task::spawn_blocking(move || {
         let repo =
             Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
-        recent_changed_files_for_scope(&repo, s, lim, client_calendar_offset_east_minutes)
+        stats::commands::recent_changed_files(&repo, s, lim, client_calendar_offset_east_minutes)
             .map_err(|e| format!("统计最近更改文件失败: {}", e))
     })
     .await
@@ -4691,7 +3681,7 @@ async fn get_branch_activity_lifecycle_stats(
     tokio::task::spawn_blocking(move || {
         let repo =
             Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
-        branch_activity_lifecycle_stats(
+        stats::commands::branch_activity_lifecycle(
             &repo,
             base.as_deref(),
             client_calendar_offset_east_minutes,
@@ -4708,12 +3698,12 @@ async fn get_commit_count_head(
     scope: Option<String>,
     rev: Option<String>,
 ) -> Result<u64, String> {
-    let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
+    let s = git::commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
     tokio::task::spawn_blocking(move || {
         let repo =
             Repository::open(&repo_path).map_err(|e| format!("Failed to open repository: {}", e))?;
         let n =
-            count_commits_scoped(&repo, s).map_err(|e| format!("Failed to count commits: {}", e))?;
+            git::count_commits_scoped(&repo, s).map_err(|e| format!("Failed to count commits: {}", e))?;
         Ok(n as u64)
     })
     .await
@@ -4730,11 +3720,11 @@ async fn get_commits_paginated(
     rev: Option<String>,
     client_calendar_offset_east_minutes: Option<i32>,
 ) -> Result<Vec<CommitInfo>, String> {
-    let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
+    let s = git::commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
     tokio::task::spawn_blocking(move || {
         let repo = Repository::open(&repo_path)
             .map_err(|e| format!("Failed to open repository: {}", e))?;
-        let commits = get_commit_history_paginated(
+        let commits = git::get_commit_history_paginated(
             &repo,
             limit,
             offset,
@@ -4748,58 +3738,6 @@ async fn get_commits_paginated(
     .map_err(|e| format!("任务已中断: {}", e))?
 }
 
-// 全仓库历史搜索：按关键词匹配 message / author / short_id，返回最多 limit 条
-fn get_commit_history_search(
-    repo: &Repository,
-    query: &str,
-    limit: usize,
-    scope: CommitLogScope,
-    client_calendar_offset_east_minutes: Option<i32>,
-) -> Result<Vec<CommitInfo>> {
-    let query_lower = query.to_lowercase();
-    if query_lower.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut revwalk = repo.revwalk()
-        .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
-    revwalk
-        .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
-        .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
-    revwalk_push_scope(repo, &mut revwalk, scope)?;
-    let mut commits = Vec::new();
-    for oid_result in revwalk {
-        if commits.len() >= limit {
-            break;
-        }
-        let oid = oid_result
-            .map_err(|e| anyhow::anyhow!("Failed to get OID: {}", e))?;
-        let commit = repo.find_commit(oid)
-            .map_err(|e| anyhow::anyhow!("Failed to find commit: {}", e))?;
-        let author = commit.author();
-        let author_name = author.name().unwrap_or("Unknown").to_string();
-        let message = commit.message().unwrap_or("No message").to_string();
-        let first_line = message.lines().next().unwrap_or("").to_string();
-        let short_id = format!("{:.7}", oid);
-        let date = commit_display_time(&commit, client_calendar_offset_east_minutes);
-        let matches = first_line.to_lowercase().contains(&query_lower)
-            || author_name.to_lowercase().contains(&query_lower)
-            || short_id.to_lowercase().contains(&query_lower)
-            || oid.to_string().to_lowercase().contains(&query_lower);
-        if matches {
-            commits.push(CommitInfo {
-                id: oid.to_string(),
-                short_id,
-                message: first_line,
-                author: author_name,
-                email: author.email().unwrap_or("").to_string(),
-                date,
-                parent_ids: commit_parent_ids(&commit),
-            });
-        }
-    }
-    Ok(commits)
-}
-
 #[tauri::command]
 async fn search_commits(
     repo_path: String,
@@ -4810,12 +3748,12 @@ async fn search_commits(
     client_calendar_offset_east_minutes: Option<i32>,
 ) -> Result<Vec<CommitInfo>, String> {
     let limit = limit.unwrap_or(500);
-    let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
+    let s = git::commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
     let query = query.trim().to_string();
     tokio::task::spawn_blocking(move || {
         let repo = Repository::open(&repo_path)
             .map_err(|e| format!("Failed to open repository: {}", e))?;
-        let commits = get_commit_history_search(
+        let commits = git::get_commit_history_search(
             &repo,
             query.as_str(),
             limit,
@@ -4829,61 +3767,6 @@ async fn search_commits(
     .map_err(|e| format!("任务已中断: {}", e))?
 }
 
-/// 与 `get_commit_activity_stats` 使用相同的日历分桶键（本机时区或作者时区），列出某一桶内的提交（新到旧，最多 limit 条）
-fn get_commits_for_activity_bucket_inner(
-    repo: &Repository,
-    scope: CommitLogScope,
-    granularity: &str,
-    bucket_key: &str,
-    limit: usize,
-    client_calendar_offset_east_minutes: Option<i32>,
-) -> Result<Vec<CommitInfo>> {
-    let g = if matches!(granularity, "day" | "week" | "month") {
-        granularity
-    } else {
-        "day"
-    };
-    let mut revwalk = repo
-        .revwalk()
-        .map_err(|e| anyhow::anyhow!("Failed to create revwalk: {}", e))?;
-    revwalk
-        .set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)
-        .map_err(|e| anyhow::anyhow!("Failed to set revwalk sort: {}", e))?;
-    revwalk_push_scope(repo, &mut revwalk, scope)?;
-
-    let mut commits = Vec::new();
-    for oid_result in revwalk {
-        if commits.len() >= limit {
-            break;
-        }
-        let oid = oid_result.map_err(|e| anyhow::anyhow!("Failed to walk commits: {}", e))?;
-        let commit = repo
-            .find_commit(oid)
-            .map_err(|e| anyhow::anyhow!("Failed to find commit: {}", e))?;
-        let dt = commit_calendar_datetime(&commit, client_calendar_offset_east_minutes);
-        let key = time_bucket_key(&dt, g);
-        if key != bucket_key {
-            continue;
-        }
-        let author = commit.author();
-        let author_name = author.name().unwrap_or("Unknown").to_string();
-        let message = commit.message().unwrap_or("No message").to_string();
-        let first_line = message.lines().next().unwrap_or("").to_string();
-        let short_id = format!("{:.7}", oid);
-        let date = commit_display_time(&commit, client_calendar_offset_east_minutes);
-        commits.push(CommitInfo {
-            id: oid.to_string(),
-            short_id,
-            message: first_line,
-            author: author_name,
-            email: author.email().unwrap_or("").to_string(),
-            date,
-            parent_ids: commit_parent_ids(&commit),
-        });
-    }
-    Ok(commits)
-}
-
 #[tauri::command]
 async fn get_commits_for_activity_bucket(
     repo_path: String,
@@ -4894,7 +3777,7 @@ async fn get_commits_for_activity_bucket(
     limit: Option<usize>,
     client_calendar_offset_east_minutes: Option<i32>,
 ) -> Result<Vec<CommitInfo>, String> {
-    let s = commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
+    let s = git::commit_log_scope_from_parts(scope.as_deref(), rev.as_deref());
     let lim = limit.unwrap_or(500).max(1).min(2000);
     let granularity = granularity.to_lowercase();
     let bucket_key = bucket_key.trim().to_string();
@@ -4904,7 +3787,7 @@ async fn get_commits_for_activity_bucket(
     tokio::task::spawn_blocking(move || {
         let repo = Repository::open(&repo_path)
             .map_err(|e| format!("Failed to open repository: {}", e))?;
-        get_commits_for_activity_bucket_inner(
+        git::get_commits_for_activity_bucket_inner(
             &repo,
             s,
             granularity.as_str(),
@@ -7918,6 +6801,65 @@ async fn delete_stash(repo_path: String, stash_id: String) -> Result<String, Str
     Ok(format!("Successfully deleted stash: {}", stash_id))
 }
 
+#[derive(Default)]
+pub struct WorkspaceWatcherState {
+    inner: Mutex<Option<WorkspaceWatcherHandle>>,
+}
+
+struct WorkspaceWatcherHandle {
+    _watcher: RecommendedWatcher,
+    _worker: JoinHandle<()>,
+}
+
+fn should_refresh_workspace_for_path(path: &Path) -> bool {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    !normalized.split("/").any(|segment| segment == ".git")
+        && !normalized.ends_with("/logs/ai-summary.log")
+}
+
+#[tauri::command]
+fn start_workspace_watcher(
+    app: tauri::AppHandle,
+    repo_path: String,
+    state: tauri::State<WorkspaceWatcherState>,
+) -> Result<(), String> {
+    let mut guard = state.inner.lock().map_err(|_| "Workspace watcher lock poisoned".to_string())?;
+    let (event_sender, event_receiver): (Sender<()>, Receiver<()>) = std::sync::mpsc::channel();
+    let emit_target = app.clone();
+    let worker = std::thread::spawn(move || {
+        while event_receiver.recv().is_ok() {
+            while event_receiver.try_recv().is_ok() {}
+            std::thread::sleep(Duration::from_millis(250));
+            let _ = emit_target.emit_all("workspace-changed", ());
+        }
+    });
+
+    let mut watcher = notify::recommended_watcher(
+        move |result: std::result::Result<notify::Event, notify::Error>| {
+        if let Ok(event) = result {
+            if event.paths.iter().any(|path| should_refresh_workspace_for_path(path)) {
+                let _ = event_sender.send(());
+            }
+        }
+        },
+    )
+    .map_err(|e| format!("Failed to create workspace watcher: {}", e))?;
+
+    watcher
+        .watch(Path::new(&repo_path), RecursiveMode::Recursive)
+        .map_err(|e| format!("Failed to watch repository: {}", e))?;
+
+    *guard = Some(WorkspaceWatcherHandle { _watcher: watcher, _worker: worker });
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_workspace_watcher(state: tauri::State<WorkspaceWatcherState>) -> Result<(), String> {
+    let mut guard = state.inner.lock().map_err(|_| "Workspace watcher lock poisoned".to_string())?;
+    *guard = None;
+    Ok(())
+}
+
 // 创建系统托盘菜单
 fn create_system_tray() -> SystemTray {
     let show = CustomMenuItem::new("show".to_string(), "显示窗口");
@@ -7987,6 +6929,7 @@ fn main() {
 
     tauri::Builder::default()
         .manage(scheduler_state)
+        .manage(WorkspaceWatcherState::default())
         .setup(|app| {
             let handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -8001,6 +6944,8 @@ fn main() {
             handle_window_event(&event);
         })
         .invoke_handler(tauri::generate_handler![
+            start_workspace_watcher,
+            stop_workspace_watcher,
             init_repository,
             clone_repository,
             get_remote_management_info,
@@ -8218,6 +7163,81 @@ mod numstat_tests {
             .expect("a.txt missing");
         assert_eq!(unstaged.status, "modified");
         assert_eq!((unstaged.additions, unstaged.deletions), (1, 2));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn workspace_status_stage_commit_checkout_round_trip() {
+        let dir = tmp_repo("commands-round-trip");
+        let repo = Repository::open(&dir).unwrap();
+
+        write_file(&dir, "initial.txt", b"initial\n");
+        commit_all(&repo, "initial");
+
+        let status = get_workspace_status(dir.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        assert!(status.staged_files.is_empty());
+        assert!(status.unstaged_files.is_empty());
+        assert!(status.untracked_files.is_empty());
+
+        write_file(&dir, "feature.txt", b"feature\n");
+        let status = get_workspace_status(dir.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        assert_eq!(status.untracked_files, vec!["feature.txt".to_string()]);
+
+        stage_file(dir.to_string_lossy().to_string(), "feature.txt".to_string())
+            .await
+            .unwrap();
+        let status = get_workspace_status(dir.to_string_lossy().to_string())
+            .await
+            .unwrap();
+        assert_eq!(status.staged_files.len(), 1);
+
+        let commit_output = commit_changes(
+            dir.to_string_lossy().to_string(),
+            "add feature".to_string(),
+        )
+        .await
+        .unwrap();
+        assert!(!commit_output.is_empty());
+        let head_before = repo.head().unwrap().peel_to_commit().unwrap().id();
+
+        repo.branch("other", &repo.head().unwrap().peel_to_commit().unwrap(), false)
+            .unwrap();
+        let checkout_output = checkout_branch(
+            dir.to_string_lossy().to_string(),
+            "other".to_string(),
+        )
+        .await
+        .unwrap();
+        assert!(checkout_output.contains("other"));
+        let repo = Repository::open(&dir).unwrap();
+        let head = repo.head().unwrap();
+        assert_eq!(head.shorthand().unwrap(), "other");
+        assert_eq!(head.peel_to_commit().unwrap().id(), head_before);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn sync_commands_report_missing_origin() {
+        let dir = tmp_repo("sync-errors");
+        let repo = Repository::open(&dir).unwrap();
+        write_file(&dir, "file.txt", b"data\n");
+        commit_all(&repo, "initial");
+
+        let push_error = push_changes(dir.to_string_lossy().to_string())
+            .await
+            .unwrap_err();
+        assert!(push_error.contains("origin"));
+
+        let pull_error = pull_changes(dir.to_string_lossy().to_string())
+            .await
+            .unwrap_err();
+        assert!(pull_error.contains("origin"));
 
         let _ = fs::remove_dir_all(&dir);
     }

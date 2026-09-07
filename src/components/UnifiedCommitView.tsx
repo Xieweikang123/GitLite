@@ -190,6 +190,75 @@ function saveRightPanelCollapsed(collapsed: boolean) {
 }
 
 /** 选中提交后：默认一行摘要不挤占下方；展开可看全文与完整元数据（区域限高可滚动） */
+interface FileItemProps {
+  file: FileChange
+  isSelected: boolean
+  onSelect: (filePath: string) => void
+  getStatusIcon: (status: string) => React.ReactNode
+}
+
+const FileItem = memo(({ file, isSelected, onSelect, getStatusIcon }: FileItemProps) => {
+  const handleClick = useCallback(() => {
+    onSelect(file.path)
+  }, [onSelect, file.path])
+
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return
+      event.preventDefault()
+      onSelect(file.path)
+    },
+    [onSelect, file.path]
+  )
+
+  const { dir, base } = splitRepoPath(file.path)
+
+  return (
+    <div
+      data-file-path={file.path}
+      role="option"
+      aria-selected={isSelected}
+      tabIndex={0}
+      className={cn(
+        'flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-1 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/40',
+        isSelected
+          ? 'bg-accent ring-1 ring-inset ring-primary/25'
+          : 'hover:bg-accent/55'
+      )}
+      onClick={handleClick}
+      onKeyDown={handleKeyDown}
+      title={file.path}
+    >
+      <div className="shrink-0">{getStatusIcon(file.status)}</div>
+      <div className="min-w-0 flex-1 leading-tight">
+        <p className="truncate text-[13px] font-medium text-foreground" title={file.path}>
+          {base}
+          {dir ? (
+            <span className="ml-1.5 font-normal text-[11px] text-muted-foreground">
+              {dir}
+            </span>
+          ) : null}
+        </p>
+      </div>
+      {(file.additions > 0 || file.deletions > 0) && (
+        <span className="shrink-0 tabular-nums text-[11px]">
+          <span className="text-green-700 dark:text-green-400">+{file.additions}</span>
+          <span className="text-muted-foreground"> </span>
+          <span className="text-red-700 dark:text-red-400">-{file.deletions}</span>
+        </span>
+      )}
+    </div>
+  )
+}, (prevProps, nextProps) => (
+  prevProps.file.path === nextProps.file.path &&
+  prevProps.file.status === nextProps.file.status &&
+  prevProps.file.additions === nextProps.file.additions &&
+  prevProps.file.deletions === nextProps.file.deletions &&
+  prevProps.isSelected === nextProps.isSelected &&
+  prevProps.onSelect === nextProps.onSelect &&
+  prevProps.getStatusIcon === nextProps.getStatusIcon
+))
+
 function CommitDetailStrip({ commit }: { commit: CommitInfo }) {
   const [detailOpen, setDetailOpen] = useState(false)
   const [copiedFull, setCopiedFull] = useState(false)
@@ -2223,63 +2292,6 @@ export function UnifiedCommitView({
         return <FileText className="h-3.5 w-3.5 text-gray-600 dark:text-gray-400" />
     }
   }, [])
-
-  // 文件项：文件名为主、目录为辅；状态靠图标颜色区分，避免每行再占一块徽章
-  const FileItem = memo(({ file, isSelected, onSelect, getStatusIcon }: {
-    file: FileChange
-    isSelected: boolean
-    onSelect: (filePath: string) => void
-    getStatusIcon: (status: string) => React.ReactNode
-  }) => {
-    const handleClick = useCallback(() => {
-      onSelect(file.path)
-    }, [onSelect, file.path])
-
-    const { dir, base } = splitRepoPath(file.path)
-
-    return (
-      <div
-        data-file-path={file.path}
-        role="option"
-        aria-selected={isSelected}
-        className={cn(
-          'flex cursor-pointer items-center gap-1.5 rounded px-1.5 py-1 transition-colors',
-          isSelected
-            ? 'bg-accent ring-1 ring-inset ring-primary/25'
-            : 'hover:bg-accent/55'
-        )}
-        onClick={handleClick}
-        title={file.path}
-      >
-        <div className="shrink-0">{getStatusIcon(file.status)}</div>
-        <div className="min-w-0 flex-1 leading-tight">
-          <p className="truncate text-[13px] font-medium text-foreground" title={file.path}>
-            {base}
-            {dir ? (
-              <span className="ml-1.5 font-normal text-[11px] text-muted-foreground">
-                {dir}
-              </span>
-            ) : null}
-          </p>
-        </div>
-        {(file.additions > 0 || file.deletions > 0) && (
-          <span className="shrink-0 tabular-nums text-[11px]">
-            <span className="text-green-700 dark:text-green-400">+{file.additions}</span>
-            <span className="text-muted-foreground"> </span>
-            <span className="text-red-700 dark:text-red-400">-{file.deletions}</span>
-          </span>
-        )}
-      </div>
-    )
-  }, (prevProps, nextProps) => {
-    return (
-      prevProps.file.path === nextProps.file.path &&
-      prevProps.file.status === nextProps.file.status &&
-      prevProps.file.additions === nextProps.file.additions &&
-      prevProps.file.deletions === nextProps.file.deletions &&
-      prevProps.isSelected === nextProps.isSelected
-    )
-  })
 
   const commitContextMenuItemCount = [
     onCreateBranch,

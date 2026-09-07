@@ -128,6 +128,38 @@ export function useGit() {
     return info
   }, [repoInfo, loadRecentRepos])
 
+  const refreshRepoInfoRef = useRef<(() => Promise<RepoInfo>) | null>(null)
+  useEffect(() => {
+    refreshRepoInfoRef.current = refreshRepoInfo
+  }, [refreshRepoInfo])
+
+  useEffect(() => {
+    const repoPath = repoInfo?.path
+    if (!repoPath) return
+
+    let cancelled = false
+    let unlisten: (() => void) | null = null
+
+    void (async () => {
+      try {
+        await invoke("start_workspace_watcher", { repoPath })
+        const { listen } = await import("@tauri-apps/api/event")
+        if (cancelled) return
+        unlisten = await listen("workspace-changed", () => {
+          void refreshRepoInfoRef.current?.().catch(() => {})
+        })
+      } catch (err) {
+        console.warn("Workspace file watcher unavailable:", err)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+      unlisten?.()
+      void invoke("stop_workspace_watcher").catch(() => {})
+    }
+  }, [repoInfo?.path])
+
   const removeRecentRepo = useCallback(
     async (path: string) => {
       try {
