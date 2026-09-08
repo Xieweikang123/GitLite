@@ -111,6 +111,34 @@ function tipMatchesGraphRail(tip: BranchOnCommit, rail: string): boolean {
   return false
 }
 
+/**
+ * 同一提交上的本地与远程跟踪引用（dev-hn ↔ origin/dev-hn）指向同一提交时
+ * 只显示一个徽章，避免「dev-hn dev-hn」重复；本地优先，title 合并说明。
+ */
+function dedupeBranchTips(tips: BranchOnCommit[]): BranchOnCommit[] {
+  const out: BranchOnCommit[] = []
+  const seenShort = new Set<string>()
+  for (const t of tips) {
+    const short = t.name.replace(/^refs\/(heads|remotes)\//, '').replace(/^origin\//, '')
+    if (seenShort.has(short)) continue
+    seenShort.add(short)
+    out.push(t)
+  }
+  return out
+}
+
+/** 后端日期 "YYYY-MM-DD HH:mm:ss" → 行内短格式：今年 MM-DD HH:mm，跨年 YYYY-MM-DD */
+function formatCommitRowDate(dateStr: string): string {
+  const [datePart, timePart] = dateStr.split(' ')
+  const [y, m, d] = (datePart || '').split('-').map(Number)
+  if (!y || !m || !d) return dateStr
+  if (y === new Date().getFullYear()) {
+    const hm = (timePart || '').split(':').slice(0, 2).join(':')
+    return `${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}${hm ? ` ${hm}` : ''}`
+  }
+  return datePart
+}
+
 function loadPanes(): { list: number; file: number } {
   if (typeof window === 'undefined') return { ...DEFAULT_PANES }
   try {
@@ -2859,29 +2887,30 @@ export function UnifiedCommitView({
                 let shownBranches: typeof branchTips
                 let moreBranchCount = 0
                 let moreBranchTitle: string | undefined = allBranchesTitle
-                if (railFilterEnabled && graphRailBranchFilter && branchTips?.length) {
-                  const hit = branchTips.filter((b) =>
+                const dedupedTips = branchTips ? dedupeBranchTips(branchTips) : undefined
+                if (railFilterEnabled && graphRailBranchFilter && dedupedTips?.length) {
+                  const hit = dedupedTips.filter((b) =>
                     tipMatchesGraphRail(b, graphRailBranchFilter)
                   )
                   if (hit.length > 0) {
                     shownBranches = hit
-                    const hiddenOthers = branchTips.length - hit.length
+                    const hiddenOthers = dedupedTips.length - hit.length
                     if (hiddenOthers > 0) {
                       moreBranchCount = hiddenOthers
                       moreBranchTitle = `另有 ${hiddenOthers} 个其它引用指向此提交\n\n${allBranchesTitle ?? ''}`
                     }
                   } else {
-                    shownBranches = branchTips.slice(0, maxBranchBadges)
+                    shownBranches = dedupedTips.slice(0, maxBranchBadges)
                     moreBranchCount =
-                      branchTips.length > maxBranchBadges
-                        ? branchTips.length - maxBranchBadges
+                      dedupedTips.length > maxBranchBadges
+                        ? dedupedTips.length - maxBranchBadges
                         : 0
                   }
                 } else {
-                  shownBranches = branchTips?.slice(0, maxBranchBadges)
+                  shownBranches = dedupedTips?.slice(0, maxBranchBadges)
                   moreBranchCount =
-                    branchTips && branchTips.length > maxBranchBadges
-                      ? branchTips.length - maxBranchBadges
+                    dedupedTips && dedupedTips.length > maxBranchBadges
+                      ? dedupedTips.length - maxBranchBadges
                       : 0
                 }
                 const isRowSelected = selectedCommit?.id === commit.id
@@ -2972,7 +3001,7 @@ export function UnifiedCommitView({
                     </div>
 
                     <div className="min-w-0 space-y-0.5 pr-9">
-                      <div className="flex w-fit max-w-full min-w-0 items-center gap-1.5">
+                      <div className="flex w-full min-w-0 items-center gap-1.5">
                           {atHead && (
                             <span
                               className="inline-flex h-4 shrink-0 items-center rounded border border-emerald-500/35 bg-emerald-500/15 px-1 text-[9px] font-semibold uppercase leading-none tracking-wide text-emerald-800 dark:text-emerald-300/95"
@@ -2988,6 +3017,9 @@ export function UnifiedCommitView({
                               !!graphRailBranchFilter &&
                               tipMatchesGraphRail(b, graphRailBranchFilter)
                             const label = formatBranchLabelShort(b.name)
+                            const remoteTip = !b.is_remote
+                              ? branchTips?.find((o) => o.is_remote && tipMatchesGraphRail(o, label))
+                              : undefined
                             return (
                             <Badge
                               key={`${b.name}-${b.is_remote ? 'r' : 'l'}`}
@@ -3006,9 +3038,11 @@ export function UnifiedCommitView({
                                   'shadow-[inset_0_0_0_1px] shadow-emerald-700/45 dark:shadow-emerald-400/40'
                               )}
                               title={
-                                railFilterEnabled
-                                  ? `${b.is_remote ? '远程跟踪' : '本地分支'}：${b.name}（当前指向此提交）\n点击：仅看此分支（与左侧竖线相同；再点此徽章或竖线可清除）`
-                                  : `${b.is_remote ? '远程跟踪' : '本地分支'}：${b.name}（当前指向此提交）`
+                                remoteTip
+                                  ? `${b.is_remote ? '远程跟踪' : '本地分支'}：${b.name}（当前指向此提交）\n远程跟踪：${remoteTip.name} 同步指向此提交`
+                                  : railFilterEnabled
+                                    ? `${b.is_remote ? '远程跟踪' : '本地分支'}：${b.name}（当前指向此提交）\n点击：仅看此分支（与左侧竖线相同；再点此徽章或竖线可清除）`
+                                    : `${b.is_remote ? '远程跟踪' : '本地分支'}：${b.name}（当前指向此提交）`
                               }
                               onClick={
                                 railFilterEnabled
@@ -3056,7 +3090,7 @@ export function UnifiedCommitView({
                             </span>
                           )}
                         <p
-                          className="min-w-0 truncate text-[13px] font-medium leading-tight tracking-tight text-foreground/95"
+                          className="min-w-0 flex-1 truncate text-[13px] font-medium leading-tight tracking-tight text-foreground/95"
                           title={commit.message}
                         >
                           {commit.message}
@@ -3069,10 +3103,12 @@ export function UnifiedCommitView({
                         </span>
                       </div>
 
-                      <div className="flex min-w-0 items-center gap-1.5 text-[11px] leading-tight text-muted-foreground">
+                      <div className="flex min-w-0 items-center justify-end gap-1.5 text-[11px] leading-tight text-muted-foreground">
                         <span className="min-w-0 truncate">{commit.author}</span>
                         <span className="shrink-0 opacity-40">·</span>
-                        <span className="shrink-0 tabular-nums opacity-90">{commit.date}</span>
+                        <span className="shrink-0 tabular-nums opacity-90" title={commit.date}>
+                          {formatCommitRowDate(commit.date)}
+                        </span>
                       </div>
                     </div>
                   </div>
