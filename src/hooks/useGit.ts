@@ -35,6 +35,20 @@ const AUTO_OPEN_ENABLED_KEY = 'gitlite:autoOpenEnabled'
 export function useGit() {
   /** 打开仓库 / 轻量刷新的世代号：仅最后一次结果写入 state，避免异步返回乱序 */
   const repoLoadGenRef = useRef(0)
+  /** 嵌套 loading 计数：世代过期时也必须 endLoading，否则分支下拉会一直 disabled */
+  const loadingDepthRef = useRef(0)
+
+  const beginLoading = useCallback(() => {
+    loadingDepthRef.current += 1
+    setLoading(true)
+  }, [])
+
+  const endLoading = useCallback(() => {
+    loadingDepthRef.current = Math.max(0, loadingDepthRef.current - 1)
+    if (loadingDepthRef.current === 0) {
+      setLoading(false)
+    }
+  }, [])
 
   const [repoInfo, setRepoInfo] = useState<RepoInfo | null>(null)
   const [loading, setLoading] = useState(false)
@@ -69,7 +83,7 @@ export function useGit() {
   const openRepository = useCallback(async () => {
     const myGen = ++repoLoadGenRef.current
     try {
-      setLoading(true)
+      beginLoading()
       setError(null)
       
       const selectedPath = await open({
@@ -89,16 +103,14 @@ export function useGit() {
         setError(formatTauriInvokeError(err, '打开仓库失败'))
       }
     } finally {
-      if (myGen === repoLoadGenRef.current) {
-        setLoading(false)
-      }
+      endLoading()
     }
-  }, [loadRecentRepos])
+  }, [beginLoading, endLoading, loadRecentRepos])
 
   const openRepositoryByPath = useCallback(async (path: string) => {
     const myGen = ++repoLoadGenRef.current
     try {
-      setLoading(true)
+      beginLoading()
       setError(null)
       
       const info: RepoInfo = await invokeOpenRepository(path)
@@ -111,11 +123,9 @@ export function useGit() {
         setError(formatTauriInvokeError(err, '打开仓库失败'))
       }
     } finally {
-      if (myGen === repoLoadGenRef.current) {
-        setLoading(false)
-      }
+      endLoading()
     }
-  }, [loadRecentRepos])
+  }, [beginLoading, endLoading, loadRecentRepos])
 
   /** 重新拉取仓库元数据（ahead/behind 等），不触发全局 loading，供提交面板等轻量刷新 */
   const refreshRepoInfo = useCallback(async (): Promise<RepoInfo> => {
@@ -211,25 +221,50 @@ export function useGit() {
 
   const checkoutBranch = useCallback(async (branchName: string) => {
     if (!repoInfo) return
-    
+
+    const target = branchName.trim()
     try {
-      setLoading(true)
+      beginLoading()
       setError(null)
-      
+
       await invoke('checkout_branch', {
         repoPath: repoInfo.path,
-        branchName,
+        branchName: target,
       })
-      
-      // 重新获取仓库信息
-      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
-      setRepoInfo(updatedRepoInfo)
+
+      // 先乐观更新当前分支，立刻解除下拉禁用，避免被随后的整仓刷新拖住
+      setRepoInfo((prev) => {
+        if (!prev) return prev
+        return {
+          ...prev,
+          current_branch: target,
+          branches: prev.branches.map((b) => ({
+            ...b,
+            is_current: !b.is_remote && b.name === target,
+          })),
+        }
+      })
     } catch (err) {
-      setError(formatTauriInvokeError(err, '切换分支失败'))
+      const message = formatTauriInvokeError(err, '切换分支失败')
+      setError(message)
+      throw new Error(message)
     } finally {
-      setLoading(false)
+      endLoading()
     }
-  }, [repoInfo])
+
+    // 整仓信息（提交列表等）后台刷新，不阻塞分支下拉可点
+    const path = repoInfo.path
+    const myGen = ++repoLoadGenRef.current
+    void invokeOpenRepository(path)
+      .then((updatedRepoInfo) => {
+        if (myGen !== repoLoadGenRef.current) return
+        setRepoInfo(updatedRepoInfo)
+        void loadRecentRepos()
+      })
+      .catch((err) => {
+        console.error('切换后刷新仓库信息失败:', err)
+      })
+  }, [beginLoading, endLoading, loadRecentRepos, repoInfo])
 
   const initRepository = useCallback(
     async (path: string, initialBranch?: string): Promise<boolean> => {

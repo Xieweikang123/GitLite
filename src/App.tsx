@@ -129,10 +129,26 @@ function App() {
   )
 
   const handleBranchSelect = async (branchName: string) => {
-    await checkoutBranch(branchName)
-    setSelectedCommit(null) // 清除选中的提交
-    setCommitFiles([])
-    setSelectedFile(null)
+    if (!beginRemoteOp(`切换分支：${branchName}`)) return
+    try {
+      setOpProgress('正在检出工作区…')
+      await checkoutBranch(branchName)
+      setSelectedCommit(null)
+      setCommitFiles([])
+      setSelectedFile(null)
+      // 切换本身已完成；整仓刷新在 checkoutBranch 内后台继续，不堵状态条
+      finishRemoteOp('success', `已切换到 ${branchName}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '切换分支失败'
+      setLogs([
+        {
+          timestamp: new Date().toLocaleTimeString(),
+          level: 'ERROR',
+          message,
+        },
+      ])
+      finishRemoteOp('error', message)
+    }
   }
 
   const handleCreateBranch = async (

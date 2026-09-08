@@ -1325,19 +1325,8 @@ fn dedupe_strings_preserve_order(v: &mut Vec<String>) {
 // 获取最近打开的仓库列表
 #[tauri::command]
 async fn get_recent_repos() -> Result<Vec<RecentRepo>, String> {
-    let config_dir = get_config_dir();
-    let config_file = config_dir.join("recent_repos.json");
-    
-    if !config_file.exists() {
-        return Ok(Vec::new());
-    }
-    
-    let content = fs::read_to_string(&config_file)
-        .map_err(|e| format!("Failed to read config file: {}", e))?;
-    
-    let repos: Vec<RecentRepo> = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse config file: {}", e))?;
-    Ok(repos)
+    let config_file = get_config_dir().join("recent_repos.json");
+    load_recent_repos_list(&config_file)
 }
 
 // 保存最近打开的仓库
@@ -1346,26 +1335,10 @@ async fn save_recent_repo(path: String) -> Result<(), String> {
     let config_dir = get_config_dir();
     fs::create_dir_all(&config_dir)
         .map_err(|e| format!("Failed to create config directory: {}", e))?;
-    
+
     let config_file = config_dir.join("recent_repos.json");
-    
-    // 读取现有列表
-    let mut repos = if config_file.exists() {
-        let content = fs::read_to_string(&config_file)
-            .map_err(|e| format!("Failed to read config file: {}", e))?;
-        match serde_json::from_str::<Vec<RecentRepo>>(&content) {
-            Ok(repos) => repos,
-            Err(e) => {
-                // JSON 损坏：备份原文件，避免数据丢失
-                log_message("WARN", &format!("recent_repos.json 解析失败，已备份: {}", e));
-                let _ = fs::copy(&config_file, config_file.with_extension("json.bak"));
-                Vec::new()
-            }
-        }
-    } else {
-        Vec::new()
-    };
-    
+    let mut repos = load_recent_repos_list(&config_file)?;
+
     // 获取仓库名称（若已有记录则保留用户重命名后的显示名）
     let repo_name = Path::new(&path)
         .file_name()
@@ -1376,12 +1349,12 @@ async fn save_recent_repo(path: String) -> Result<(), String> {
         .iter()
         .find(|r| r.path == path)
         .map(|r| r.name.clone());
-    
+
     // 移除已存在的相同路径
     repos.retain(|repo| repo.path != path);
-    
+
     let name = preserved_name.unwrap_or(repo_name);
-    
+
     // 添加新的仓库到列表开头
     let recent_repo = RecentRepo {
         path: path.clone(),
@@ -1394,27 +1367,18 @@ async fn save_recent_repo(path: String) -> Result<(), String> {
     if repos.len() > MAX_RECENT_REPOS {
         repos.truncate(MAX_RECENT_REPOS);
     }
-    
-    // 保存到文件
+
     let content = serde_json::to_string_pretty(&repos)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    fs::write(&config_file, content)
-        .map_err(|e| format!("Failed to write config file: {}", e))?;
-    
+    write_file_atomic(&config_file, content)?;
+
     Ok(())
 }
 
 #[tauri::command]
 async fn remove_recent_repo(path: String) -> Result<(), String> {
-    let config_dir = get_config_dir();
-    let config_file = config_dir.join("recent_repos.json");
-    if !config_file.exists() {
-        return Ok(());
-    }
-    let content = fs::read_to_string(&config_file)
-        .map_err(|e| format!("Failed to read config file: {}", e))?;
-    let mut repos: Vec<RecentRepo> = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse config file: {}", e))?;
+    let config_file = get_config_dir().join("recent_repos.json");
+    let mut repos = load_recent_repos_list(&config_file)?;
     let before = repos.len();
     repos.retain(|r| r.path != path);
     if repos.len() == before {
@@ -1422,8 +1386,7 @@ async fn remove_recent_repo(path: String) -> Result<(), String> {
     }
     let content = serde_json::to_string_pretty(&repos)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    fs::write(&config_file, content)
-        .map_err(|e| format!("Failed to write config file: {}", e))?;
+    write_file_atomic(&config_file, content)?;
     Ok(())
 }
 
@@ -1433,23 +1396,18 @@ async fn rename_recent_repo(path: String, new_name: String) -> Result<(), String
     if new_name.is_empty() {
         return Err("名称不能为空".to_string());
     }
-    let config_dir = get_config_dir();
-    let config_file = config_dir.join("recent_repos.json");
-    if !config_file.exists() {
+    let config_file = get_config_dir().join("recent_repos.json");
+    let mut repos = load_recent_repos_list(&config_file)?;
+    if repos.is_empty() {
         return Err("最近列表为空".to_string());
     }
-    let content = fs::read_to_string(&config_file)
-        .map_err(|e| format!("Failed to read config file: {}", e))?;
-    let mut repos: Vec<RecentRepo> = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse config file: {}", e))?;
     let Some(repo) = repos.iter_mut().find(|r| r.path == path) else {
         return Err("未找到该仓库".to_string());
     };
     repo.name = new_name;
     let content = serde_json::to_string_pretty(&repos)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    fs::write(&config_file, content)
-        .map_err(|e| format!("Failed to write config file: {}", e))?;
+    write_file_atomic(&config_file, content)?;
     Ok(())
 }
 
@@ -1468,15 +1426,11 @@ async fn update_recent_repo_entry(
         return Err("名称不能为空".to_string());
     }
 
-    let config_dir = get_config_dir();
-    let config_file = config_dir.join("recent_repos.json");
-    if !config_file.exists() {
+    let config_file = get_config_dir().join("recent_repos.json");
+    let mut repos = load_recent_repos_list(&config_file)?;
+    if repos.is_empty() {
         return Err("最近列表为空".to_string());
     }
-    let content = fs::read_to_string(&config_file)
-        .map_err(|e| format!("Failed to read config file: {}", e))?;
-    let mut repos: Vec<RecentRepo> = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse config file: {}", e))?;
 
     if !repos.iter().any(|r| r.path == old_path) {
         return Err("未找到该仓库".to_string());
@@ -1494,8 +1448,7 @@ async fn update_recent_repo_entry(
 
     let content = serde_json::to_string_pretty(&repos)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    fs::write(&config_file, content)
-        .map_err(|e| format!("Failed to write config file: {}", e))?;
+    write_file_atomic(&config_file, content)?;
     Ok(())
 }
 
@@ -1546,7 +1499,7 @@ async fn save_recent_scanned_dir(path: String, recursive: Option<bool>) -> Resul
     const MAX: usize = 20;
     if records.len() > MAX { records.truncate(MAX); }
     let content = serde_json::to_string_pretty(&records).map_err(|e| format!("序列化扫描历史失败: {}", e))?;
-    fs::write(&config_file, content).map_err(|e| format!("写入扫描历史失败: {}", e))?;
+    write_file_atomic(&config_file, content)?;
     Ok(())
 }
 
@@ -1561,7 +1514,7 @@ async fn remove_recent_scanned_dir(path: String) -> Result<(), String> {
     records.retain(|r| r.path != path);
     if records.len() == before { return Ok(()); }
     let content = serde_json::to_string_pretty(&records).map_err(|e| format!("序列化扫描历史失败: {}", e))?;
-    fs::write(&config_file, content).map_err(|e| format!("写入扫描历史失败: {}", e))?;
+    write_file_atomic(&config_file, content)?;
     Ok(())
 }
 
@@ -1649,6 +1602,86 @@ fn get_config_dir() -> std::path::PathBuf {
     let mut config_dir = dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
     config_dir.push("GitLite");
     config_dir
+}
+
+/// 先写临时文件，再通过「旧文件改名备份 → 临时文件就位 → 删备份」替换。
+/// 避免 Windows 上「先删目标再 rename」失败时把配置文件弄丢。
+fn write_file_atomic(path: &Path, content: impl AsRef<[u8]>) -> Result<(), String> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+    let file_name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file");
+    let tmp = parent.join(format!(".{}.{}.tmp", file_name, std::process::id()));
+    let bak = parent.join(format!(".{}.replace.bak", file_name));
+    fs::write(&tmp, content.as_ref()).map_err(|e| format!("写入临时文件失败: {}", e))?;
+
+    let _ = fs::remove_file(&bak);
+    if path.exists() {
+        fs::rename(path, &bak).map_err(|e| {
+            let _ = fs::remove_file(&tmp);
+            format!("备份原文件失败: {}", e)
+        })?;
+    }
+
+    if let Err(e) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        if bak.exists() {
+            let _ = fs::rename(&bak, path);
+        }
+        return Err(format!("原子替换失败: {}", e));
+    }
+
+    let _ = fs::remove_file(&bak);
+    Ok(())
+}
+
+/// 读取最近仓库列表；主文件缺失或损坏时尝试从 `.bak` 恢复。
+fn load_recent_repos_list(config_file: &Path) -> Result<Vec<RecentRepo>, String> {
+    let bak_file = config_file.with_extension("json.bak");
+    let try_parse = |path: &Path| -> Option<Vec<RecentRepo>> {
+        let content = fs::read_to_string(path).ok()?;
+        serde_json::from_str::<Vec<RecentRepo>>(&content).ok()
+    };
+
+    if config_file.exists() {
+        match fs::read_to_string(config_file) {
+            Ok(content) => match serde_json::from_str::<Vec<RecentRepo>>(&content) {
+                Ok(repos) => return Ok(repos),
+                Err(e) => {
+                    log_message(
+                        "WARN",
+                        &format!("recent_repos.json 解析失败，尝试备份恢复: {}", e),
+                    );
+                    let _ = fs::copy(config_file, &bak_file);
+                }
+            },
+            Err(e) => {
+                log_message(
+                    "WARN",
+                    &format!("recent_repos.json 读取失败，尝试备份恢复: {}", e),
+                );
+            }
+        }
+    }
+
+    if let Some(repos) = try_parse(&bak_file) {
+        log_message(
+            "INFO",
+            &format!(
+                "recent_repos: 已从备份恢复 {} 条记录",
+                repos.len()
+            ),
+        );
+        // 写回主文件，避免下次仍缺失
+        if let Ok(content) = serde_json::to_string_pretty(&repos) {
+            let _ = write_file_atomic(config_file, content);
+        }
+        return Ok(repos);
+    }
+
+    Ok(Vec::new())
 }
 
 /// 构造 `git` 子进程。Windows 上必须隐藏控制台，否则会每次执行都闪出类似 cmd 的黑窗口。
@@ -1867,7 +1900,7 @@ fn append_operation_log(record: OperationLogRecord) {
     }
     match serde_json::to_string_pretty(&logs) {
         Ok(content) => {
-            if let Err(e) = fs::write(operation_log_file(), content) {
+            if let Err(e) = write_file_atomic(&operation_log_file(), content) {
                 log_message("WARN", &format!("operation log: write failed: {}", e));
             }
         }
@@ -2059,6 +2092,16 @@ fn reliability_suggestion(operation_type: &str, err: Option<&str>) -> Option<Str
     }
     if e.contains("overwrite") || e.contains("覆盖") || e.contains("未提交") {
         return Some("本地改动已生成静默贮藏备份；建议查看影响文件后再重试。".to_string());
+    }
+    if e.contains("占用")
+        || e.contains("could not rmdir")
+        || e.contains("being used by another process")
+        || e.contains("另一个程序正在使用")
+    {
+        return Some(
+            "请关闭占用该仓库目录的 Java/IDE/终端进程后重试；若工作区异常可先丢弃未暂存改动或从静默贮藏恢复。"
+                .to_string(),
+        );
     }
     match operation_type {
         "checkout" | "switch" => Some("若切换失败，请确认目标分支存在，并检查本地改动是否与目标分支冲突。".to_string()),
@@ -4221,43 +4264,172 @@ async fn get_commits_branch_labels(
 }
 
 // 切换分支
+
+/// 将检出相关错误转为用户可读文案（含 Windows 目录占用）。
+fn format_checkout_failure(msg: &str) -> String {
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("overwrite")
+        || lower.contains("would be overwritten")
+        || lower.contains("please commit")
+        || lower.contains("please stash")
+        || lower.contains("conflict")
+        || msg.contains("未提交")
+    {
+        return "有未提交的修改，无法切换分支。请先提交或暂存后再切换。".to_string();
+    }
+    if lower.contains("could not rmdir")
+        || lower.contains("being used by another process")
+        || lower.contains("access is denied")
+        || lower.contains("unable to unlink")
+        || msg.contains("另一个程序正在使用")
+        || msg.contains("进程无法访问")
+    {
+        return format!(
+            "检出失败：有文件或目录被其他程序占用（{}）。请先关闭占用该仓库的 Java/IDE/终端进程后重试。",
+            msg.trim()
+        );
+    }
+    if lower.contains("already exists") && lower.contains("worktree") {
+        return format!("检出失败: {}", msg.trim());
+    }
+    format!("检出失败: {}", msg.trim())
+}
+
+/// 使用系统 Git 切换本地分支（与 SourceTree 一致；Windows 上对占用目录比 libgit2 更宽容）。
+fn git_switch_local_branch(repo_path: &str, branch_name: &str) -> Result<(), String> {
+    let name = branch_name.trim();
+    if name.is_empty() {
+        return Err("分支名不能为空".to_string());
+    }
+
+    let switch_out = run_git_in_repo(repo_path, &["switch", "--", name]).map_err(|e| {
+        format!("无法执行 git switch（请确认已安装 Git 并加入 PATH）: {}", e)
+    })?;
+    if switch_out.status.success() {
+        return Ok(());
+    }
+
+    let detail = git_output_detail(&switch_out);
+    let detail_l = detail.to_ascii_lowercase();
+    // Git < 2.23 可能没有 switch，回退到 checkout
+    if detail_l.contains("is not a git command")
+        || detail_l.contains("unknown command")
+        || detail_l.contains("'switch' is not")
+    {
+        let checkout_out = run_git_in_repo(repo_path, &["checkout", "--", name])
+            .map_err(|e| format!("无法执行 git checkout: {}", e))?;
+        if checkout_out.status.success() {
+            return Ok(());
+        }
+        return Err(format_checkout_failure(&git_output_detail(&checkout_out)));
+    }
+
+    Err(format_checkout_failure(&detail))
+}
+
+/// 将 index + worktree 恢复为当前 HEAD（优先系统 git，失败再 fallback libgit2）。
+fn rollback_workdir_to_head(repo_path: &str, repo: &Repository) -> Result<(), String> {
+    match run_git_in_repo(
+        repo_path,
+        &[
+            "restore",
+            "--source=HEAD",
+            "--staged",
+            "--worktree",
+            "--",
+            ".",
+        ],
+    ) {
+        Ok(out) if out.status.success() => return Ok(()),
+        Ok(out) => log_message(
+            "WARN",
+            &format!(
+                "rollback: git restore failed, fallback libgit2 | {}",
+                git_output_detail(&out)
+            ),
+        ),
+        Err(e) => log_message(
+            "WARN",
+            &format!("rollback: git restore unavailable, fallback libgit2 | {}", e),
+        ),
+    }
+
+    let head_obj = repo
+        .head()
+        .map_err(|e| format!("无法读取 HEAD: {}", e.message()))?
+        .peel(git2::ObjectType::Any)
+        .map_err(|e| format!("无法解析 HEAD: {}", e.message()))?;
+    let mut opts = git2::build::CheckoutBuilder::new();
+    opts.force();
+    repo.checkout_tree(&head_obj, Some(&mut opts))
+        .map_err(|e| e.message().to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn checkout_branch(repo_path: String, branch_name: String) -> Result<String, String> {
     let started = Instant::now();
+    let requested = branch_name.clone();
+    log_message(
+        "INFO",
+        &format!(
+            "checkout_branch: attempt | path={} target={}",
+            repo_path, requested
+        ),
+    );
+
     let backup = create_silent_stash_backup(&repo_path, "checkout")?;
-    let repo = Repository::open(&repo_path)
-        .map_err(|e| format!("无法打开仓库: {}", e))?;
+    let repo = Repository::open(&repo_path).map_err(|e| format!("无法打开仓库: {}", e))?;
 
     let branch_name = checkout_target_branch_name(&repo, &branch_name)?;
 
-    let (object, reference) = repo.revparse_ext(&branch_name)
-        .map_err(|e| {
-            let msg = e.message();
-            if msg.contains("reference") || msg.contains("unknown") {
-                format!("未找到分支「{}」，请检查分支名或先拉取远程分支", branch_name)
-            } else {
-                format!("无法解析分支: {}", msg)
-            }
-        })?;
-
-    let result = if let Err(e) = repo.checkout_tree(&object, None) {
+    // 友好校验目标分支是否存在（实际切换走系统 git）
+    repo.revparse_ext(&branch_name).map_err(|e| {
         let msg = e.message();
-        Err(if msg.contains("overwrite") || msg.contains("would be overwritten") || msg.contains("conflict") {
-            "有未提交的修改，无法切换分支。请先提交或暂存后再切换。".to_string()
+        if msg.contains("reference") || msg.contains("unknown") {
+            format!(
+                "未找到分支「{}」，请检查分支名或先拉取远程分支",
+                branch_name
+            )
         } else {
-            format!("检出失败: {}", msg)
-        })
-    } else {
-        if let Some(reference) = reference {
-            let ref_name = reference.name().unwrap_or("refs/heads/unknown");
-            repo.set_head(ref_name)
-                .map_err(|e| format!("设置当前分支失败: {}", e.message()))
-        } else {
-            repo.set_head_detached(object.id())
-                .map_err(|e| format!("设置分离头指针失败: {}", e.message()))
+            format!("无法解析分支: {}", msg)
         }
-        .map(|_| format!("已切换到 {}", branch_name))
+    })?;
+
+    let result = match git_switch_local_branch(&repo_path, &branch_name) {
+        Ok(()) => Ok(format!("已切换到 {}", branch_name)),
+        Err(e) => {
+            if let Err(re) = rollback_workdir_to_head(&repo_path, &repo) {
+                log_message(
+                    "ERROR",
+                    &format!(
+                        "checkout_branch: rollback after failure | path={} err={}",
+                        repo_path, re
+                    ),
+                );
+                Err(format!("{}（且回滚工作区失败: {}）", e, re))
+            } else {
+                Err(e)
+            }
+        }
     };
+
+    match &result {
+        Ok(_) => log_message(
+            "INFO",
+            &format!(
+                "checkout_branch: success | path={} target={}",
+                repo_path, branch_name
+            ),
+        ),
+        Err(e) => log_message(
+            "ERROR",
+            &format!(
+                "checkout_branch: failed | path={} requested={} target={} err={}",
+                repo_path, requested, branch_name, e
+            ),
+        ),
+    }
 
     record_git_write_operation(
         &repo_path,
@@ -4305,26 +4477,11 @@ async fn create_branch(
         .map_err(|e| format!("创建分支失败: {}", e.message()))?;
 
     if checkout {
-        let (object, reference) = repo.revparse_ext(name).map_err(|e| {
-            format!("检出新分支失败: {}", e.message())
-        })?;
-
-        if let Err(e) = repo.checkout_tree(&object, None) {
-            let msg = e.message();
-            return Err(if msg.contains("overwrite") || msg.contains("would be overwritten") || msg.contains("conflict") {
-                "有未提交的修改，无法切换分支。请先提交或暂存后再切换。".to_string()
-            } else {
-                format!("检出失败: {}", msg)
-            });
-        }
-
-        if let Some(reference) = reference {
-            let ref_name = reference.name().unwrap_or("refs/heads/unknown");
-            repo.set_head(ref_name)
-                .map_err(|e| format!("设置当前分支失败: {}", e.message()))?;
-        } else {
-            repo.set_head_detached(object.id())
-                .map_err(|e| format!("设置分离头指针失败: {}", e.message()))?;
+        if let Err(e) = git_switch_local_branch(&repo_path, name) {
+            if let Err(re) = rollback_workdir_to_head(&repo_path, &repo) {
+                return Err(format!("{}（且回滚工作区失败: {}）", e, re));
+            }
+            return Err(e);
         }
         Ok(format!("已创建并切换到 {}", name))
     } else {
@@ -7342,6 +7499,65 @@ mod numstat_tests {
         assert_eq!(fs::read_to_string(dir.join("shared.txt")).unwrap().trim_end(), "ours");
         assert!(resolved.staged_files.is_empty());
         assert!(resolved.unstaged_files.is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn format_checkout_failure_maps_file_lock_and_dirty() {
+        let lock = format_checkout_failure(
+            "could not rmdir 'D:/repo/vpp-gateway/': 另一个程序正在使用此文件，进程无法访问。",
+        );
+        assert!(lock.contains("占用"));
+        assert!(lock.contains("Java"));
+
+        let dirty = format_checkout_failure("1 conflict prevents checkout");
+        assert!(dirty.contains("未提交"));
+
+        let other = format_checkout_failure("weird failure");
+        assert!(other.starts_with("检出失败:"));
+    }
+
+    #[test]
+    fn write_file_atomic_replaces_without_trailing_garbage() {
+        let dir = std::env::temp_dir().join(format!("gitlite-atomic-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("recent_repos.json");
+        write_file_atomic(&path, "[]").unwrap();
+        write_file_atomic(&path, "[{\"path\":\"a\"}]").unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "[{\"path\":\"a\"}]");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rollback_workdir_to_head_restores_deleted_tracked_files() {
+        let dir = tmp_repo("checkout-rollback");
+        let repo = Repository::open(&dir).unwrap();
+        write_file(&dir, "keep.txt", b"keep\n");
+        write_file(&dir, "docs/a.md", b"a\n");
+        commit_all(&repo, "initial");
+
+        // 模拟半截 checkout：工作区文件被删，但 HEAD 未变
+        fs::remove_file(dir.join("docs/a.md")).unwrap();
+        assert!(!dir.join("docs/a.md").exists());
+
+        rollback_workdir_to_head(dir.to_string_lossy().as_ref(), &repo).unwrap();
+        let restored = fs::read(dir.join("docs/a.md")).unwrap();
+        assert!(
+            restored == b"a\n" || restored == b"a\r\n",
+            "unexpected restored bytes: {:?}",
+            restored
+        );
+
+        let status = collect_workspace_status(&repo).unwrap();
+        assert!(
+            status.unstaged_files.is_empty(),
+            "unstaged={:?}",
+            status.unstaged_files
+        );
+        assert!(status.staged_files.is_empty());
 
         let _ = fs::remove_dir_all(&dir);
     }
