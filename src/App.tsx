@@ -1023,6 +1023,8 @@ function App() {
           onPendingCommitClick={(commit) =>
             handleStatsCommitJump({ commit, scope: 'head', rev: null })
           }
+          onPushChanges={handlePushChangesRealtime}
+          onPullChanges={handlePullChanges}
           loading={loading}
           repoInfo={repoInfo}
           onManualRefresh={handleToolbarManualRefresh}

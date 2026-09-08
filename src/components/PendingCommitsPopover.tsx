@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactElement } from 'react'
+import { useEffect, useState, type ReactElement, type ReactNode } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { Loader2 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
@@ -13,6 +13,8 @@ interface PendingCommitsPopoverProps {
   children: ReactElement
   onCommitClick?: (commit: CommitInfo) => void
   align?: 'start' | 'center' | 'end'
+  /** 弹层头部的操作按钮（如「立即推送」），由调用方注入 */
+  headerAction?: ReactNode
 }
 
 export function PendingCommitsPopover({
@@ -22,6 +24,7 @@ export function PendingCommitsPopover({
   children,
   onCommitClick,
   align = 'start',
+  headerAction,
 }: PendingCommitsPopoverProps) {
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -72,10 +75,13 @@ export function PendingCommitsPopover({
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
         <div className="border-b px-3 py-2">
-          <p className="text-xs font-medium text-foreground">
-            {title}
-            <span className="ml-1.5 tabular-nums text-muted-foreground">({count})</span>
-          </p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-medium text-foreground">
+              {title}
+              <span className="ml-1.5 tabular-nums text-muted-foreground">({count})</span>
+            </p>
+            {headerAction}
+          </div>
           {onCommitClick && (
             <p className="mt-0.5 text-[10px] text-muted-foreground">点击一条可查看改动</p>
           )}

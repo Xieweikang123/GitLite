@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/tauri'
-import { GitBranch, Network, RotateCcw, Timer } from 'lucide-react'
+import { Download, GitBranch, Network, RotateCcw, Timer, Upload } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { BranchSwitcher } from './BranchSwitcher'
 import { Button } from './ui/button'
@@ -16,6 +16,8 @@ interface TopToolbarProps {
   onOpenRemoteRepository?: () => void
   onOpenRemoteManage?: () => void
   onPendingCommitClick?: (commit: CommitInfo) => void
+  onPushChanges?: () => void | Promise<void>
+  onPullChanges?: () => void | Promise<void>
   loading: boolean
   repoInfo: RepoInfo | null
   children?: ReactNode
@@ -38,6 +40,8 @@ export function TopToolbar({
   onOpenRemoteRepository,
   onOpenRemoteManage,
   onPendingCommitClick,
+  onPushChanges,
+  onPullChanges,
   loading,
   repoInfo,
   children,
@@ -76,6 +80,9 @@ export function TopToolbar({
               onRenameBranch={onRenameBranch}
               onMergeBranch={onMergeBranch}
               onFetchRemoteOverview={onFetchRemoteOverview}
+              onPushChanges={onPushChanges}
+              onPullChanges={onPullChanges}
+              hasOriginRemote={repoInfo.has_origin_remote ?? true}
             />
             {onOpenRemoteRepository && repoInfo.remote_url && (
               <Button
@@ -112,11 +119,26 @@ export function TopToolbar({
                     repoPath={repoInfo.path}
                     count={repoInfo.ahead}
                     onCommitClick={onPendingCommitClick}
+                    headerAction={
+                      onPushChanges ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="h-6 shrink-0 px-2 text-[11px]"
+                          disabled={loading}
+                          title="把这些提交推送到远程仓库"
+                          onClick={() => void onPushChanges()}
+                        >
+                          <Upload className="mr-1 h-3 w-3" />
+                          立即推送
+                        </Button>
+                      ) : undefined
+                    }
                   >
                     <button
                       type="button"
                       className="rounded bg-blue-600/10 px-1.5 py-0.5 text-[11px] text-blue-700 hover:bg-blue-600/20 dark:text-blue-300"
-                      title="点击查看待推送的提交"
+                      title={`本地领先 ${repoInfo.ahead} 个提交，点击查看待推送的提交`}
                     >
                       {repoInfo.ahead} 待推送
                     </button>
@@ -128,11 +150,25 @@ export function TopToolbar({
                     repoPath={repoInfo.path}
                     count={repoInfo.behind}
                     onCommitClick={onPendingCommitClick}
+                    headerAction={
+                      onPullChanges ? (
+                        <Button
+                          type="button"
+                          className="h-6 shrink-0 px-2 text-[11px]"
+                          disabled={loading}
+                          title="把这些提交拉取合并到本地"
+                          onClick={() => void onPullChanges()}
+                        >
+                          <Download className="mr-1 h-3 w-3" />
+                          立即拉取
+                        </Button>
+                      ) : undefined
+                    }
                   >
                     <button
                       type="button"
                       className="rounded bg-amber-600/10 px-1.5 py-0.5 text-[11px] text-amber-700 hover:bg-amber-600/20 dark:text-amber-300"
-                      title="点击查看待拉取的提交"
+                      title={`本地落后 ${repoInfo.behind} 个提交，点击查看待拉取的提交`}
                     >
                       {repoInfo.behind} 待拉取
                     </button>

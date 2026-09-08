@@ -1243,7 +1243,11 @@ export function WorkspaceStatus({
                       setCommitMenuOpen(false)
                       void handlePushFromCard()
                     }}
-                    disabled={loading || !repoInfo || repoInfo.ahead <= 0}
+                    disabled={
+                      loading ||
+                      !repoInfo ||
+                      (repoInfo.ahead <= 0 && (repoInfo.has_upstream ?? true))
+                    }
                     aria-busy={syncLoading && !!syncStep && syncStep.includes('推送')}
                   >
                     <span>
@@ -1254,7 +1258,9 @@ export function WorkspaceStatus({
                         </span>
                       )}
                       <span className="block font-normal text-xs text-muted-foreground">
-                        把本地提交推送到远程仓库
+                        {repoInfo && !(repoInfo.has_upstream ?? true)
+                          ? '首次推送：在远程创建同名分支并关联上游'
+                          : '把本地提交推送到远程仓库'}
                       </span>
                     </span>
                   </button>

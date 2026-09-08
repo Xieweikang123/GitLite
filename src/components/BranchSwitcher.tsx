@@ -7,6 +7,8 @@ import {
   type KeyboardEvent,
 } from 'react'
 import {
+  ArrowDown,
+  ArrowUp,
   Check,
   ChevronDown,
   Download,
@@ -380,6 +382,12 @@ export interface BranchSwitcherProps {
   onRenameBranch?: (oldName: string, newName: string) => Promise<boolean>
   onMergeBranch?: (sourceBranch: string, ffOnly: boolean) => Promise<boolean>
   onFetchRemoteOverview?: () => Promise<BranchSyncOverview[]>
+  onPushChanges?: () => void | Promise<void>
+  onPullChanges?: () => void | Promise<void>
+  /** 仓库是否已配置 origin 远程；缺省按 true 处理 */
+  hasOriginRemote?: boolean
+  /** 是否有 origin 远程之外需要提示的推送能力限制（预留） */
+  pushDisabled?: boolean
 }
 
 export function BranchSwitcher({
@@ -394,6 +402,10 @@ export function BranchSwitcher({
   onRenameBranch,
   onMergeBranch,
   onFetchRemoteOverview,
+  onPushChanges,
+  onPullChanges,
+  hasOriginRemote = true,
+  pushDisabled = false,
 }: BranchSwitcherProps) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
@@ -738,15 +750,40 @@ export function BranchSwitcher({
                             {!branch.is_remote &&
                               (() => {
                                 const sync = syncOverview.get(branch.name)
-                                if (!sync || sync.behind <= 0) return null
+                                if (!sync || (sync.ahead <= 0 && sync.behind <= 0)) return null
+                                const syncTitle = [
+                                  sync.ahead > 0
+                                    ? `领先上游 ${sync.ahead} 个提交（可推送）`
+                                    : null,
+                                  sync.behind > 0
+                                    ? `落后上游 ${sync.behind} 个提交（可拉取或快进更新）`
+                                    : null,
+                                ]
+                                  .filter(Boolean)
+                                  .join('；')
                                 return (
-                                  <Badge
-                                    variant="outline"
-                                    className="border-amber-500/40 px-1.5 py-0 text-[10px] text-amber-700 dark:text-amber-300"
-                                    title={`${branch.name} 落后其上游 ${sync.behind} 个提交，可切过去拉取或快进更新`}
-                                  >
-                                    可拉取 {sync.behind}
-                                  </Badge>
+                                  <>
+                                    {sync.ahead > 0 && (
+                                      <Badge
+                                        variant="outline"
+                                        className="border-blue-500/40 px-1.5 py-0 text-[10px] text-blue-700 dark:text-blue-300"
+                                        title={`${branch.name} ${syncTitle}`}
+                                      >
+                                        <ArrowUp className="mr-0.5 inline h-2.5 w-2.5" />
+                                        {sync.ahead}
+                                      </Badge>
+                                    )}
+                                    {sync.behind > 0 && (
+                                      <Badge
+                                        variant="outline"
+                                        className="border-amber-500/40 px-1.5 py-0 text-[10px] text-amber-700 dark:text-amber-300"
+                                        title={`${branch.name} ${syncTitle}`}
+                                      >
+                                        <ArrowDown className="mr-0.5 inline h-2.5 w-2.5" />
+                                        {sync.behind}
+                                      </Badge>
+                                    )}
+                                  </>
                                 )
                               })()}
                           </span>
@@ -803,6 +840,67 @@ export function BranchSwitcher({
                               <Plus className="mr-1 h-3 w-3" />
                               从此新建
                             </Button>
+                          )}
+                          {!branch.is_remote && isCurrent && onPushChanges && !pushDisabled && (
+                            (() => {
+                              const sync = syncOverview.get(branch.name)
+                              const hasUpstream = sync?.has_upstream ?? true
+                              const ahead = sync?.ahead ?? 0
+                              const label = hasUpstream ? '推送' : '推送并关联上游'
+                              const title = hasUpstream
+                                ? ahead > 0
+                                  ? `把 ${branch.name} 领先的 ${ahead} 个提交推送到远程`
+                                  : `推送 ${branch.name} 到远程（当前没有待推送的提交）`
+                                : `首次推送会在远程创建 ${branch.name} 并关联为上游`
+                              return (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 px-2 text-[11px]"
+                                  disabled={loading || !hasOriginRemote}
+                                  title={hasOriginRemote ? title : '未配置 origin 远程，无法推送'}
+                                  onClick={() => {
+                                    setMenuKey(null)
+                                    closePanel()
+                                    void onPushChanges()
+                                  }}
+                                >
+                                  <ArrowUp className="mr-1 h-3 w-3" />
+                                  {label}
+                                  {ahead > 0 ? ` (${ahead})` : ''}
+                                </Button>
+                              )
+                            })()
+                          )}
+                          {!branch.is_remote && isCurrent && onPullChanges && (
+                            (() => {
+                              const sync = syncOverview.get(branch.name)
+                              const behind = sync?.behind ?? 0
+                              return (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 px-2 text-[11px]"
+                                  disabled={loading}
+                                  title={
+                                    behind > 0
+                                      ? `把上游领先的 ${behind} 个提交拉取合并到 ${branch.name}`
+                                      : `拉取 ${branch.name} 的上游更新`
+                                  }
+                                  onClick={() => {
+                                    setMenuKey(null)
+                                    closePanel()
+                                    void onPullChanges()
+                                  }}
+                                >
+                                  <ArrowDown className="mr-1 h-3 w-3" />
+                                  拉取
+                                  {behind > 0 ? ` (${behind})` : ''}
+                                </Button>
+                              )
+                            })()
                           )}
                           {!branch.is_remote && onRenameBranch && (
                             <Button
