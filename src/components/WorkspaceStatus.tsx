@@ -883,6 +883,7 @@ export function WorkspaceStatus({
             return invoke('open_repository', {
               path: repoInfo.path,
               clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
+              recordRecent: false,
             }) as Promise<RepoInfo>
           })()
 
@@ -906,6 +907,7 @@ export function WorkspaceStatus({
               return invoke('open_repository', {
                 path: repoInfo.path,
                 clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
+                recordRecent: false,
               }) as Promise<RepoInfo>
             })()
       }

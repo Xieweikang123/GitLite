@@ -23,10 +23,24 @@ import {
 import { formatTauriInvokeError } from '../utils/tauriError'
 import { getClientCalendarOffsetEastMinutes } from '../utils/clientCalendarOffset'
 
-async function invokeOpenRepository(path: string): Promise<RepoInfo> {
+/**
+ * 调用后端 `open_repository` 读取仓库信息。
+ *
+ * `recordRecent` 决定是否把该仓库写入「最近打开」列表：
+ * - 用户主动打开仓库（对话框 / 最近列表 / 克隆 / 初始化）→ `true`
+ * - 纯刷新（切分支后刷新、自动刷新、文件监听、各面板取数）→ `false`
+ *
+ * 早期实现不区分这两者，导致每次刷新都把当前仓库重排到列表首位，
+ * 并发时还会互相覆盖造成记录丢失。
+ */
+async function invokeOpenRepository(
+  path: string,
+  recordRecent: boolean
+): Promise<RepoInfo> {
   return invoke<RepoInfo>('open_repository', {
     path,
     clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
+    recordRecent,
   })
 }
 
@@ -92,7 +106,7 @@ export function useGit() {
       })
       
       if (selectedPath && typeof selectedPath === 'string') {
-        const info: RepoInfo = await invokeOpenRepository(selectedPath)
+        const info: RepoInfo = await invokeOpenRepository(selectedPath, true)
         if (myGen !== repoLoadGenRef.current) return
         setRepoInfo(info)
         // 刷新最近仓库列表
@@ -113,7 +127,7 @@ export function useGit() {
       beginLoading()
       setError(null)
       
-      const info: RepoInfo = await invokeOpenRepository(path)
+      const info: RepoInfo = await invokeOpenRepository(path, true)
       if (myGen !== repoLoadGenRef.current) return
       setRepoInfo(info)
       // 刷新最近仓库列表
@@ -131,12 +145,12 @@ export function useGit() {
   const refreshRepoInfo = useCallback(async (): Promise<RepoInfo> => {
     if (!repoInfo) throw new Error('未打开仓库')
     const myGen = ++repoLoadGenRef.current
-    const info: RepoInfo = await invokeOpenRepository(repoInfo.path)
+    // 纯刷新：不重排最近列表
+    const info: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
     if (myGen !== repoLoadGenRef.current) return info
     setRepoInfo(info)
-    await loadRecentRepos()
     return info
-  }, [repoInfo, loadRecentRepos])
+  }, [repoInfo])
 
   const refreshRepoInfoRef = useRef<(() => Promise<RepoInfo>) | null>(null)
   useEffect(() => {
@@ -252,19 +266,20 @@ export function useGit() {
       endLoading()
     }
 
-    // 整仓信息（提交列表等）后台刷新，不阻塞分支下拉可点
+    // 整仓信息（提交列表等）后台刷新，不阻塞分支下拉可点。
+    // 这是纯刷新，不是「打开仓库」，因此不写最近列表（传 false）——
+    // 否则每次切分支都会把当前仓库重排到列表首位，并发时还会丢记录。
     const path = repoInfo.path
     const myGen = ++repoLoadGenRef.current
-    void invokeOpenRepository(path)
+    void invokeOpenRepository(path, false)
       .then((updatedRepoInfo) => {
         if (myGen !== repoLoadGenRef.current) return
         setRepoInfo(updatedRepoInfo)
-        void loadRecentRepos()
       })
       .catch((err) => {
         console.error('切换后刷新仓库信息失败:', err)
       })
-  }, [beginLoading, endLoading, loadRecentRepos, repoInfo])
+  }, [beginLoading, endLoading, repoInfo])
 
   const initRepository = useCallback(
     async (path: string, initialBranch?: string): Promise<boolean> => {
@@ -280,7 +295,7 @@ export function useGit() {
           path: repoPath,
           initialBranch: initialBranch?.trim() || undefined,
         })
-        const info: RepoInfo = await invokeOpenRepository(repoPath)
+        const info: RepoInfo = await invokeOpenRepository(repoPath, true)
         setRepoInfo(info)
         await loadRecentRepos()
         return true
@@ -318,7 +333,7 @@ export function useGit() {
           destinationPath: path,
           branch: branch?.trim() || undefined,
         })
-        const info: RepoInfo = await invokeOpenRepository(path)
+        const info: RepoInfo = await invokeOpenRepository(path, true)
         setRepoInfo(info)
         await loadRecentRepos()
         return true
@@ -351,7 +366,7 @@ export function useGit() {
           startPoint: startPoint?.trim() || undefined,
         })
 
-        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -376,7 +391,7 @@ export function useGit() {
           branchName: branchName.trim(),
           force,
         })
-        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -401,7 +416,7 @@ export function useGit() {
           oldName: oldName.trim(),
           newName: newName.trim(),
         })
-        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -426,7 +441,7 @@ export function useGit() {
           sourceBranch: sourceBranch.trim(),
           ffOnly,
         })
-        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
         setRepoInfo(updatedRepoInfo)
         return message || '合并完成'
       } catch (err) {
@@ -445,7 +460,7 @@ export function useGit() {
         repoPath: repoInfo.path,
         branch: branchName.trim(),
       })
-      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
       setRepoInfo(updatedRepoInfo)
       return msg
     },
@@ -470,7 +485,7 @@ export function useGit() {
           name: name.trim(),
           url: url.trim(),
         })
-        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -494,7 +509,7 @@ export function useGit() {
           name: name.trim(),
           url: url.trim(),
         })
-        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -517,7 +532,7 @@ export function useGit() {
           repoPath: repoInfo.path,
           name: name.trim(),
         })
-        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -541,7 +556,7 @@ export function useGit() {
           branchName: branchName.trim(),
           upstreamRef: upstreamRef?.trim() || null,
         })
-        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -568,7 +583,7 @@ export function useGit() {
           mode,
         })
 
-        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
         setRepoInfo(updatedRepoInfo)
       } catch (err) {
         setError(formatTauriInvokeError(err, '重置失败'))
@@ -591,7 +606,7 @@ export function useGit() {
           repoPath: repoInfo.path,
           commitId,
         })
-        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -615,7 +630,7 @@ export function useGit() {
           repoPath: repoInfo.path,
           commitId,
         })
-        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -639,7 +654,7 @@ export function useGit() {
           repoPath: repoInfo.path,
           ontoCommitId,
         })
-        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+        const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
         setRepoInfo(updatedRepoInfo)
         return true
       } catch (err) {
@@ -930,7 +945,7 @@ export function useGit() {
         repoPath: repoInfo.path,
       })
       
-      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
       setRepoInfo(updatedRepoInfo)
       return outcome
     } catch (err) {
@@ -947,7 +962,7 @@ export function useGit() {
       })
       
       // 获取成功后，重新获取仓库信息以更新状态
-      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
       setRepoInfo(updatedRepoInfo)
       
       return result
@@ -965,7 +980,7 @@ export function useGit() {
       })
 
       // 获取成功后，重新获取仓库信息以更新状态
-      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
       setRepoInfo(updatedRepoInfo)
 
       return logs
@@ -982,7 +997,7 @@ export function useGit() {
       const overview = await invoke<BranchSyncOverview[]>('fetch_origin_and_branch_sync_overview', {
         repoPath: repoInfo.path,
       })
-      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
       setRepoInfo(updatedRepoInfo)
       return overview
     } catch (err) {
@@ -999,7 +1014,7 @@ export function useGit() {
       })
       
       // 推送成功后，重新获取仓库信息以更新状态
-      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
       setRepoInfo(updatedRepoInfo)
       
       return logs
@@ -1017,7 +1032,7 @@ export function useGit() {
       })
       
       // 推送成功后，重新获取仓库信息以更新状态
-      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
       setRepoInfo(updatedRepoInfo)
       
       return []
@@ -1038,7 +1053,7 @@ export function useGit() {
       })
       void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][useGit] pull outcome kind=${result?.outcome?.kind} msg=${result?.outcome?.message}` }).catch(()=>{})
       
-      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path)
+      const updatedRepoInfo: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
       void invoke('append_gitlite_log', { level: 'INFO', message: `[DIAG][pull][useGit] after head=${updatedRepoInfo.commits?.[0]?.id?.slice(0,7)} behind=${updatedRepoInfo.behind} incoming=${updatedRepoInfo.incoming_commits?.length} ahead=${updatedRepoInfo.ahead}` }).catch(()=>{})
       setRepoInfo(updatedRepoInfo)
       

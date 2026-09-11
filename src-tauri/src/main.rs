@@ -1332,6 +1332,9 @@ async fn get_recent_repos() -> Result<Vec<RecentRepo>, String> {
 // 保存最近打开的仓库
 #[tauri::command]
 async fn save_recent_repo(path: String) -> Result<(), String> {
+    // 读-改-写整体持锁，避免并发调用互相覆盖。
+    let _guard = lock_recent_repos();
+
     let config_dir = get_config_dir();
     fs::create_dir_all(&config_dir)
         .map_err(|e| format!("Failed to create config directory: {}", e))?;
@@ -1364,8 +1367,16 @@ async fn save_recent_repo(path: String) -> Result<(), String> {
     repos.insert(0, recent_repo);
 
     const MAX_RECENT_REPOS: usize = 30;
+    let len_before_truncate = repos.len();
     if repos.len() > MAX_RECENT_REPOS {
         repos.truncate(MAX_RECENT_REPOS);
+        log_message(
+            "INFO",
+            &format!(
+                "[recent] 超出上限已截断 | {} -> {}",
+                len_before_truncate, MAX_RECENT_REPOS
+            ),
+        );
     }
 
     let content = serde_json::to_string_pretty(&repos)
@@ -1377,6 +1388,7 @@ async fn save_recent_repo(path: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn remove_recent_repo(path: String) -> Result<(), String> {
+    let _guard = lock_recent_repos();
     let config_file = get_config_dir().join("recent_repos.json");
     let mut repos = load_recent_repos_list(&config_file)?;
     let before = repos.len();
@@ -1392,6 +1404,7 @@ async fn remove_recent_repo(path: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn rename_recent_repo(path: String, new_name: String) -> Result<(), String> {
+    let _guard = lock_recent_repos();
     let new_name = new_name.trim().to_string();
     if new_name.is_empty() {
         return Err("名称不能为空".to_string());
@@ -1417,6 +1430,7 @@ async fn update_recent_repo_entry(
     new_path: String,
     new_name: String,
 ) -> Result<(), String> {
+    let _guard = lock_recent_repos();
     let new_path = new_path.trim().to_string();
     let new_name = new_name.trim().to_string();
     if new_path.is_empty() {
@@ -1604,8 +1618,51 @@ fn get_config_dir() -> std::path::PathBuf {
     config_dir
 }
 
-/// 先写临时文件，再通过「旧文件改名备份 → 临时文件就位 → 删备份」替换。
-/// 避免 Windows 上「先删目标再 rename」失败时把配置文件弄丢。
+/// 诊断用：把最近仓库列表压缩成 `n=2[a|b]` 形式，便于在单行日志/断言里比对列表状态。
+/// 只取末级目录名，避免整条路径把日志撑爆。
+#[cfg_attr(not(test), allow(dead_code))]
+fn recent_repos_fingerprint(repos: &[RecentRepo]) -> String {
+    let names: Vec<String> = repos
+        .iter()
+        .map(|r| {
+            Path::new(&r.path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&r.path)
+                .to_string()
+        })
+        .collect();
+    format!("n={}[{}]", repos.len(), names.join("|"))
+}
+
+/// 最近仓库列表的进程内互斥锁。
+///
+/// `save_recent_repo` 是「读 → 改 → 写」序列，多个命令（open_repository / remove /
+/// update_entry）可能并发执行，交错时会互相覆盖（后写的基于旧快照，丢掉前一个的改动）。
+/// 所有对 recent_repos.json 的读改写都必须持有这把锁。
+fn recent_repos_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// 获取最近仓库锁；若锁被毒化（持锁线程 panic）则恢复内部值继续，
+/// 避免一次 panic 让后续所有列表操作永久失败。
+fn lock_recent_repos() -> std::sync::MutexGuard<'static, ()> {
+    recent_repos_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 先写临时文件，再就位替换。
+///
+/// 关键约束：**替换过程中目标路径上必须始终存在一个完整文件**。
+/// 早期实现是「旧文件改名备份 → 临时文件就位 → 删备份」，其中第一步和第二步之间
+/// 目标文件是**不存在**的；并发读取方（如 `load_recent_repos_list` 的 `exists()` 判断）
+/// 会误判为「文件丢失」而走备份恢复分支，用过期备份覆盖当前数据（曾导致最近仓库记录丢失）。
+///
+/// 因此这里改为：先 `copy` 旧文件到备份（不移动，目标始终在），
+/// 再 `rename` 临时文件直接覆盖目标。`fs::rename` 在 Windows 上会覆盖已存在文件
+/// （底层 MoveFileEx + MOVEFILE_REPLACE_EXISTING 语义），不存在空窗。
 fn write_file_atomic(path: &Path, content: impl AsRef<[u8]>) -> Result<(), String> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
@@ -1617,23 +1674,23 @@ fn write_file_atomic(path: &Path, content: impl AsRef<[u8]>) -> Result<(), Strin
     let bak = parent.join(format!(".{}.replace.bak", file_name));
     fs::write(&tmp, content.as_ref()).map_err(|e| format!("写入临时文件失败: {}", e))?;
 
-    let _ = fs::remove_file(&bak);
+    // 用 copy 而非 rename 做备份：目标文件全程存在，消除「文件暂时不存在」的窗口。
     if path.exists() {
-        fs::rename(path, &bak).map_err(|e| {
-            let _ = fs::remove_file(&tmp);
-            format!("备份原文件失败: {}", e)
-        })?;
+        if let Err(e) = fs::copy(path, &bak) {
+            // 备份失败不致命（旧实现此处也是尽力而为），但值得留痕。
+            log_message(
+                "WARN",
+                &format!("[atomic] 备份旧文件失败（继续替换）: {} err={}", path.display(), e),
+            );
+        }
     }
 
     if let Err(e) = fs::rename(&tmp, path) {
         let _ = fs::remove_file(&tmp);
-        if bak.exists() {
-            let _ = fs::rename(&bak, path);
-        }
+        // rename 失败时目标文件仍是旧内容，不会丢数据。
         return Err(format!("原子替换失败: {}", e));
     }
 
-    let _ = fs::remove_file(&bak);
     Ok(())
 }
 
@@ -1645,11 +1702,16 @@ fn load_recent_repos_list(config_file: &Path) -> Result<Vec<RecentRepo>, String>
         serde_json::from_str::<Vec<RecentRepo>>(&content).ok()
     };
 
+    // 主文件存在且可解析 —— 正常路径。
+    // 注意：即使主文件存在但解析失败，也不能直接回退备份并回写，
+    // 否则一次并发读到「半个文件」就会用陈旧备份覆盖掉真实数据。
+    let mut main_file_corrupt = false;
     if config_file.exists() {
         match fs::read_to_string(config_file) {
             Ok(content) => match serde_json::from_str::<Vec<RecentRepo>>(&content) {
                 Ok(repos) => return Ok(repos),
                 Err(e) => {
+                    main_file_corrupt = true;
                     log_message(
                         "WARN",
                         &format!("recent_repos.json 解析失败，尝试备份恢复: {}", e),
@@ -1664,23 +1726,43 @@ fn load_recent_repos_list(config_file: &Path) -> Result<Vec<RecentRepo>, String>
                 );
             }
         }
+    } else {
+        log_message(
+            "WARN",
+            &format!(
+                "[recent] load: 主文件不存在，将回退 .bak | file={}",
+                config_file.display()
+            ),
+        );
     }
 
     if let Some(repos) = try_parse(&bak_file) {
         log_message(
-            "INFO",
+            "WARN",
             &format!(
-                "recent_repos: 已从备份恢复 {} 条记录",
-                repos.len()
+                "recent_repos: 主文件不可用，已从备份恢复 {} 条（主文件损坏={}）",
+                repos.len(),
+                main_file_corrupt
             ),
         );
-        // 写回主文件，避免下次仍缺失
-        if let Ok(content) = serde_json::to_string_pretty(&repos) {
-            let _ = write_file_atomic(config_file, content);
+        // 只有在确认主文件「存在但内容损坏」时才回写修复；
+        // 主文件「不存在」可能只是并发替换的瞬时状态，回写会把陈旧备份扶正。
+        if main_file_corrupt {
+            if let Ok(content) = serde_json::to_string_pretty(&repos) {
+                let _ = write_file_atomic(config_file, content);
+            }
         }
         return Ok(repos);
     }
 
+    log_message(
+        "WARN",
+        &format!(
+            "[recent] load 返回空列表 | file={} bak_exists={}",
+            config_file.display(),
+            bak_file.exists()
+        ),
+    );
     Ok(Vec::new())
 }
 
@@ -2765,12 +2847,28 @@ async fn open_external_url(url: String) -> Result<(), String> {
 }
 
 // 打开 Git 仓库
+//
+// `record_recent` 决定是否把该仓库写入最近列表：
+// - 用户主动打开仓库（文件对话框、最近列表点击、克隆/初始化后）传 `true`；
+// - 纯刷新（切分支后刷新、自动刷新、文件监听、各面板拉取数据）传 `false`。
+//
+// 之所以要区分：刷新只需要最新的 RepoInfo，却会经由本命令顺带重写最近列表
+// （把当前仓库顶到首位）。这既会打乱用户手动排序，也曾在并发下导致记录丢失。
 #[tauri::command]
 async fn open_repository(
     path: String,
     client_calendar_offset_east_minutes: Option<i32>,
+    record_recent: Option<bool>,
 ) -> Result<RepoInfo, String> {
+    let should_record = record_recent.unwrap_or(true);
     let path_for_repo = path.clone();
+    // 纯刷新调用非常频繁（自动刷新、文件监听、各面板取数），只在真正记录时留痕，避免刷爆日志。
+    if should_record {
+        log_message(
+            "INFO",
+            &format!("[recent] open_repository 记录到最近列表 | path={}", path),
+        );
+    }
     let repo_info = tokio::task::spawn_blocking(move || {
         let repo = Repository::open(&path_for_repo)
             .map_err(|e| format!("无法打开仓库：{}", e))?;
@@ -2786,11 +2884,29 @@ async fn open_repository(
             .map_err(|e| format!("无法读取仓库信息：{}", e))
     })
     .await
-    .map_err(|e| format!("任务已中断: {}", e))??;
+    .map_err(|e| format!("任务已中断: {}", e))?;
 
-    // 保存到最近打开的仓库列表（异步 I/O，保留在阻塞段之外）
-    if let Err(e) = save_recent_repo(path).await {
-        eprintln!("Failed to save recent repo: {}", e);
+    // 读取仓库信息失败时直接返回，此时不会写最近列表 —— 单独记一条，便于区分
+    // 「列表没更新」到底是没有写入，还是写入时把别的记录弄丢了。
+    let repo_info = match repo_info {
+        Ok(info) => info,
+        Err(e) => {
+            log_message(
+                "ERROR",
+                &format!(
+                    "[recent] open_repository 读取仓库信息失败，跳过 save_recent_repo | path={} err={}",
+                    path, e
+                ),
+            );
+            return Err(e);
+        }
+    };
+
+    if should_record {
+        // 保存到最近打开的仓库列表（异步 I/O，保留在阻塞段之外）
+        if let Err(e) = save_recent_repo(path).await {
+            eprintln!("Failed to save recent repo: {}", e);
+        }
     }
 
     Ok(repo_info)
@@ -7528,6 +7644,95 @@ mod numstat_tests {
         write_file_atomic(&path, "[{\"path\":\"a\"}]").unwrap();
         let content = fs::read_to_string(&path).unwrap();
         assert_eq!(content, "[{\"path\":\"a\"}]");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 回归测试：替换过程中目标文件必须始终存在。
+    ///
+    /// 旧实现先 `rename(path, bak)` 再 `rename(tmp, path)`，两步之间目标文件会短暂消失；
+    /// 并发读取方看到「文件不存在」就会走备份恢复分支，用陈旧备份覆盖真实数据
+    /// （实际导致过最近仓库记录丢失）。这里用高频轮询捕捉那个空窗。
+    #[test]
+    fn write_file_atomic_never_leaves_target_missing() {
+        let dir = std::env::temp_dir().join(format!("gitlite-atomic-gap-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("recent_repos.json");
+        write_file_atomic(&path, "[]").unwrap();
+
+        let path_for_reader = path.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_reader = Arc::clone(&stop);
+        let missing = Arc::new(AtomicBool::new(false));
+        let missing_for_reader = Arc::clone(&missing);
+
+        let reader = std::thread::spawn(move || {
+            while !stop_for_reader.load(Ordering::Relaxed) {
+                if !path_for_reader.exists() {
+                    missing_for_reader.store(true, Ordering::Relaxed);
+                    return;
+                }
+            }
+        });
+
+        for i in 0..400 {
+            write_file_atomic(&path, format!("[{{\"n\":{}}}]", i)).unwrap();
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        reader.join().unwrap();
+        assert!(
+            !missing.load(Ordering::Relaxed),
+            "write_file_atomic 期间目标文件曾不存在，并发读取方会误判为丢失"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 回归测试：并发写最近仓库不得互相覆盖。
+    ///
+    /// `save_recent_repo` 是「读 → 改 → 写」，无锁时并发调用会基于同一旧快照各自写回，
+    /// 造成记录丢失。这里并发写入 8 个不同路径，要求全部保留。
+    #[test]
+    fn concurrent_save_recent_repo_keeps_all_entries() {
+        // 该测试直接操作进程内锁与临时配置文件，不触碰真实配置目录。
+        // 注意：不要在测试线程持有该锁 —— 它是非重入的，子线程会全部阻塞导致死锁。
+        let dir = std::env::temp_dir().join(format!("gitlite-recent-conc-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let config_file = dir.join("recent_repos.json");
+
+        // 模拟并发调用：每个线程各自持锁做一次读-改-写。
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let cfg = config_file.clone();
+            handles.push(std::thread::spawn(move || {
+                let _g = lock_recent_repos();
+                let mut repos = load_recent_repos_list(&cfg).unwrap();
+                let p = format!("D:\\repo{}", i);
+                repos.retain(|r| r.path != p);
+                repos.insert(
+                    0,
+                    RecentRepo {
+                        path: p,
+                        name: format!("repo{}", i),
+                        last_opened: chrono::Utc::now().to_rfc3339(),
+                    },
+                );
+                let content = serde_json::to_string_pretty(&repos).unwrap();
+                write_file_atomic(&cfg, content).unwrap();
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let final_repos = load_recent_repos_list(&config_file).unwrap();
+        assert_eq!(
+            final_repos.len(),
+            8,
+            "并发写入后有记录丢失: {:?}",
+            recent_repos_fingerprint(&final_repos)
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
