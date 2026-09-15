@@ -35,16 +35,95 @@ import { getClientCalendarOffsetEastMinutes } from '../utils/clientCalendarOffse
  */
 async function invokeOpenRepository(
   path: string,
-  recordRecent: boolean
+  recordRecent: boolean,
+  origin: string = 'unknown'
 ): Promise<RepoInfo> {
-  return invoke<RepoInfo>('open_repository', {
-    path,
-    clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
-    recordRecent,
-  })
+  const startedAt = performance.now()
+  // origin=unknown 说明有调用点绕过了带标签的封装（直接 invoke('open_repository')）。
+  // 打一段调用栈，精确定位是谁，而不是靠猜。
+  const caller =
+    origin === 'unknown'
+      ? ' stack=' +
+        (new Error().stack ?? '')
+          .split('\n')
+          .slice(2, 5)
+          .map((s) => s.trim().replace(/\s*\(.*?\)\s*$/, ''))
+          .join(' < ')
+      : ''
+  diag(`open_repository → origin=${origin} recordRecent=${recordRecent}${caller}`)
+  try {
+    const info = await invoke<RepoInfo>('open_repository', {
+      path,
+      clientCalendarOffsetEastMinutes: getClientCalendarOffsetEastMinutes(),
+      recordRecent,
+    })
+    diag(
+      `open_repository ← origin=${origin} ok ${Math.round(performance.now() - startedAt)}ms ` +
+        `branch=${info.current_branch} head=${(info.head_short_id ?? '-').slice(0, 7)} ` +
+        `commits=${info.commits?.length ?? 0} ahead=${info.ahead} behind=${info.behind}`
+    )
+    return info
+  } catch (err) {
+    diag(`open_repository ← origin=${origin} FAIL ${String(err)}`)
+    throw err
+  }
 }
 
 const AUTO_OPEN_ENABLED_KEY = 'gitlite:autoOpenEnabled'
+
+/**
+ * 临时诊断：把「谁在刷仓库元数据」写进 logs/gitlite.log（后端 append_gitlite_log）。
+ * 每条带 `origin=` 调用点标记，便于按来源统计次数而非只看总数。
+ * 排查结束后把 DIAG_ENABLED 置 false 即可静默，或连同调用点一起删除。
+ */
+const DIAG_ENABLED = true
+function diag(message: string) {
+  if (!DIAG_ENABLED) return
+  void invoke('append_gitlite_log', {
+    level: 'INFO',
+    message: `[DIAG][repoinfo] ${message}`,
+  }).catch(() => {
+    /* 诊断日志失败不影响主流程 */
+  })
+}
+
+/**
+ * `RepoInfo` 的「用户可见内容」是否等价。
+ *
+ * `repoInfo` 是 App 的 state，被 TopToolbar / UnifiedCommitView / WorkspaceStatus
+ * 当 props 消费。纯刷新每次都返回新对象，一写就整树重渲染；而提交列表 effect
+ * 又会按 `headMoved` 判定「本次无效」并跳过 —— 于是出现「渲染了但什么都没变」
+ * 的空转。写入前先比关键字段，等价则保持旧引用不动。
+ *
+ * `commits` 只比首条 id 与长度：HEAD 移动必然改变首条 id，足以覆盖切分支/拉取/提交，
+ * 又避免大仓库每次刷新多花几毫秒。
+ */
+function repoInfoEquivalent(a: RepoInfo | null, b: RepoInfo): boolean {
+  if (!a) return false
+  if (a.path !== b.path) return false
+  if (a.current_branch !== b.current_branch) return false
+  if (a.head_short_id !== b.head_short_id) return false
+  if (a.ahead !== b.ahead) return false
+  if (a.behind !== b.behind) return false
+  if ((a.has_upstream ?? true) !== (b.has_upstream ?? true)) return false
+  if ((a.has_origin_remote ?? true) !== (b.has_origin_remote ?? true)) return false
+  if ((a.remote_url ?? null) !== (b.remote_url ?? null)) return false
+  if ((a.incoming_commits ?? []).length !== (b.incoming_commits ?? []).length) return false
+
+  const ac = a.commits ?? []
+  const bc = b.commits ?? []
+  if (ac.length !== bc.length) return false
+  if (ac.length > 0 && ac[0]?.id !== bc[0]?.id) return false
+
+  const ab = a.branches ?? []
+  const bb = b.branches ?? []
+  if (ab.length !== bb.length) return false
+  for (let i = 0; i < ab.length; i++) {
+    if (ab[i]?.name !== bb[i]?.name) return false
+    if (ab[i]?.is_current !== bb[i]?.is_current) return false
+  }
+  return true
+}
 
 export function useGit() {
   /** 打开仓库 / 轻量刷新的世代号：仅最后一次结果写入 state，避免异步返回乱序 */
@@ -127,8 +206,12 @@ export function useGit() {
       beginLoading()
       setError(null)
       
-      const info: RepoInfo = await invokeOpenRepository(path, true)
-      if (myGen !== repoLoadGenRef.current) return
+      const info: RepoInfo = await invokeOpenRepository(path, true, 'openRepositoryByPath')
+      if (myGen !== repoLoadGenRef.current) {
+        diag('openRepositoryByPath STALE gen (discarded)')
+        return
+      }
+      diag(`setRepoInfo ← openRepositoryByPath branch=${info.current_branch}`)
       setRepoInfo(info)
       // 刷新最近仓库列表
       loadRecentRepos()
@@ -141,21 +224,98 @@ export function useGit() {
     }
   }, [beginLoading, endLoading, loadRecentRepos])
 
-  /** 重新拉取仓库元数据（ahead/behind 等），不触发全局 loading，供提交面板等轻量刷新 */
-  const refreshRepoInfo = useCallback(async (): Promise<RepoInfo> => {
-    if (!repoInfo) throw new Error('未打开仓库')
-    const myGen = ++repoLoadGenRef.current
-    // 纯刷新：不重排最近列表
-    const info: RepoInfo = await invokeOpenRepository(repoInfo.path, false)
-    if (myGen !== repoLoadGenRef.current) return info
-    setRepoInfo(info)
-    return info
-  }, [repoInfo])
+  /**
+   * 纯刷新（recordRecent=false）的合流窗口。
+   *
+   * 切分支会同时触发多路刷新。实测一次切换曾有 6+ 个 `open_repository`
+   * 挤在同一两毫秒内、目的与结果完全相同 —— 只有最后一次的 `commits` 会被
+   * 提交列表 effect 采纳（其余因 `headMoved=false` 判定无效），却各自替换了
+   * 一次 `repoInfo` 引用、触发整树重渲染。
+   *
+   * - `inFlight`：同路径已有请求在飞 → 复用其 Promise，不再发新 IPC。
+   * - `settledAt`：刚完成过同路径请求 → 复用上次结果，抑制 watcher 回声连刷。
+   *
+   * 只作用于纯刷新路径；用户主动打开仓库走 openRepositoryByPath，不受影响。
+   */
+  const REFRESH_COALESCE_MS = 300
+  const refreshInFlightRef = useRef<{ path: string; promise: Promise<RepoInfo> } | null>(null)
+  const refreshSettledRef = useRef<{ path: string; at: number; info: RepoInfo } | null>(null)
 
-  const refreshRepoInfoRef = useRef<(() => Promise<RepoInfo>) | null>(null)
+  /**
+   * 始终指向最新 `repoInfo`。写入前要用它做内容比对，而 `refreshRepoInfo` 的
+   * 闭包可能捕获了旧的 `repoInfo`（例如 checkout 里乐观更新后立刻刷新），
+   * 直接拿闭包值比会把「其实没变」误判成「变了」。
+   */
+  const repoInfoRef = useRef<RepoInfo | null>(repoInfo)
+  repoInfoRef.current = repoInfo
+
+  /** 重新拉取仓库元数据（ahead/behind 等），不触发全局 loading，供提交面板等轻量刷新 */
+  const refreshRepoInfo = useCallback(
+    async (options?: { force?: boolean }): Promise<RepoInfo> => {
+      if (!repoInfo) throw new Error('未打开仓库')
+      const path = repoInfo.path
+
+      if (!options?.force) {
+        // 1) 已有同路径请求在飞 → 复用，避免并发重复 IPC
+        const inFlight = refreshInFlightRef.current
+        if (inFlight && inFlight.path === path) {
+          diag(`refreshRepoInfo JOIN in-flight (no new IPC)`)
+          return inFlight.promise
+        }
+        // 2) 刚完成过同路径请求 → 复用其结果，抑制 watcher 回声造成的连刷
+        const settled = refreshSettledRef.current
+        if (settled && settled.path === path && Date.now() - settled.at < REFRESH_COALESCE_MS) {
+          diag(`refreshRepoInfo REUSE settled (age=${Date.now() - settled.at}ms, no new IPC)`)
+          return settled.info
+        }
+      }
+
+      const myGen = ++repoLoadGenRef.current
+      const tag = options?.force ? 'force' : 'normal'
+      // 纯刷新：不重排最近列表
+      const promise = invokeOpenRepository(path, false, `refreshRepoInfo/${tag}`)
+        .then((info) => {
+          // 世代过期说明有更新的刷新在路上，本次结果不再写入，由后者负责
+          if (myGen === repoLoadGenRef.current) {
+            // 内容等价则不写 state：保持旧引用，避免整树空转重渲染（见 repoInfoEquivalent）
+            if (!repoInfoEquivalent(repoInfoRef.current, info)) {
+              diag(`setRepoInfo ← refreshRepoInfo/${tag} branch=${info.current_branch}`)
+              setRepoInfo(info)
+            } else {
+              diag(`setRepoInfo SKIPPED equivalent (origin=refreshRepoInfo/${tag})`)
+            }
+          } else {
+            diag(`refreshRepoInfo/${tag} STALE gen (result discarded)`)
+          }
+          refreshSettledRef.current = { path, at: Date.now(), info }
+          return info
+        })
+        .finally(() => {
+          if (refreshInFlightRef.current?.promise === promise) {
+            refreshInFlightRef.current = null
+          }
+        })
+
+      refreshInFlightRef.current = { path, promise }
+      return promise
+    },
+    [repoInfo]
+  )
+
+  const refreshRepoInfoRef = useRef<
+    ((options?: { force?: boolean }) => Promise<RepoInfo>) | null
+  >(null)
   useEffect(() => {
     refreshRepoInfoRef.current = refreshRepoInfo
   }, [refreshRepoInfo])
+
+  /**
+   * 换仓库时清掉合流缓存：旧仓库结果留着没意义，且会让 settled 长期持有
+   * 整个 RepoInfo（含 commits）。不清 inFlight——在飞的请求有自己的世代校验。
+   */
+  useEffect(() => {
+    refreshSettledRef.current = null
+  }, [repoInfo?.path])
 
   useEffect(() => {
     const repoPath = repoInfo?.path
@@ -170,7 +330,12 @@ export function useGit() {
         const { listen } = await import("@tauri-apps/api/event")
         if (cancelled) return
         unlisten = await listen("workspace-changed", () => {
-          void refreshRepoInfoRef.current?.().catch(() => {})
+          // 监听器只负责「工作区文件变了」。仓库元数据（分支 / HEAD / 提交历史）
+          // 不该由文件系统事件驱动 —— 事件推不出「这次变化是什么」，编辑器保存、
+          // 构建产物、其它 git 操作都会触发它。真正改变元数据的操作
+          // （checkout / pull / push / commit）都有明确返回值，应由那些调用点直接更新。
+          // 工作区文件列表由 WorkspaceStatus 自己监听同一事件刷新。
+          diag('workspace-changed received (metadata refresh NOT triggered by design)')
         })
       } catch (err) {
         console.warn("Workspace file watcher unavailable:", err)
@@ -267,18 +432,13 @@ export function useGit() {
     }
 
     // 整仓信息（提交列表等）后台刷新，不阻塞分支下拉可点。
-    // 这是纯刷新，不是「打开仓库」，因此不写最近列表（传 false）——
-    // 否则每次切分支都会把当前仓库重排到列表首位，并发时还会丢记录。
-    const path = repoInfo.path
-    const myGen = ++repoLoadGenRef.current
-    void invokeOpenRepository(path, false)
-      .then((updatedRepoInfo) => {
-        if (myGen !== repoLoadGenRef.current) return
-        setRepoInfo(updatedRepoInfo)
-      })
-      .catch((err) => {
-        console.error('切换后刷新仓库信息失败:', err)
-      })
+    // 这是纯刷新，不是「打开仓库」，因此不写最近列表（传 false）。
+    //
+    // 这是**唯一**因 checkout 而刷新元数据的地方：文件监听器已不再驱动元数据刷新，
+    // 所以必须由本次调用承担。force 确保拿到新分支的 HEAD 与提交列表。
+    void refreshRepoInfoRef.current?.({ force: true }).catch((err) => {
+      console.error('切换后刷新仓库信息失败:', err)
+    })
   }, [beginLoading, endLoading, repoInfo])
 
   const initRepository = useCallback(

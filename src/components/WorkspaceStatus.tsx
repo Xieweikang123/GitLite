@@ -146,9 +146,12 @@ export function WorkspaceStatus({
   const [aiCommitMessageLoading, setAiCommitMessageLoading] = useState(false)
 
   // 获取工作区状态（silent：后台定时刷新，不占满屏 loading，减轻卡顿）
+  // 依赖收敛为 repoPath 字符串：本函数只用到 repoInfo.path，而 repoInfo 每次刷新
+  // 都是新对象，用它做依赖会让函数身份每轮都变，进而把依赖它的 effect 全部重建。
+  const repoPath = repoInfo?.path
   const fetchWorkspaceStatus = useCallback(async (options?: { silent?: boolean }) => {
     const silent = options?.silent ?? false
-    if (!repoInfo) return
+    if (!repoPath) return
 
     const requestGen = ++workspaceStatusFetchGenRef.current
 
@@ -160,7 +163,7 @@ export function WorkspaceStatus({
       
       const { invoke } = await import('@tauri-apps/api/tauri')
       const status: WorkspaceStatusData = await invoke('get_workspace_status', {
-        repoPath: repoInfo.path,
+        repoPath,
       })
 
       if (requestGen !== workspaceStatusFetchGenRef.current) return
@@ -173,24 +176,24 @@ export function WorkspaceStatus({
       if (requestGen !== workspaceStatusFetchGenRef.current) return
       setError(err instanceof Error ? err.message : '获取工作区状态失败')
     } finally {
-      // 不与生 successful 响应一同做 gen 校验：若本次为 !silent 但被更新的 silent 请求抢了代，
+      // 不与 successful 响应一同做 gen 校验：若本次为 !silent 但被更新的 silent 请求抢了代，
       // 仍须关掉 loading，否则界面会一直转圈。
       if (!silent) {
         setLoading(false)
       }
     }
-  }, [repoInfo])
+  }, [repoPath])
 
-  // 获取贮藏列表
+  // 获取贮藏列表（同上：依赖收敛为 repoPath）
   const fetchStashList = useCallback(async () => {
-    if (!repoInfo) return
+    if (!repoPath) return
 
     const showListSpinner = stashDialogOpen
     try {
       if (showListSpinner) setStashListLoading(true)
       const { invoke } = await import('@tauri-apps/api/tauri')
       const stashes: StashInfo[] = await invoke('get_stash_list', {
-        repoPath: repoInfo.path,
+        repoPath,
       })
 
       setStashList(stashes)
@@ -199,7 +202,7 @@ export function WorkspaceStatus({
     } finally {
       if (showListSpinner) setStashListLoading(false)
     }
-  }, [repoInfo, stashDialogOpen])
+  }, [repoPath, stashDialogOpen])
 
   /** 工作区页完整刷新：文件变更 + stash + 父级仓库信息（ahead/behind 等）。RemoteSyncBar 的刷新也走此路径，避免只刷新远程数字、列表仍陈旧。 */
   const handleManualRefresh = async () => {
@@ -481,9 +484,8 @@ export function WorkspaceStatus({
       }
     }
 
-    // 首次加载始终显示 loading（除非已有数据且仅切换自动刷新 — 仍简单处理为短时 loading）
+    // 首次加载始终显示 loading
     void runPull(false)
-
 
     if (!autoRefresh) {
       return () => {
@@ -500,7 +502,14 @@ export function WorkspaceStatus({
       cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [repoInfo, repoInfo?.head_short_id, autoRefresh, fetchWorkspaceStatus, fetchStashList])
+    // 依赖只用「仓库路径 + HEAD」这两个字符串，不用整个 repoInfo 对象：
+    // repoInfo 每次刷新都是新引用，用它做依赖会让本 effect 反复重建，
+    // 进而每轮都重跑一次 runPull(false)（非静默 → 整卡片进入 loading）
+    // 并重置 10 秒定时器。切分支时 repoInfo 会被替换多次，叠加起来就是闪烁。
+    // fetchWorkspaceStatus / fetchStashList 内部已用最新 repoInfo（useCallback 依赖它），
+    // 所以这里不需要把对象本身列为依赖。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repoInfo?.path, repoInfo?.head_short_id, autoRefresh, fetchWorkspaceStatus, fetchStashList])
 
   // 暂存文件（等刷新完成再更新列表，行内按钮可显示 loading，避免「添加/暂存」无反馈）
     useEffect(() => {
@@ -514,10 +523,14 @@ export function WorkspaceStatus({
           const { listen } = await import("@tauri-apps/api/event")
           if (cancelled) return
           unlisten = await listen("workspace-changed", () => {
+            // 只刷「工作区」自己的数据。元数据（分支 / HEAD / ahead-behind / 提交列表）
+            // 不在此刷新：该事件的触发源是文件系统变动，推不出发生了什么，
+            // 且 onRefresh 走的是重量级 open_repository（会重算提交历史并写最近列表），
+            // 一次 checkout 重写大量文件时会被放大成数十次整仓重读。
+            // 元数据改由具体操作的结果驱动（commit/pull/push/checkout 各自的调用点）。
             void Promise.all([
               fetchWorkspaceStatus({ silent: true }),
               fetchStashList(),
-              Promise.resolve(onRefresh()),
             ])
           })
         } catch (err) {
@@ -529,7 +542,9 @@ export function WorkspaceStatus({
         cancelled = true
         unlisten?.()
       }
-    }, [repoInfo, fetchWorkspaceStatus, fetchStashList, onRefresh])
+      // 同上下：用 repoPath 字符串而非整个 repoInfo 对象，避免每次刷新都重挂监听器
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [repoInfo?.path, fetchWorkspaceStatus, fetchStashList])
 
   const stageFile = async (filePath: string) => {
     if (!repoInfo) return
