@@ -283,3 +283,41 @@ Do NOT:
   Also check `RemoteSyncBar` itself — it is mounted from three places
   (`WorkspaceStatus`, `UnifiedCommitView`, plus its own compact branches), so the
   duplicate may be *within* one component across densities.
+
+## Unreadable icon-only sync buttons — engineering notes
+
+Context: the commit view's `compact` `RemoteSyncBar` rendered a row of unlabelled icons
+(`⚠ 4`, `⬇`, a branch glyph, `⬆`, `↻`) that users could not tell apart.
+
+Root cause was **not** merely "icons are small". Three distinct defects:
+
+1. **Wrong icon semantics.** `GitPullRequest` is GitHub's *Pull Request* glyph (two arrows
+   merging into a bar) — it means "open a merge request", not "download commits". Pull
+   and fetch *both* rendered downward arrows (`GitPullRequest` + `Download`), so shape
+   could not disambiguate them. Icon choice must encode the *verb*, not the domain.
+2. **State encoded as enablement.** Pull/push had two branches — `behind > 0` rendered a
+   filled `default` button, `behind === 0` a faded `ghost` one — but *the action was
+   identical*. A faded button reads as disabled/unavailable, so users believed there was
+   nothing to do when pull was in fact still valid. Vary the *emphasis*, never the
+   *apparent availability*, when the action is unchanged.
+3. **Icon-only in a dense row.** Five glyphs in `gap-0.5` rely entirely on hover tooltips.
+   Touch devices have no hover, so the affordances were effectively unlabelled.
+
+Principles:
+- One glyph per verb, and the glyph must differ *in shape* from every neighbouring verb.
+  `ArrowDownToLine` (pull: into working tree) vs `DownloadCloud` (fetch: into local cache)
+  vs `ArrowUpFromLine` (push) vs `RotateCw` (refresh) are distinguishable at 14px.
+- Fold the count into the button that acts on it. A count floating beside its own action
+  button is a second place to look for one fact.
+- Tooltips follow a fixed shape: `动名词：说明（是否联网 / 是否改动工作区）`. This is what
+  makes fetch-vs-refresh learnable — they are the same to a user who does not care about
+  remote-tracking refs, so the tooltip must say "不联网" vs "联网".
+
+Do NOT:
+- Do not collapse `behind > 0` / `behind === 0` by hiding a button with CSS; merge the two
+  JSX branches and vary only `variant`, so the affordance count is stable.
+- Do not put a count badge in a `default` (solid) button using a background token meant for
+  a light surface (`bg-background/25`) — on the solid fill it disappears. Use
+  `bg-primary-foreground/20`, which inverts with the variant.
+- Do not rely on tooltips for primary actions in a compact toolbar; add a text label
+  (`compact` mode now renders 获取 / 拉取 / 推送 / 刷新 next to the icons).
