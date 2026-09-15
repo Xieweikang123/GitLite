@@ -97,6 +97,7 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
   const [filter, setFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'clean' | 'dirty' | 'sync'>('all')
   const [recentOpen, setRecentOpen] = useState(false)
+  const [pathOpen, setPathOpen] = useState(false)
   const [pullingPath, setPullingPath] = useState<string | null>(null)
   const [pushingPath, setPushingPath] = useState<string | null>(null)
   const [checkoutPath, setCheckoutPath] = useState<string | null>(null)
@@ -1050,22 +1051,111 @@ export function DirectoryRepoScanner({ onOpenRepo }: DirectoryRepoScannerProps) 
         <CardContent className="flex flex-col gap-2 pt-0">
           {/* 输入行 + 选项 同行 */}
           <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
-            <div className="relative flex-1">
-              <FolderOpen className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={dirPath}
-                onChange={(e) => setDirPath(e.target.value)}
-                placeholder="D:\project  或  /home/user/projects"
-                className="pl-8 font-mono text-xs h-8 border-border/50 bg-muted/20 hover:bg-muted/30 focus:border-primary/40 focus:bg-background focus-visible:ring-0 focus-visible:ring-offset-0"
-                spellCheck={false}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') void doScan()
-                }}
-              />
+            <div className="flex min-w-0 flex-1 items-center gap-1.5">
+              <div className="relative min-w-0 flex-1">
+                <FolderOpen className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={dirPath}
+                  onChange={(e) => setDirPath(e.target.value)}
+                  placeholder="D:\project  或  /home/user/projects"
+                  className="pl-8 pr-8 font-mono text-xs h-8 border-border/50 bg-muted/20 hover:bg-muted/30 focus:border-primary/40 focus:bg-background focus-visible:ring-0 focus-visible:ring-offset-0"
+                  spellCheck={false}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void doScan()
+                  }}
+                />
+                {recentScanned.length > 0 && (
+                  <Popover open={pathOpen} onOpenChange={setPathOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="absolute right-0.5 top-1/2 h-7 w-7 -translate-y-1/2 p-0 text-muted-foreground hover:bg-transparent hover:text-foreground"
+                        title="最近扫描过的目录"
+                      >
+                        <ChevronDown
+                          className={`h-3.5 w-3.5 transition-transform ${pathOpen ? 'rotate-180' : ''}`}
+                        />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent align="start" className="w-[440px] max-h-72 overflow-y-auto p-1">
+                      <div className="px-2 pb-1 pt-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                        最近扫描
+                      </div>
+                      {recentScanned.map((r) => (
+                        <div
+                          key={r.path}
+                          className="group flex items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted/60"
+                        >
+                          <button
+                            type="button"
+                            className="min-w-0 flex-1 text-left"
+                            title={`${r.path} · ${timeAgo(r.last_scanned)}`}
+                            onClick={() => {
+                              setDirPath(r.path)
+                              setRecursive(r.recursive)
+                              void doScan(r.path, r.recursive)
+                              setPathOpen(false)
+                            }}
+                          >
+                            <div
+                              className={`truncate font-mono text-[11px] ${r.path === dirPath ? 'text-primary' : ''}`}
+                            >
+                              {shortenPathMiddle(r.path, 48)}
+                            </div>
+                            <div className="text-[10px] text-muted-foreground">
+                              {timeAgo(r.last_scanned)}{r.recursive ? ' · 递归' : ''}
+                            </div>
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-full p-1 opacity-40 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                            title="移除"
+                            onClick={async () => {
+                              try {
+                                await invoke('remove_recent_scanned_dir', { path: r.path })
+                                await loadRecentScanned()
+                              } catch {
+                                const raw = localStorage.getItem(RECENT_SCANNED_KEY)
+                                const list: ScannedDirRecord[] = raw ? JSON.parse(raw) : []
+                                const next = list.filter((x) => x.path !== r.path)
+                                localStorage.setItem(RECENT_SCANNED_KEY, JSON.stringify(next))
+                                setRecentScanned(next)
+                              }
+                            }}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        </div>
+                      ))}
+                      <div className="mt-1 border-t border-border/50 pt-1">
+                        <button
+                          type="button"
+                          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                          onClick={() => {
+                            setPathOpen(false)
+                            void pickFolder()
+                          }}
+                        >
+                          <FolderOpen className="h-3.5 w-3.5" />
+                          浏览其他目录…
+                        </button>
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                )}
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 px-3 text-xs shrink-0"
+                onClick={pickFolder}
+                disabled={loading}
+              >
+                浏览…
+              </Button>
             </div>
-            <Button variant="outline" size="sm" className="h-8 px-3 text-xs shrink-0" onClick={pickFolder} disabled={loading}>
-              浏览…
-            </Button>
             <Button size="sm" className="h-8 px-4 text-xs shadow-sm shrink-0" onClick={() => void doScan()} disabled={loading || !dirPath.trim()}>
               {loading ? <RefreshCw className="h-3.5 w-3.5 animate-spin mr-1" /> : <Search className="h-3.5 w-3.5 mr-1" />}
               扫描
