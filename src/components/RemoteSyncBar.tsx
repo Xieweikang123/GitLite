@@ -1,6 +1,14 @@
 import { useState } from 'react'
 import { Button } from './ui/button'
-import { ChevronDown, Download, GitPullRequest, RefreshCw, CheckCircle, AlertCircle, Upload } from 'lucide-react'
+import {
+  AlertCircle,
+  ArrowDownToLine,
+  ArrowUpFromLine,
+  CheckCircle,
+  ChevronDown,
+  DownloadCloud,
+  RotateCw,
+} from 'lucide-react'
 import { cn } from '../lib/utils'
 import { PendingCommitsPopover } from './PendingCommitsPopover'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
@@ -90,13 +98,14 @@ export function RemoteSyncBar({
           >
             <button
               type="button"
-              className="flex items-center gap-1 rounded-sm hover:bg-amber-500/10"
-              title="点击查看待拉取的提交"
+              className="flex items-center gap-1 rounded-sm px-1 hover:bg-amber-500/10"
+              title={`有 ${behindN} 个提交在远端但本地还没有，点击查看`}
             >
               <AlertCircle
                 className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400"
               />
               <span className="whitespace-nowrap text-amber-700 dark:text-amber-300">
+                {compact ? '落后' : null}
                 <span className="font-medium">{behindN}</span>
                 {compact ? '' : ' 待拉取'}
               </span>
@@ -112,13 +121,14 @@ export function RemoteSyncBar({
           >
             <button
               type="button"
-              className="flex items-center gap-1 rounded-sm hover:bg-blue-500/10"
-              title="点击查看待推送的提交"
+              className="flex items-center gap-1 rounded-sm px-1 hover:bg-blue-500/10"
+              title={`有 ${aheadN} 个本地提交还没上传到远端，点击查看`}
             >
               <CheckCircle
                 className="h-3.5 w-3.5 shrink-0 text-blue-600 dark:text-blue-400"
               />
               <span className="whitespace-nowrap text-blue-700 dark:text-blue-300">
+                {compact ? '领先' : null}
                 <span className="font-medium">{aheadN}</span>
                 {compact ? '' : ' 待推送'}
               </span>
@@ -162,11 +172,12 @@ export function RemoteSyncBar({
             size="sm"
             onClick={onFetchChanges}
             disabled={remoteDisabled}
-            className={iconBtn}
-            title="获取远程仓库的最新信息（不合并到本地）"
-            aria-label="获取"
+            className={cn(iconBtn, 'gap-1 px-1.5')}
+            title="获取：只下载远端最新信息到本地缓存，不改动工作区文件"
+            aria-label="获取远端信息"
           >
-            <Download className="h-3.5 w-3.5" />
+            <DownloadCloud className="h-3.5 w-3.5" />
+            获取
           </Button>
         )}
         {!compact && onPullChanges ? (
@@ -179,12 +190,12 @@ export function RemoteSyncBar({
               className={cn(iconBtn, 'rounded-r-none')}
               title={
                 hasUpstream
-                  ? `拉取并合并远程更改到当前分支${behindN > 0 ? `（${behindN}）` : ''}`
-                  : '拉取远程更改（即使没有待拉取的提交）'
+                  ? `拉取：把远端的新提交下载并合并进当前分支${behindN > 0 ? `（有 ${behindN} 个待拉取）` : '（当前没有待拉取的提交）'}`
+                  : '拉取：当前分支还没有对应的远程分支，拉取可能没有目标；可先推送以创建并关联'
               }
               aria-label={behindN > 0 ? `拉取 ${behindN}` : '拉取'}
             >
-              <GitPullRequest className="mr-1 h-3.5 w-3.5" />
+              <ArrowDownToLine className="mr-1 h-3.5 w-3.5" />
               {behindN > 0 ? `拉取 (${behindN})` : '拉取'}
             </Button>
             {(onFetchChanges || !hasUpstream) && (
@@ -201,7 +212,7 @@ export function RemoteSyncBar({
                     <ChevronDown className="h-3.5 w-3.5" />
                   </Button>
                 </PopoverTrigger>
-                <PopoverContent align="end" className="w-60 p-1">
+                <PopoverContent align="end" className="w-72 p-1">
                   {onFetchChanges && (
                     <button
                       type="button"
@@ -212,11 +223,11 @@ export function RemoteSyncBar({
                         onFetchChanges()
                       }}
                     >
-                      <Download className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <DownloadCloud className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                       <span>
                         获取
                         <span className="block font-normal text-xs text-muted-foreground">
-                          仅下载远端最新信息，不改动本地文件
+                          只下载远端最新信息到本地缓存，不改动工作区文件
                         </span>
                       </span>
                     </button>
@@ -238,77 +249,61 @@ export function RemoteSyncBar({
             onClick={onFetchChanges}
             disabled={remoteDisabled}
             className={iconBtn}
-            title="获取远程仓库的最新信息（不合并到本地）"
-            aria-label="获取"
+            title="获取：只下载远端最新信息到本地缓存，不改动工作区文件"
+            aria-label="获取远端信息"
           >
-            <Download className="mr-1 h-3.5 w-3.5" />
+            <DownloadCloud className="mr-1 h-3.5 w-3.5" />
             获取
           </Button>
         )}
-        {compact && onPullChanges && behindN > 0 && (
+        {compact && onPullChanges && (
           <Button
             size="sm"
+            variant={behindN > 0 ? 'default' : 'ghost'}
             onClick={onPullChanges}
             disabled={remoteDisabled}
-            className={iconBtn}
-            title={`拉取并合并远程更改到当前分支（${behindN}）`}
-            aria-label={`拉取 ${behindN}`}
-          >
-            <GitPullRequest className={cn('h-3.5 w-3.5', !compact && 'mr-1')} />
-            {!compact && `拉取 (${behindN})`}
-          </Button>
-        )}
-        {compact && onPullChanges && behindN === 0 && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onPullChanges}
-            disabled={remoteDisabled}
-            className={iconBtn}
+            className={cn(iconBtn, 'gap-1 px-1.5')}
             title={
               hasUpstream
-                ? '拉取远程更改（即使没有待拉取的提交）'
-                : '当前分支还没有对应的远程分支，拉取可能没有目标；可先推送以创建并关联'
+                ? `拉取：把远端的新提交下载并合并进当前分支${behindN > 0 ? `（有 ${behindN} 个待拉取）` : '（当前没有待拉取的提交）'}`
+                : '拉取：当前分支还没有对应的远程分支，拉取可能没有目标；可先推送以创建并关联'
             }
-            aria-label="拉取"
+            aria-label={behindN > 0 ? `拉取 ${behindN} 个提交` : '拉取'}
           >
-            <GitPullRequest className={cn('h-3.5 w-3.5', !compact && 'mr-1')} />
-            {!compact && '拉取'}
+            <ArrowDownToLine className="h-3.5 w-3.5" />
+            拉取
+            {behindN > 0 && (
+              <span className="rounded bg-primary-foreground/20 px-1 text-[10px] font-semibold leading-4">
+                {behindN}
+              </span>
+            )}
           </Button>
         )}
-        {showPush && onPushChanges && aheadN > 0 && (
+        {showPush && onPushChanges && (
           <Button
             size="sm"
+            variant={aheadN > 0 ? 'default' : 'ghost'}
             onClick={onPushChanges}
             disabled={remoteDisabled}
-            className={iconBtn}
+            className={cn(iconBtn, compact && 'gap-1 px-1.5')}
             title={
-              hasUpstream
-                ? `将本地提交推送到远程仓库（${aheadN}）`
-                : `将本地提交推送到远程，并关联为当前分支的对应远程分支（${aheadN}）`
+              aheadN > 0
+                ? hasUpstream
+                  ? `推送：把本地 ${aheadN} 个提交上传到远程仓库`
+                  : `推送：把本地 ${aheadN} 个提交上传到远程，并关联为当前分支的对应远程分支`
+                : hasUpstream
+                  ? '推送：当前分支已与远端同步，没有需要上传的提交'
+                  : '推送：首次推送会在远程创建同名分支并关联，之后即可正常拉取 / 推送'
             }
-            aria-label={`推送 ${aheadN}`}
+            aria-label={aheadN > 0 ? `推送 ${aheadN} 个提交` : '推送'}
           >
-            <Upload className={cn('h-3.5 w-3.5', !compact && 'mr-1')} />
-            {!compact && `推送 (${aheadN})`}
-          </Button>
-        )}
-        {showPush && onPushChanges && aheadN === 0 && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onPushChanges}
-            disabled={remoteDisabled}
-            className={iconBtn}
-            title={
-              hasUpstream
-                ? '推送当前分支（即使没有待推送的提交）'
-                : '首次推送会在远程创建同名分支并关联，之后即可正常拉取 / 推送'
-            }
-            aria-label="推送"
-          >
-            <Upload className={cn('h-3.5 w-3.5', !compact && 'mr-1')} />
-            {!compact && '推送'}
+            <ArrowUpFromLine className={cn('h-3.5 w-3.5', !compact && 'mr-1')} />
+            推送
+            {aheadN > 0 && (
+              <span className="rounded bg-primary-foreground/20 px-1 text-[10px] font-semibold leading-4">
+                {aheadN}
+              </span>
+            )}
           </Button>
         )}
         {onRefresh && (
@@ -317,11 +312,12 @@ export function RemoteSyncBar({
             size="sm"
             onClick={onRefresh}
             disabled={disabled}
-            className={cn('p-0', compact ? 'h-6 w-6' : 'h-7 w-7')}
-            title={refreshTitle}
-            aria-label="刷新"
+            className={cn('gap-1', compact ? 'h-6 px-1.5' : 'h-7 px-2')}
+            title={`${refreshTitle}：重新读取本地仓库状态（不联网；联网请用「获取」）`}
+            aria-label="刷新本地仓库状态"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${refreshSpinning ? 'animate-spin' : ''}`} />
+            <RotateCw className={`h-3.5 w-3.5 ${refreshSpinning ? 'animate-spin' : ''}`} />
+            {compact && '刷新'}
           </Button>
         )}
       </div>
