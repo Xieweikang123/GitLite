@@ -98,17 +98,17 @@ export function RemoteSyncBar({
           >
             <button
               type="button"
-              className="flex items-center gap-1 rounded-sm px-1 hover:bg-amber-500/10"
+              className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-sm px-1 hover:bg-amber-500/10"
               title={`有 ${behindN} 个提交在远端但本地还没有，点击查看`}
             >
               <AlertCircle
                 className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400"
               />
-              <span className="whitespace-nowrap text-amber-700 dark:text-amber-300">
-                {compact ? '落后' : null}
-                <span className="font-medium">{behindN}</span>
-                {compact ? '' : ' 待拉取'}
-              </span>
+              {!compact && (
+                <span className="whitespace-nowrap text-amber-700 dark:text-amber-300">
+                  <span className="font-medium">{behindN}</span> 待拉取
+                </span>
+              )}
             </button>
           </PendingCommitsPopover>
         )}
@@ -121,17 +121,17 @@ export function RemoteSyncBar({
           >
             <button
               type="button"
-              className="flex items-center gap-1 rounded-sm px-1 hover:bg-blue-500/10"
+              className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-sm px-1 hover:bg-blue-500/10"
               title={`有 ${aheadN} 个本地提交还没上传到远端，点击查看`}
             >
               <CheckCircle
                 className="h-3.5 w-3.5 shrink-0 text-blue-600 dark:text-blue-400"
               />
-              <span className="whitespace-nowrap text-blue-700 dark:text-blue-300">
-                {compact ? '领先' : null}
-                <span className="font-medium">{aheadN}</span>
-                {compact ? '' : ' 待推送'}
-              </span>
+              {!compact && (
+                <span className="whitespace-nowrap text-blue-700 dark:text-blue-300">
+                  <span className="font-medium">{aheadN}</span> 待推送
+                </span>
+              )}
             </button>
           </PendingCommitsPopover>
         )}
@@ -165,15 +165,15 @@ export function RemoteSyncBar({
           </div>
         )}
       </div>
-      <div className={cn('flex shrink-0 items-center', compact ? 'gap-0.5' : 'gap-2')}>
+      <div className={cn('flex shrink-0 items-center', compact ? 'gap-1.5' : 'gap-2')}>
         {compact && onFetchChanges && (
           <Button
             variant="ghost"
             size="sm"
             onClick={onFetchChanges}
             disabled={remoteDisabled}
-            className={cn(iconBtn, 'gap-1 px-1.5')}
-            title="获取：只下载远端最新信息到本地缓存，不改动工作区文件"
+            className="h-6 shrink-0 gap-1 px-1.5 text-[11px]"
+            title="获取：只下载远端最新信息到本地缓存，不改动工作区文件（不合并到本地）"
             aria-label="获取远端信息"
           >
             <DownloadCloud className="h-3.5 w-3.5" />
@@ -262,7 +262,7 @@ export function RemoteSyncBar({
             variant={behindN > 0 ? 'default' : 'ghost'}
             onClick={onPullChanges}
             disabled={remoteDisabled}
-            className={cn(iconBtn, 'gap-1 px-1.5')}
+            className="h-6 shrink-0 gap-1 px-1.5 text-[11px]"
             title={
               hasUpstream
                 ? `拉取：把远端的新提交下载并合并进当前分支${behindN > 0 ? `（有 ${behindN} 个待拉取）` : '（当前没有待拉取的提交）'}`
@@ -285,7 +285,7 @@ export function RemoteSyncBar({
             variant={aheadN > 0 ? 'default' : 'ghost'}
             onClick={onPushChanges}
             disabled={remoteDisabled}
-            className={cn(iconBtn, compact && 'gap-1 px-1.5')}
+            className={cn('shrink-0', compact ? 'h-6 gap-1 px-1.5 text-[11px]' : iconBtn)}
             title={
               aheadN > 0
                 ? hasUpstream
@@ -312,7 +312,7 @@ export function RemoteSyncBar({
             size="sm"
             onClick={onRefresh}
             disabled={disabled}
-            className={cn('gap-1', compact ? 'h-6 px-1.5' : 'h-7 px-2')}
+            className={cn('shrink-0', compact ? 'h-6 gap-1 px-1.5 text-[11px]' : 'h-7 px-2')}
             title={`${refreshTitle}：重新读取本地仓库状态（不联网；联网请用「获取」）`}
             aria-label="刷新本地仓库状态"
           >
