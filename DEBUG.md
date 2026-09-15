@@ -244,3 +244,42 @@ Result: `setRepoInfo` writes per switch went **4 → 1**.
   heavy `recordRecent=true` path is still being hit.
 - Render-side counters already exist in `App.tsx` as `[DIAG][pull][App] hydrate check` /
   `do hydrate` / `skip hydrate`.
+
+## Duplicate "N 待拉取" badges (one number rendered twice) — engineering notes
+
+Context: the workspace page showed `4 待拉取` twice at the same time — once in the top
+toolbar, once in the sync bar above the commit card.
+
+Root cause: two independent components each render `repoInfo.behind`:
+
+| Renderer | Source | Style |
+| --- | --- | --- |
+| `TopToolbar` | `repoInfo.behind > 0` | amber text badge, popover trigger only |
+| `WorkspaceStatus` → `RemoteSyncBar` | `behindN > 0` | amber icon + text, next to the 「拉取 (N)」 button |
+
+Both read the same field of the same object, so they can never disagree — always same
+value, same visibility. Not two perspectives on one fact: one fact drawn twice.
+Introduced by `314f247`, which added the toolbar badge without removing the sync-bar
+status that already existed.
+
+Principle: **a piece of state should have exactly one canonical display per screen.**
+When two widgets show a derived number, either delete one or make the second a strictly
+different affordance (action vs. read-only). "Same number, two places" is always a bug,
+never redundancy-by-design.
+
+Resolution: kept `RemoteSyncBar`, because its status sits beside the 「拉取 (N)」 button
+(actionable) while the toolbar badge was read-only — the toolbar has no pull button, so
+acting on it meant navigating back to the workspace. The status is lost on the
+commits/files/stats tabs, which was accepted (the toolbar is hidden there anyway when
+`activeTab === 'multi'`, and per-tab sync context lives in `UnifiedCommitView`).
+
+Do NOT:
+- Do not dedupe by hiding one with CSS (`hidden`, responsive breakpoints). The condition
+  `behind > 0` must not be evaluated in two places at all.
+- Do not "unify" the two by extracting a shared badge component while leaving both call
+  sites — that preserves the duplicate, it only shares the markup.
+- Grep by the user-visible string (`待拉取`), not by prop name: the two sites use
+  different variables (`repoInfo.behind` vs. `behindN`), so a prop-based grep misses one.
+  Also check `RemoteSyncBar` itself — it is mounted from three places
+  (`WorkspaceStatus`, `UnifiedCommitView`, plus its own compact branches), so the
+  duplicate may be *within* one component across densities.
