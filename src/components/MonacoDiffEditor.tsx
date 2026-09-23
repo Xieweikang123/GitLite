@@ -1,6 +1,6 @@
 import { useMemo, useCallback, useSyncExternalStore, useRef, useEffect, useState } from 'react'
 import type { editor } from 'monaco-editor'
-import Editor, { DiffEditor, type DiffOnMount, type OnMount } from '@monaco-editor/react'
+import { DiffEditor, type DiffOnMount } from '@monaco-editor/react'
 import { Settings2, X, RotateCcw } from 'lucide-react'
 import { getMonacoLanguageFromPath } from '@/utils/monacoLanguage'
 import { isUnifiedDiffNewFile, parseUnifiedDiffToPair } from '@/utils/parseUnifiedDiff'
@@ -192,15 +192,8 @@ export function MonacoDiffEditor({
 
   const isNewFile = useMemo(() => (forceDiff ? false : isUnifiedDiffNewFile(diff)), [diff, forceDiff])
 
-  const singleEditorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
   const diffEditorRef = useRef<editor.IStandaloneDiffEditor | null>(null)
   const [editorMountGen, setEditorMountGen] = useState(0)
-
-  const onMountSingle = useCallback<OnMount>((ed) => {
-    singleEditorRef.current = ed
-    ed.layout()
-    setEditorMountGen((g) => g + 1)
-  }, [])
 
   const onMount = useCallback<DiffOnMount>((ed) => {
     diffEditorRef.current = ed
@@ -209,33 +202,6 @@ export function MonacoDiffEditor({
   }, [])
 
   useEffect(() => {
-    if (isNewFile) {
-      const ed = singleEditorRef.current
-      if (!ed) return
-      const dom = ed.getDomNode()
-      if (!dom) return
-
-      const handleWheel = (e: WheelEvent) => {
-        if (!e.shiftKey) return
-        const delta = shiftWheelHorizontalDelta(e)
-        if (delta === 0) return
-
-        const target = e.target as Node
-        if (!dom.contains(target)) return
-
-        e.preventDefault()
-        e.stopPropagation()
-
-        const next = ed.getScrollLeft() + delta
-        ed.setScrollLeft(next)
-      }
-
-      dom.addEventListener('wheel', handleWheel, { passive: false, capture: true })
-      return () => {
-        dom.removeEventListener('wheel', handleWheel, { capture: true })
-      }
-    }
-
     const ed = diffEditorRef.current
     if (!ed) return
     const dom = ed.getContainerDomNode()
@@ -274,7 +240,6 @@ export function MonacoDiffEditor({
 
   // 打开时自动跳到第一个差异处
   useEffect(() => {
-    if (isNewFile) return
     const ed = diffEditorRef.current
     if (!ed) return
     let disposed = false
@@ -322,52 +287,6 @@ export function MonacoDiffEditor({
     sectionHeaderLetterSpacing: minimapConfig.sectionHeaderLetterSpacing,
   }), [minimapConfig])
 
-  if (isNewFile) {
-    return (
-      <div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden">
-        <button
-          type="button"
-          onClick={() => setShowMinimapPanel((v) => !v)}
-          className="absolute right-2 top-2 z-10 inline-flex h-7 items-center gap-1 rounded-md border bg-background/80 px-2 text-[11px] shadow-sm backdrop-blur hover:bg-accent"
-          title="配置 minimap"
-        >
-          <Settings2 className="h-3 w-3" /> 缩略图
-        </button>
-        {showMinimapPanel && <MinimapConfigPanel onClose={() => setShowMinimapPanel(false)} />}
-        <Editor
-          height="100%"
-          width="100%"
-          className="min-h-0 flex-1"
-          language={language}
-          theme={isDark ? 'vs-dark' : 'vs'}
-          value={modified}
-          onMount={onMountSingle}
-          options={{
-            readOnly: true,
-            automaticLayout: true,
-            minimap: minimapOptions,
-            fontSize: 13,
-            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-            scrollBeyondLastLine: false,
-            contextmenu: true,
-            wordWrap: 'off',
-            scrollbar: {
-              vertical: 'auto',
-              horizontal: 'auto',
-              verticalScrollbarSize: 12,
-              horizontalScrollbarSize: 12,
-            },
-          }}
-          loading={
-            <div className="text-muted-foreground flex h-32 items-center justify-center text-sm">
-              加载编辑器…
-            </div>
-          }
-        />
-      </div>
-    )
-  }
-
   return (
     <div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden">
       <button
@@ -379,6 +298,7 @@ export function MonacoDiffEditor({
         <Settings2 className="h-3 w-3" /> 缩略图
       </button>
       {showMinimapPanel && <MinimapConfigPanel onClose={() => setShowMinimapPanel(false)} />}
+      {/* 新增文件用内联 diff 单栏展示（新增行整行高亮且不出现左侧空白栏）；其余文件用并排对比 */}
       <DiffEditor
         height="100%"
         width="100%"
@@ -391,7 +311,7 @@ export function MonacoDiffEditor({
         options={{
           readOnly: true,
           automaticLayout: true,
-          renderSideBySide: true,
+          renderSideBySide: !isNewFile,
           minimap: minimapOptions,
           fontSize: 13,
           fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
@@ -401,7 +321,7 @@ export function MonacoDiffEditor({
           renderOverviewRuler: true,
           overviewRulerBorder: false,
           diffWordWrap: 'off',
-          enableSplitViewResizing: true,
+          enableSplitViewResizing: !isNewFile,
           scrollbar: {
             vertical: 'auto',
             horizontal: 'auto',

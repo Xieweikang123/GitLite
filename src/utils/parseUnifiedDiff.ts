@@ -1,6 +1,6 @@
 /**
- * Git unified diff 是否为「新增文件」：旧版为 /dev/null，左侧无可比对内容。
- * 用于避免 Diff Editor 左侧整栏空白。
+ * Git unified diff 是否为「新增文件」：旧版内容为空（/dev/null 或 hunk 头为 -0,0）。
+ * 用于对新增文件改用内联（单栏）diff 展示，避免并排对比时左侧整栏空白。
  */
 export function isUnifiedDiffNewFile(diffText: string): boolean {
   const t = diffText.trim()
@@ -8,6 +8,9 @@ export function isUnifiedDiffNewFile(diffText: string): boolean {
   if (/Binary files .+ differ/.test(diffText)) return false
   if (/^new file mode \d+/m.test(diffText)) return true
   if (/^---\s+\/dev\/null\s*$/m.test(diffText)) return true
+  // libgit2 的 DiffFormat::Patch 可能不输出 new file mode / --- /dev/null，
+  // 此时用「旧侧 0 行、新侧从第 1 行开始」的 hunk 头判定为新增文件。
+  if (/^@@ -0,0 \+1(?:,\d+)? @@/m.test(diffText)) return true
   return false
 }
 
