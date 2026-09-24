@@ -46,3 +46,6 @@ Desktop.ini
 
 # Local test repos
 test-repo/
+
+# OpenChamber local debug artifacts (screenshots, etc.)
+.openchamber/
