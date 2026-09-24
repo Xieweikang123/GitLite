@@ -118,6 +118,21 @@ export function RemoteSyncBar({
             repoPath={repoPath}
             count={aheadN}
             onCommitClick={onPendingCommitClick}
+            headerAction={
+              onPushChanges ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  className={cn('shrink-0', compact ? 'h-6 px-2 text-[11px]' : 'h-7 px-2 text-xs')}
+                  disabled={remoteDisabled}
+                  title="把这些提交推送到远程仓库"
+                  onClick={() => onPushChanges()}
+                >
+                  <ArrowUpFromLine className="mr-1 h-3 w-3" />
+                  立即推送
+                </Button>
+              ) : undefined
+            }
           >
             <button
               type="button"

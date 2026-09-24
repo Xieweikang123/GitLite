@@ -1036,9 +1036,6 @@ function App() {
           onFetchRemoteOverview={fetchOriginAndSyncOverview}
           onOpenRemoteRepository={handleOpenRemoteRepository}
           onOpenRemoteManage={() => setRemoteManageOpen(true)}
-          onPendingCommitClick={(commit) =>
-            handleStatsCommitJump({ commit, scope: 'head', rev: null })
-          }
           onPushChanges={handlePushChangesRealtime}
           onPullChanges={handlePullChanges}
           loading={loading}

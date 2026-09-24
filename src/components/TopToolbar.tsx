@@ -1,10 +1,9 @@
 import { invoke } from '@tauri-apps/api/tauri'
-import { GitBranch, Network, RotateCcw, Timer, Upload } from 'lucide-react'
+import { GitBranch, Network, RotateCcw, Timer } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { BranchSwitcher } from './BranchSwitcher'
 import { Button } from './ui/button'
 import { BranchInfo, BranchSyncOverview, CommitInfo, type RepoInfo } from '../types/git'
-import { PendingCommitsPopover } from './PendingCommitsPopover'
 
 interface TopToolbarProps {
   onBranchSelect: (branchName: string) => void
@@ -15,7 +14,6 @@ interface TopToolbarProps {
   onFetchRemoteOverview?: () => Promise<BranchSyncOverview[]>
   onOpenRemoteRepository?: () => void
   onOpenRemoteManage?: () => void
-  onPendingCommitClick?: (commit: CommitInfo) => void
   onPushChanges?: () => void | Promise<void>
   onPullChanges?: () => void | Promise<void>
   loading: boolean
@@ -39,7 +37,6 @@ export function TopToolbar({
   onFetchRemoteOverview,
   onOpenRemoteRepository,
   onOpenRemoteManage,
-  onPendingCommitClick,
   onPushChanges,
   onPullChanges,
   loading,
@@ -110,39 +107,6 @@ export function TopToolbar({
               </Button>
             )}
           </div>
-            {typeof repoInfo.ahead === 'number' && repoInfo.ahead > 0 ? (
-              <div className="hidden items-center gap-1.5 sm:flex">
-                <PendingCommitsPopover
-                  kind="outgoing"
-                  repoPath={repoInfo.path}
-                  count={repoInfo.ahead}
-                  onCommitClick={onPendingCommitClick}
-                  headerAction={
-                    onPushChanges ? (
-                      <Button
-                        type="button"
-                        size="sm"
-                        className="h-6 shrink-0 px-2 text-[11px]"
-                        disabled={loading}
-                        title="把这些提交推送到远程仓库"
-                        onClick={() => void onPushChanges()}
-                      >
-                        <Upload className="mr-1 h-3 w-3" />
-                        立即推送
-                      </Button>
-                    ) : undefined
-                  }
-                >
-                  <button
-                    type="button"
-                    className="rounded bg-blue-600/10 px-1.5 py-0.5 text-[11px] text-blue-700 hover:bg-blue-600/20 dark:text-blue-300"
-                    title={`本地领先 ${repoInfo.ahead} 个提交，点击查看待推送的提交`}
-                  >
-                    {repoInfo.ahead} 待推送
-                  </button>
-                </PendingCommitsPopover>
-              </div>
-            ) : null}
           <button
             type="button"
             className="min-w-0 max-w-[min(22rem,32vw)] truncate text-left text-xs text-muted-foreground hover:text-foreground hover:underline"

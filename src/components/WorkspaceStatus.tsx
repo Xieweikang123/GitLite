@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { Badge } from './ui/badge'
 import { FileChange, type RepoInfo, type WorkspaceGitActions, type CommitInfo } from '../types/git'
 import { FileDiffModal } from './FileDiffModal'
-import { Eye, Archive, ArchiveRestore, Trash2, CheckCircle, AlertCircle, Loader2, Sparkles, RotateCcw, ChevronDown } from 'lucide-react'
+import { Eye, Archive, ArchiveRestore, Trash2, CheckCircle, AlertCircle, Loader2, Sparkles, RotateCcw, ChevronDown, ChevronRight } from 'lucide-react'
 import { shortenPathMiddle } from '../lib/utils'
 import { formatTauriInvokeError } from '../utils/tauriError'
 import { getClientCalendarOffsetEastMinutes } from '../utils/clientCalendarOffset'
@@ -32,6 +32,39 @@ interface WorkspaceStatusProps {
 
 /** 后台静默刷新周期（秒） */
 export const REFRESH_INTERVAL_SEC = 10
+
+/** 工作区文件区块标识（用于折叠状态持久化） */
+type WorkspaceSectionKey = 'staged' | 'unstaged' | 'untracked' | 'conflicted'
+
+const COLLAPSED_SECTIONS_KEY = 'gitlite:workspaceStatus:collapsedSections'
+
+/** 默认折叠，避免文件过多时需要长时间滚动 */
+const DEFAULT_COLLAPSED_SECTIONS: Record<WorkspaceSectionKey, boolean> = {
+  staged: true,
+  unstaged: true,
+  untracked: true,
+  conflicted: false,
+}
+
+function loadCollapsedSections(): Record<WorkspaceSectionKey, boolean> {
+  if (typeof window === 'undefined') return { ...DEFAULT_COLLAPSED_SECTIONS }
+  try {
+    const raw = localStorage.getItem(COLLAPSED_SECTIONS_KEY)
+    if (!raw) return { ...DEFAULT_COLLAPSED_SECTIONS }
+    const parsed = JSON.parse(raw) as Partial<Record<WorkspaceSectionKey, boolean>>
+    return { ...DEFAULT_COLLAPSED_SECTIONS, ...parsed }
+  } catch {
+    return { ...DEFAULT_COLLAPSED_SECTIONS }
+  }
+}
+
+function saveCollapsedSections(value: Record<WorkspaceSectionKey, boolean>) {
+  try {
+    localStorage.setItem(COLLAPSED_SECTIONS_KEY, JSON.stringify(value))
+  } catch {
+    /* 忽略 */
+  }
+}
 
 interface WorkspaceStatusData {
   staged_files: FileChange[]
@@ -81,6 +114,17 @@ export function WorkspaceStatus({
   remoteBusy = false,
 }: WorkspaceStatusProps) {
   const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatusData | null>(null)
+  /** 各文件区块折叠状态（默认折叠以压缩页面高度） */
+  const [collapsedSections, setCollapsedSections] = useState<Record<WorkspaceSectionKey, boolean>>(
+    loadCollapsedSections,
+  )
+  const toggleSection = useCallback((key: WorkspaceSectionKey) => {
+    setCollapsedSections((prev) => {
+      const next = { ...prev, [key]: !prev[key] }
+      saveCollapsedSections(next)
+      return next
+    })
+  }, [])
   const [commitMessage, setCommitMessage] = useState('')
   const [loading, setLoading] = useState(false)
   /** 提交并同步/推送的独立加载态，避免被其他通用 loading（如状态刷新）中途覆盖 */
@@ -1123,6 +1167,7 @@ export function WorkspaceStatus({
           disabled={loading || remoteBusy}
           onFetchChanges={onFetchChanges}
           onPullChanges={onPullChanges}
+          onPushChanges={handlePushFromCard}
           repoPath={repoInfo.path}
           onPendingCommitClick={onJumpToCommit}
         />
@@ -1514,22 +1559,42 @@ export function WorkspaceStatus({
       {workspaceStatus?.conflicted_files && workspaceStatus.conflicted_files.length > 0 && (
         <Card className="border-l-4 border-l-red-600 dark:border-l-red-500">
           <CardHeader className="bg-red-50/50 dark:bg-red-950/20">
-            <CardTitle className="text-lg flex items-center gap-2 text-red-800 dark:text-red-300">
-              <AlertCircle className="h-5 w-5" />
-              合并冲突
-            </CardTitle>
+            <div
+              className="flex items-center gap-2 cursor-pointer select-none"
+              onClick={() => toggleSection('conflicted')}
+              role="button"
+              aria-expanded={!collapsedSections.conflicted}
+              title={collapsedSections.conflicted ? '展开合并冲突' : '折叠合并冲突'}
+            >
+              {collapsedSections.conflicted ? (
+                <ChevronRight className="h-5 w-5 shrink-0 text-red-800 dark:text-red-300" />
+              ) : (
+                <ChevronDown className="h-5 w-5 shrink-0 text-red-800 dark:text-red-300" />
+              )}
+              <CardTitle className="text-lg flex items-center gap-2 text-red-800 dark:text-red-300">
+                <AlertCircle className="h-5 w-5" />
+                合并冲突
+                <span className="text-sm font-normal opacity-70">
+                  （{workspaceStatus.conflicted_files.length}）
+                </span>
+              </CardTitle>
+            </div>
             <CardDescription>请解决冲突后暂存并提交；查看差异为工作区与索引侧内容（含冲突标记）。</CardDescription>
             <Button
               variant="destructive"
               size="sm"
-              className="mt-2 gap-1"
+              className="mt-2 gap-1 self-start"
               disabled={abortingMerge}
-              onClick={() => void abortMerge()}
+              onClick={(e) => {
+                e.stopPropagation()
+                void abortMerge()
+              }}
             >
               {abortingMerge ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
               放弃合并
             </Button>
           </CardHeader>
+          {!collapsedSections.conflicted && (
           <CardContent>
             <div className="space-y-2">
               {workspaceStatus.conflicted_files.map((file) => (
@@ -1584,22 +1649,40 @@ export function WorkspaceStatus({
               ))}
             </div>
           </CardContent>
+          )}
         </Card>
       )}
 
       {/* 暂存的文件 */}
       {workspaceStatus?.staged_files && workspaceStatus.staged_files.length > 0 && (
         <Card className="border-l-4 border-l-green-500 dark:border-l-green-400">
-          <CardHeader className="bg-green-50/50 dark:bg-green-900/10">
-            <div className="flex items-center justify-between">
+          <CardHeader
+            className="bg-green-50/50 dark:bg-green-900/10 cursor-pointer select-none"
+            onClick={() => toggleSection('staged')}
+            role="button"
+            aria-expanded={!collapsedSections.staged}
+            title={collapsedSections.staged ? '展开已暂存文件' : '折叠已暂存文件'}
+          >
+            <div className="flex items-center justify-between gap-2">
               <CardTitle className="text-lg flex items-center gap-2 text-green-700 dark:text-green-300">
+                {collapsedSections.staged ? (
+                  <ChevronRight className="h-5 w-5 shrink-0" />
+                ) : (
+                  <ChevronDown className="h-5 w-5 shrink-0" />
+                )}
                 <CheckCircle className="h-5 w-5" />
                 已暂存的文件
+                <span className="text-sm font-normal opacity-70">
+                  （{workspaceStatus.staged_files.length}）
+                </span>
               </CardTitle>
               <Button
                 size="sm"
                 variant="outline"
-                onClick={unstageAllFiles}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  void unstageAllFiles()
+                }}
                 disabled={
                   loading || unstagingLoading || stagingLoading || !workspaceStatus?.staged_files?.length
                 }
@@ -1616,6 +1699,7 @@ export function WorkspaceStatus({
               </Button>
             </div>
           </CardHeader>
+          {!collapsedSections.staged && (
           <CardContent>
             <div className="space-y-2">
               {workspaceStatus.staged_files.map((file) => (
@@ -1658,6 +1742,7 @@ export function WorkspaceStatus({
               ))}
             </div>
           </CardContent>
+          )}
         </Card>
       )}
 
@@ -1691,18 +1776,35 @@ export function WorkspaceStatus({
       {/* 未暂存的文件 */}
       {workspaceStatus?.unstaged_files && workspaceStatus.unstaged_files.length > 0 && (
         <Card className="border-l-4 border-l-orange-500 dark:border-l-orange-400">
-          <CardHeader className="bg-orange-50/50 dark:bg-orange-900/10">
+          <CardHeader
+            className="bg-orange-50/50 dark:bg-orange-900/10 cursor-pointer select-none"
+            onClick={() => toggleSection('unstaged')}
+            role="button"
+            aria-expanded={!collapsedSections.unstaged}
+            title={collapsedSections.unstaged ? '展开未暂存文件' : '折叠未暂存文件'}
+          >
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <CardTitle className="text-lg flex items-center gap-2 text-orange-700 dark:text-orange-300">
+                {collapsedSections.unstaged ? (
+                  <ChevronRight className="h-5 w-5 shrink-0" />
+                ) : (
+                  <ChevronDown className="h-5 w-5 shrink-0" />
+                )}
                 <AlertCircle className="h-5 w-5" />
                 未暂存的文件
+                <span className="text-sm font-normal opacity-70">
+                  （{workspaceStatus.unstaged_files.length}）
+                </span>
               </CardTitle>
               <div className="flex flex-wrap items-center gap-2 justify-end shrink-0">
                 <Button
                   size="sm"
                   variant="outline"
                   className="border-destructive/40 text-destructive hover:bg-destructive/10"
-                  onClick={() => setUnstagedDiscardConfirm({ kind: 'all' })}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setUnstagedDiscardConfirm({ kind: 'all' })
+                  }}
                   disabled={
                     loading ||
                     unstagingLoading ||
@@ -1726,7 +1828,10 @@ export function WorkspaceStatus({
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={stageAllFiles}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    void stageAllFiles()
+                  }}
                   disabled={
                     loading ||
                     unstagingLoading ||
@@ -1751,6 +1856,7 @@ export function WorkspaceStatus({
               </div>
             </div>
           </CardHeader>
+          {!collapsedSections.unstaged && (
           <CardContent>
             <div className="space-y-2">
               {workspaceStatus.unstaged_files.map((file) => (
@@ -1824,22 +1930,37 @@ export function WorkspaceStatus({
               ))}
             </div>
           </CardContent>
+          )}
         </Card>
       )}
 
       {/* 未跟踪的文件 */}
       {workspaceStatus?.untracked_files && workspaceStatus.untracked_files.length > 0 && (
         <Card>
-          <CardHeader>
+          <CardHeader
+            className="cursor-pointer select-none"
+            onClick={() => toggleSection('untracked')}
+            role="button"
+            aria-expanded={!collapsedSections.untracked}
+            title={collapsedSections.untracked ? '展开未跟踪文件' : '折叠未跟踪文件'}
+          >
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <CardTitle className="text-lg">
+              <CardTitle className="text-lg flex items-center gap-1">
+                {collapsedSections.untracked ? (
+                  <ChevronRight className="h-5 w-5 shrink-0" />
+                ) : (
+                  <ChevronDown className="h-5 w-5 shrink-0" />
+                )}
                 未跟踪的文件（{untrackedDisplayCount}）
               </CardTitle>
               <div className="flex flex-wrap items-center gap-2 justify-end shrink-0">
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={stageAllUntracked}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    void stageAllUntracked()
+                  }}
                   disabled={
                     loading ||
                     unstagingLoading ||
@@ -1889,6 +2010,7 @@ export function WorkspaceStatus({
               </div>
             </div>
           </CardHeader>
+          {!collapsedSections.untracked && (
           <CardContent>
             <div className="space-y-2">
               {workspaceStatus.untracked_files
@@ -1963,6 +2085,7 @@ export function WorkspaceStatus({
               ))}
             </div>
           </CardContent>
+          )}
         </Card>
       )}
 
