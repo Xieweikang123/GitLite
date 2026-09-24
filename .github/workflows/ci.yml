@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Lint, type-check and Rust tests
+    # GitLite is a Windows desktop app (Win32 installer scripts, .ico assets,
+    # MSVC toolchain). Running on windows-latest keeps CI identical to the
+    # development environment and avoids unrelated Linux system dependencies.
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Lint
+        run: npm ci && npm run lint
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Rust tests
+        run: cd src-tauri && cargo test
