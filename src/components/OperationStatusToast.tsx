@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { AlertCircle, CheckCircle, FileText, Loader2, X } from 'lucide-react'
+import { AlertCircle, AlertTriangle, Check, FileText, Loader2, X } from 'lucide-react'
 import { Button } from './ui/button'
 import { cn } from '../lib/utils'
 
@@ -124,30 +124,40 @@ export function OperationStatusToast({
   if (status === 'hidden') return null
 
   const expanded = status === 'error' || status === 'conflict'
+
+  // 卡片描边：保留状态色氛围，但用中性底色，避免整块染色发闷
   const tone =
     status === 'success'
-      ? 'border-emerald-500/25 bg-emerald-500/10'
+      ? 'border-emerald-500/45 dark:border-emerald-400/30'
       : status === 'error'
-        ? 'border-destructive/25 bg-destructive/10'
+        ? 'border-destructive/45 dark:border-destructive/35'
         : status === 'conflict'
-          ? 'border-amber-500/30 bg-amber-500/10'
-          : 'border-border bg-card/95'
+          ? 'border-amber-500/50 dark:border-amber-400/35'
+          : 'border-border dark:border-primary/30'
 
-  const titleColor =
+  // 图标徽章：状态色的唯一载体
+  const badgeTone =
     status === 'success'
-      ? 'text-emerald-800 dark:text-emerald-300'
+      ? 'bg-emerald-500/15 text-emerald-600 ring-emerald-500/25 dark:text-emerald-400'
       : status === 'error'
-        ? 'text-destructive'
+        ? 'bg-destructive/15 text-destructive ring-destructive/25'
         : status === 'conflict'
-          ? 'text-amber-800 dark:text-amber-300'
-          : 'text-foreground'
+          ? 'bg-amber-500/15 text-amber-600 ring-amber-500/30 dark:text-amber-400'
+          : 'bg-primary/15 text-primary ring-primary/25'
 
   const StatusIcon =
     status === 'running'
       ? Loader2
       : status === 'success'
-        ? CheckCircle
-        : AlertCircle
+        ? Check
+        : status === 'conflict'
+          ? AlertTriangle
+          : AlertCircle
+
+  const primaryText = status === 'running' ? title : summary || title
+  // 结果文案展示时，把操作名作为副标题补充上下文（相同则省略）
+  const secondaryText =
+    status !== 'running' && summary && summary !== title ? title : undefined
 
   return (
     <div
@@ -158,46 +168,52 @@ export function OperationStatusToast({
         role={status === 'error' || status === 'conflict' ? 'alert' : 'status'}
         aria-live="polite"
         className={cn(
-          'pointer-events-auto rounded-lg border p-3 shadow-lg backdrop-blur-sm',
+          'pointer-events-auto overflow-hidden rounded-xl border bg-card shadow-lg backdrop-blur-sm',
+          'dark:bg-[#151821] dark:shadow-[0_10px_30px_-10px_rgba(0,0,0,0.85)]',
+          expanded ? 'w-full' : 'mx-auto w-fit max-w-full',
           tone
         )}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
       >
-        <div className="flex items-start gap-2">
-          <StatusIcon
+        <div className="flex items-center gap-2.5 py-2 pl-2.5 pr-2">
+          <span
             className={cn(
-              'mt-0.5 h-4 w-4 shrink-0',
-              titleColor,
-              status === 'running' && 'animate-spin'
+              'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ring-1 ring-inset',
+              badgeTone
             )}
             aria-hidden
-          />
-          <div className="min-w-0 flex-1">
-            <p className={cn('text-sm font-medium', titleColor)}>
-              {status === 'running' ? title : summary || title}
-            </p>
+          >
+            <StatusIcon
+              className={cn('h-3.5 w-3.5', status === 'running' && 'animate-spin')}
+            />
+          </span>
+          <div className={cn('min-w-0', expanded && 'flex-1')}>
+            <p className="truncate text-sm font-medium text-foreground">{primaryText}</p>
+            {secondaryText && (
+              <p className="truncate text-xs text-muted-foreground">{secondaryText}</p>
+            )}
+            {status === 'running' && progress && (
+              <p className="truncate text-xs text-muted-foreground">{progress}</p>
+            )}
             {status === 'running' && latestLine && (
-              <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground" title={latestLine.message}>
+              <p
+                className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground/80"
+                title={latestLine.message}
+              >
                 {latestLine.message}
               </p>
             )}
-            {status === 'running' && progress && (
-              <p className="mt-0.5 text-xs text-muted-foreground">{progress}</p>
-            )}
-            {status === 'running' && !latestLine && (
-              <p className="mt-0.5 text-xs text-muted-foreground">正在与远程仓库通信…</p>
-            )}
-            {(status === 'error' || status === 'conflict') && summary && (
-              <p className="mt-0.5 text-xs text-muted-foreground">{title}</p>
+            {status === 'running' && !latestLine && !progress && (
+              <p className="truncate text-xs text-muted-foreground">正在与远程仓库通信…</p>
             )}
           </div>
-          <div className="flex shrink-0 items-center gap-1">
+          <div className="ml-1 flex shrink-0 items-center gap-0.5">
             <Button
               type="button"
               variant="ghost"
               size="sm"
-              className="h-7 px-2 text-xs"
+              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
               onClick={onOpenLogs}
             >
               <FileText className="mr-1 h-3.5 w-3.5" />
@@ -208,7 +224,7 @@ export function OperationStatusToast({
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7"
+                className="h-7 w-7 text-muted-foreground hover:text-foreground"
                 title="关闭"
                 onClick={onDismiss}
               >
@@ -219,10 +235,14 @@ export function OperationStatusToast({
         </div>
 
         {expanded && (
-          <div className="mt-2 space-y-2">
-            <OperationLogList logs={logs} isRunning={false} className="max-h-40" />
+          <div className="border-t border-border/60 bg-muted/25 p-2">
+            <OperationLogList
+              logs={logs}
+              isRunning={false}
+              className="max-h-40 border-0 bg-transparent px-1 py-0"
+            />
             {status === 'conflict' && onOpenWorkspace && (
-              <div className="flex justify-end">
+              <div className="flex justify-end pt-2">
                 <Button type="button" size="sm" variant="outline" className="h-7 text-xs" onClick={onOpenWorkspace}>
                   去工作区处理
                 </Button>
