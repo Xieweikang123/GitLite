@@ -1025,6 +1025,24 @@ export function UnifiedCommitView({
     return branches.some((b) => !b.is_remote && b.name === name) ? name : null
   }, [commitLogScope, commitLogRev, branches])
 
+  /**
+   * 在提交列表标题中直接说明本地与远程的差异。RemoteSyncBar 的紧凑模式
+   * 主要用图标表达同步状态，这里补上文字，避免用户只能从“推送 3”反推含义。
+   */
+  const commitListSyncLabel =
+    !viewedOtherLocalBranch &&
+    !commitLogRev &&
+    commitLogScope === 'head' &&
+    hasOriginRemote &&
+    hasUpstream
+      ? [
+          aheadCount > 0 ? `领先远程 ${aheadCount}` : '',
+          behindCount != null && behindCount > 0 ? `落后远程 ${behindCount}` : '',
+        ]
+          .filter(Boolean)
+          .join(' · ') || null
+      : null
+
   const bumpViewedSync = useCallback(() => {
     setViewedSyncNonce((n) => n + 1)
   }, [])
@@ -1235,11 +1253,12 @@ export function UnifiedCommitView({
           : `当前分支 ${headCommitTotal}`
 
   const commitListMetaTitle =
-    commitLogScope === 'all'
+    (commitLogScope === 'all'
       ? '「已加载」为当前列表条数，可继续加载。总数为所有本地分支、远程跟踪与标签可达的去重提交数（与 git log --all 类似）。'
       : commitLogRev
         ? `「已加载」为当前列表条数。所选分支「${shortBranchRef(commitLogRev)}」的可达提交总数与 git rev-list --count ${commitLogRev} 一致。`
-        : '「已加载」为当前列表中的条数，可向下滚动继续加载。「当前分支」总数为 HEAD 可达提交数（与 git rev-list --count HEAD 一致），含合并带来的历史。'
+        : '「已加载」为当前列表中的条数，可向下滚动继续加载。「当前分支」总数为 HEAD 可达提交数（与 git rev-list --count HEAD 一致），含合并带来的历史。') +
+    (commitListSyncLabel ? ` 当前分支${commitListSyncLabel}。` : '')
 
   const onGraphBranchRailClick = useCallback((branchName: string) => {
     setGraphRailBranchFilter((prev) => (prev === branchName ? null : branchName))
@@ -2853,6 +2872,7 @@ export function UnifiedCommitView({
                 >
                   {commitListCountLabel}
                   {commitListTotalLabel ? ` · ${commitListTotalLabel}` : ''}
+                  {commitListSyncLabel ? ` · ${commitListSyncLabel}` : ''}
                   {!isSearchMode && filteredCommits.length !== commits.length
                     ? ` · 显示 ${filteredCommits.length}`
                     : ''}
