@@ -33,6 +33,9 @@ interface WorkspaceStatusProps {
 /** 后台静默刷新周期（秒） */
 export const REFRESH_INTERVAL_SEC = 10
 
+/** 回到前台（窗口获焦 / 标签页重新可见）时的刷新防抖：focus 与 visibilitychange 常接连触发，合并成一次 */
+const FOCUS_REFRESH_DEBOUNCE_MS = 400
+
 /** 工作区文件区块标识（用于折叠状态持久化） */
 type WorkspaceSectionKey = 'staged' | 'unstaged' | 'untracked' | 'conflicted'
 
@@ -147,6 +150,8 @@ export function WorkspaceStatus({
   const autoRefresh = autoRefreshProp
   /** 避免自动刷新与上一次 IPC 重叠（大仓库 get_workspace_status 可能较慢） */
   const silentRefreshInFlightRef = useRef(false)
+  /** 上一次「回到前台」刷新的时间戳，用于合并 focus / visibilitychange 的连续触发 */
+  const lastFocusRefreshRef = useRef(0)
   /**
    * 防止多路 status 请求乱序：`定时刷新` 先于 `暂存/取消暂存` 发出但后返回时，
    * 会覆盖乐观更新，造成「消失 → 又出现 → 再消失」。
@@ -554,6 +559,30 @@ export function WorkspaceStatus({
     // 所以这里不需要把对象本身列为依赖。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoInfo?.path, repoInfo?.head_short_id, autoRefresh, fetchWorkspaceStatus, fetchStashList])
+
+  // 回到前台（窗口获焦 / 标签页重新可见）时静默刷新一次：IDE、终端、其他窗口改完文件后，
+  // 不必干等下一轮 10 秒轮询。与轮询共用 silent 通道，不会让卡片进入 loading。
+  useEffect(() => {
+    if (!repoInfo || !autoRefresh) return
+
+    const refreshOnReturn = () => {
+      if (document.visibilityState === 'hidden') return
+      const now = Date.now()
+      if (now - lastFocusRefreshRef.current < FOCUS_REFRESH_DEBOUNCE_MS) return
+      lastFocusRefreshRef.current = now
+      void Promise.all([fetchWorkspaceStatus({ silent: true }), fetchStashList()])
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') refreshOnReturn()
+    }
+
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('focus', refreshOnReturn)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('focus', refreshOnReturn)
+    }
+  }, [repoInfo, autoRefresh, fetchWorkspaceStatus, fetchStashList])
 
   // 暂存文件（等刷新完成再更新列表，行内按钮可显示 loading，避免「添加/暂存」无反馈）
     useEffect(() => {
