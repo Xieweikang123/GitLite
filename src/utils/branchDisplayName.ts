@@ -1,11 +1,17 @@
 import { hashBranchNameToPaletteIndex } from './commitGraphLayout'
 
-/** 提交列表标签等处省略默认远程前缀 `origin/`，便于同一行多显示几个名称 */
-export function formatBranchLabelShort(name: string): string {
-  if (name.startsWith('origin/')) {
-    return name.slice('origin/'.length)
-  }
-  return name
+/**
+ * 提交列表中的引用标签。
+ *
+ * 远程跟踪引用保留远程名（例如 `origin/master`），并明确标为「远程」；
+ * 本地引用加上「本地」前缀，避免两者都显示成 `master` 而产生歧义。
+ */
+export function formatBranchLabel(name: string, isRemote: boolean): string {
+  const n = name
+    .trim()
+    .replace(/^refs\/heads\//, '')
+    .replace(/^refs\/remotes\//, '')
+  return isRemote ? `远程 ${n}` : `本地 ${n}`
 }
 
 /**

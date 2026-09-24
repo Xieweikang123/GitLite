@@ -58,7 +58,7 @@ import { formatLocalYmd } from '../utils/dateYmd'
 import {
   branchBadgeClassName,
   branchRevSpec,
-  formatBranchLabelShort,
+  formatBranchLabel,
   refsSameBranchLine,
   shortBranchRef,
 } from '../utils/branchDisplayName'
@@ -2398,8 +2398,8 @@ export function UnifiedCommitView({
                       </Button>
                     </PopoverTrigger>
                     <PopoverContent className="max-w-xs p-3 text-xs leading-relaxed text-muted-foreground" align="start">
-                      历史范围为各本地分支、远程跟踪与标签可达的合并历史。提交旁徽章为引用当前指向的提交（本地
-                      master、远程 origin/master 等）；虚线边框为远程跟踪。
+                      历史范围为各本地分支、远程跟踪与标签可达的合并历史。提交旁徽章为引用当前指向的提交；本地引用会标为
+                      「本地 …」；远程跟踪标为「远程 origin/…」等；虚线边框为远程跟踪。
                     </PopoverContent>
                   </Popover>
                 )}
@@ -3016,9 +3016,9 @@ export function UnifiedCommitView({
                               railFilterEnabled &&
                               !!graphRailBranchFilter &&
                               tipMatchesGraphRail(b, graphRailBranchFilter)
-                            const label = formatBranchLabelShort(b.name)
+                            const label = formatBranchLabel(b.name, b.is_remote)
                             const remoteTip = !b.is_remote
-                              ? branchTips?.find((o) => o.is_remote && tipMatchesGraphRail(o, label))
+                              ? branchTips?.find((o) => o.is_remote && tipMatchesGraphRail(o, b.name))
                               : undefined
                             return (
                             <Badge
