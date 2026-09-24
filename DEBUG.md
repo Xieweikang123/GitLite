@@ -321,3 +321,42 @@ Do NOT:
   `bg-primary-foreground/20`, which inverts with the variant.
 - Do not rely on tooltips for primary actions in a compact toolbar; add a text label
   (`compact` mode now renders 获取 / 拉取 / 推送 / 刷新 next to the icons).
+
+## Destructive checkout rollback (failed switch wiped uncommitted work) — engineering notes
+
+Context: switching branches felt unreliable — sometimes "切个分支把我改的东西弄没了".
+The switch itself was fine; the damage happened on the **failure** path.
+
+Root cause: `checkout_branch` always created a silent stash backup, then ran
+`git switch`, and on **any** failure called `rollback_workdir_to_head`, which runs
+`git restore --source=HEAD --staged --worktree -- .`. That restores the entire
+index + worktree to HEAD, so a failed switch that was caused by "your local changes
+would be overwritten" ended by **destroying exactly those local changes**. The error
+text (`format_checkout_failure` → "有未提交的修改，无法切换分支") never mentioned the
+backup, so users saw data vanish with no explanation. Confirmed by the project's own
+test `rollback_workdir_to_head_restores_deleted_tracked_files`, which asserts
+`unstaged_files.is_empty()` after rollback, and by a real log line:
+`checkout_branch: failed | ... err=有未提交的修改，无法切换分支`.
+
+Principle: **rollback must never be broader than the damage it repairs.** A rollback
+is only safe when the pre-operation state is known to be clean (nothing for it to
+destroy). When the workspace is dirty, preserving it is always correct even if that
+leaves a half-finished checkout — the silent stash already holds a recoverable copy.
+
+Resolution:
+- Snapshot `workspace_was_clean` (all four buckets empty) **before** `git switch`.
+- Failure + clean → rollback (safe cleanup of any half-checkout residue).
+- Failure + dirty → **skip rollback**, keep the worktree as-is, log
+  `skip rollback (dirty workspace preserved)`, and append to the error:
+  "（你的未提交改动已保留，并已生成静默备份；可在「可靠性面板 → 恢复静默贮藏」找回）".
+- Regression test: `checkout_failure_preserves_dirty_workspace`.
+
+Do NOT:
+- Do not "just remove the rollback". A half-finished `git switch` can leave tracked
+  files deleted/modified in the worktree (see `checkout-rollback` test); a clean
+  workspace still needs the restore to recover.
+- Do not detect dirty from the silent-stash return value alone —
+  `create_silent_stash_backup` returns `None` when clean, which is a valid clean signal,
+  but the explicit workspace snapshot keeps the intent readable and decoupled.
+- Do not report a failure without telling the user their work is backed up and where
+  to find it; the silent stash is worthless if the error text doesn't point at it.

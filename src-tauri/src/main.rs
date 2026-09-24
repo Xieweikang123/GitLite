@@ -4512,10 +4512,38 @@ async fn checkout_branch(repo_path: String, branch_name: String) -> Result<Strin
         }
     })?;
 
+    // 切换前记录工作区是否干净。失败时只有「本就干净」才回滚：
+    // 干净工作区失败可能留下半截 checkout 的残留/缺失文件，回滚是安全的清理；
+    // 而脏工作区一旦回滚，`restore --source=HEAD` 会把用户未提交的改动覆盖回 HEAD
+    // （静默销毁用户数据），所以脏工作区失败必须保留现场，交由静默贮藏恢复。
+    let workspace_was_clean = match collect_workspace_status(&repo) {
+        Ok(ws) => {
+            ws.staged_files.is_empty()
+                && ws.unstaged_files.is_empty()
+                && ws.untracked_files.is_empty()
+                && ws.conflicted_files.is_empty()
+        }
+        Err(_) => false,
+    };
+
     let result = match git_switch_local_branch(&repo_path, &branch_name) {
         Ok(()) => Ok(format!("已切换到 {}", branch_name)),
         Err(e) => {
-            if let Err(re) = rollback_workdir_to_head(&repo_path, &repo) {
+            if !workspace_was_clean {
+                // 保留用户改动：不回滚。切换前已生成静默备份（脏 ⇒ 必有 backup），
+                // 用户可从「可靠性面板 → 恢复静默贮藏」找回任意一步。
+                log_message(
+                    "WARN",
+                    &format!(
+                        "checkout_branch: skip rollback (dirty workspace preserved) | path={} target={}",
+                        repo_path, branch_name
+                    ),
+                );
+                Err(format!(
+                    "{}（你的未提交改动已保留，并已生成静默备份；可在「可靠性面板 → 恢复静默贮藏」找回）",
+                    e
+                ))
+            } else if let Err(re) = rollback_workdir_to_head(&repo_path, &repo) {
                 log_message(
                     "ERROR",
                     &format!(
@@ -7763,6 +7791,59 @@ mod numstat_tests {
             status.unstaged_files
         );
         assert!(status.staged_files.is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 回归测试：切换分支失败**不得**回滚脏工作区。
+    ///
+    /// 旧实现无条件 `rollback_workdir_to_head`（`git restore --source=HEAD --staged --worktree`），
+    /// 会在切换因「未提交改动会被覆盖」而失败时，把用户未提交的改动一并还原回 HEAD——
+    /// 静默销毁用户数据。新实现只在切换前工作区本就干净时才回滚。
+    #[tokio::test]
+    async fn checkout_failure_preserves_dirty_workspace() {
+        let dir = tmp_repo("checkout-dirty-preserve");
+        let repo = Repository::open(&dir).unwrap();
+        write_file(&dir, "shared.txt", b"base\n");
+        commit_all(&repo, "initial");
+
+        // 两条分支对同一文件有不同内容，制造「切换会覆盖本地改动」的冲突
+        repo.branch("base", &repo.head().unwrap().peel_to_commit().unwrap(), false)
+            .unwrap();
+        repo.branch("other", &repo.head().unwrap().peel_to_commit().unwrap(), false)
+            .unwrap();
+
+        checkout_branch(dir.to_string_lossy().to_string(), "other".to_string())
+            .await
+            .unwrap();
+        write_file(&dir, "shared.txt", b"other\n");
+        commit_all(&Repository::open(&dir).unwrap(), "other edit");
+
+        checkout_branch(dir.to_string_lossy().to_string(), "base".to_string())
+            .await
+            .unwrap();
+
+        // 在 base 上留下未提交改动：切到 other 会因「覆盖本地改动」而失败
+        write_file(&dir, "shared.txt", b"local-edit\n");
+
+        let err = checkout_branch(dir.to_string_lossy().to_string(), "other".to_string())
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("未提交") && err.contains("保留"),
+            "错误信息应说明改动已保留: {}",
+            err
+        );
+
+        // 核心断言：失败的切换不得回滚工作区，本地改动必须原样保留
+        assert_eq!(
+            fs::read_to_string(dir.join("shared.txt")).unwrap().trim_end(),
+            "local-edit",
+            "切换失败后未提交改动被回滚销毁"
+        );
+        // HEAD 不得改变
+        let repo = Repository::open(&dir).unwrap();
+        assert_eq!(repo.head().unwrap().shorthand().unwrap(), "base");
 
         let _ = fs::remove_dir_all(&dir);
     }
