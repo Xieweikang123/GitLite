@@ -1,6 +1,6 @@
 # GitLite 打包流程
 
-当前产物是 **单个可执行文件**，不生成 MSI/NSIS 安装包。版本号以 `src-tauri/tauri.conf.json` 的 `package.version` 为准（与 `package.json`、`src-tauri/Cargo.toml` 保持一致，现为 `0.1.1`）。
+当前产物是 **单个可执行文件**，不生成 MSI/NSIS 安装包。版本号以 `src-tauri/tauri.conf.json` 的 `package.version` 为准（与 `package.json`、`src-tauri/Cargo.toml` 保持一致，现为 `0.2.0`）。
 
 ## 产物
 
