@@ -7,6 +7,7 @@ import {
   type KeyboardEvent,
 } from 'react'
 import {
+  AlertCircle,
   ArrowDown,
   ArrowUp,
   Check,
@@ -19,6 +20,7 @@ import {
   Plus,
   Search,
   Trash2,
+  X,
 } from 'lucide-react'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
@@ -27,7 +29,7 @@ import { Input } from './ui/input'
 import { Label } from './ui/label'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 import { Switch } from './ui/switch'
-import { BranchInfo, BranchSyncOverview, CommitInfo } from '../types/git'
+import { BranchInfo, BranchSyncOverview, CheckoutPreflight, CommitInfo } from '../types/git'
 import { cn } from '../lib/utils'
 
 type BranchStartPick =
@@ -382,6 +384,8 @@ export interface BranchSwitcherProps {
   onRenameBranch?: (oldName: string, newName: string) => Promise<boolean>
   onMergeBranch?: (sourceBranch: string, ffOnly: boolean) => Promise<boolean>
   onFetchRemoteOverview?: () => Promise<BranchSyncOverview[]>
+  /** 只读预判：批量查询各分支当前能否切换（返回后用于禁用行并提示原因） */
+  onCheckCheckoutPreflight?: (branchNames: string[]) => Promise<CheckoutPreflight[]>
   onPushChanges?: () => void | Promise<void>
   onPullChanges?: () => void | Promise<void>
   /** 仓库是否已配置 origin 远程；缺省按 true 处理 */
@@ -402,6 +406,7 @@ export function BranchSwitcher({
   onRenameBranch,
   onMergeBranch,
   onFetchRemoteOverview,
+  onCheckCheckoutPreflight,
   onPushChanges,
   onPullChanges,
   hasOriginRemote = true,
@@ -428,6 +433,13 @@ export function BranchSwitcher({
   const [fetchingRemote, setFetchingRemote] = useState(false)
   const [syncOverview, setSyncOverview] = useState<Map<string, BranchSyncOverview>>(new Map())
   const [fetchRemoteError, setFetchRemoteError] = useState<string | null>(null)
+
+  /** 点击被预判拦截时，在面板内展示的原因 */
+  const [blockedNotice, setBlockedNotice] = useState<{ branch: string; reason: string } | null>(
+    null
+  )
+  /** 切换预判结果：按分支名索引；key 为 UI 里展示的分支名 */
+  const [preflight, setPreflight] = useState<Map<string, CheckoutPreflight>>(new Map())
 
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameFrom, setRenameFrom] = useState('')
@@ -474,10 +486,19 @@ export function BranchSwitcher({
         closePanel()
         return
       }
+      const check = preflight.get(name)
+      if (check && !check.can_switch) {
+        setBlockedNotice({
+          branch: name,
+          reason: check.reason || '当前无法切换到此分支。',
+        })
+        return
+      }
+      setBlockedNotice(null)
       onBranchSelect(name)
       closePanel()
     },
-    [closePanel, currentBranch, onBranchSelect]
+    [closePanel, currentBranch, onBranchSelect, preflight]
   )
 
   const openCreate = (start?: BranchStartPick) => {
@@ -527,6 +548,37 @@ export function BranchSwitcher({
     // 仅在面板打开瞬间触发一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
+
+  // 切换预判：面板打开、分支列表变化时刷新。只读、静默，失败不打扰用户。
+  const preflightRef = useRef(onCheckCheckoutPreflight)
+  preflightRef.current = onCheckCheckoutPreflight
+  useEffect(() => {
+    if (!open) {
+      setPreflight(new Map())
+      return
+    }
+    const fn = preflightRef.current
+    if (!fn) return
+    // 当前分支无需预判；远程分支名与本地分支名可能同名，按 UI 展示名逐个查询
+    const targets = branches
+      .map((b) => b.name)
+      .filter((n) => n && n !== currentBranch)
+    if (targets.length === 0) {
+      setPreflight(new Map())
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      const results = await fn(targets)
+      if (cancelled) return
+      const map = new Map<string, CheckoutPreflight>()
+      for (const item of results) map.set(item.branch, item)
+      setPreflight(map)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [open, branches, currentBranch])
 
   const openRename = (name: string) => {
     setRenameFrom(name)
@@ -686,6 +738,25 @@ export function BranchSwitcher({
                 {fetchRemoteError}
               </p>
             )}
+            {blockedNotice && (
+              <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-[11px] leading-relaxed text-destructive">
+                <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium">
+                    无法切换到「{blockedNotice.branch}」
+                  </p>
+                  <p className="mt-0.5 break-words">{blockedNotice.reason}</p>
+                </div>
+                <button
+                  type="button"
+                  className="shrink-0 rounded px-1 text-destructive/70 hover:text-destructive"
+                  aria-label="关闭提示"
+                  onClick={() => setBlockedNotice(null)}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
             <div
               ref={listRef}
               className="max-h-[min(55vh,360px)] overflow-y-auto overflow-x-hidden rounded-md border border-border/60"
@@ -701,6 +772,8 @@ export function BranchSwitcher({
                     !!branch.is_remote && (idx === 0 || !filteredBranches[idx - 1]?.is_remote)
                   const key = branchKey(branch)
                   const menuOpen = menuKey === key
+                  const check = preflight.get(branch.name)
+                  const isBlocked = !isCurrent && !!check && !check.can_switch
                   return (
                     <div key={key} className="relative">
                       {showLocalHeader && (
@@ -725,7 +798,21 @@ export function BranchSwitcher({
                           type="button"
                           data-branch-row={idx}
                           disabled={loading}
-                          className="flex min-w-0 flex-1 items-start gap-2 px-3 py-2 text-left text-sm hover:bg-accent/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          title={
+                            isBlocked
+                              ? `${check?.reason ?? '当前无法切换到此分支'}${
+                                  check?.blocking_files?.length
+                                    ? `\n阻塞文件：${check.blocking_files.slice(0, 10).join('、')}${
+                                        check.blocking_files.length > 10 ? ' 等' : ''
+                                      }`
+                                    : ''
+                                }`
+                              : undefined
+                          }
+                          className={cn(
+                            'flex min-w-0 flex-1 items-start gap-2 px-3 py-2 text-left text-sm hover:bg-accent/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                            isBlocked && 'cursor-not-allowed hover:bg-destructive/5'
+                          )}
                           onClick={() => pickBranch(branch.name)}
                         >
                           <span
@@ -740,6 +827,16 @@ export function BranchSwitcher({
                             {branch.is_current && (
                               <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
                                 当前
+                              </Badge>
+                            )}
+                            {isBlocked && (
+                              <Badge
+                                variant="outline"
+                                className="border-destructive/40 px-1.5 py-0 text-[10px] text-destructive"
+                                title={check?.reason ?? '当前无法切换到此分支'}
+                              >
+                                <AlertCircle className="mr-0.5 h-2.5 w-2.5" />
+                                有改动
                               </Badge>
                             )}
                             {branch.is_remote && (

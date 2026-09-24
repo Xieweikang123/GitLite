@@ -59,6 +59,7 @@ function App() {
     fetchChangesWithLogs,
     fetchChanges,
     fetchOriginAndSyncOverview,
+    checkCheckoutPreflight,
     pushChangesWithRealtimeLogs,
     pullChangesWithLogs,
     commitChanges,
@@ -1034,6 +1035,7 @@ function App() {
           onRenameBranch={handleRenameBranch}
           onMergeBranch={handleMergeBranch}
           onFetchRemoteOverview={fetchOriginAndSyncOverview}
+          onCheckCheckoutPreflight={checkCheckoutPreflight}
           onOpenRemoteRepository={handleOpenRemoteRepository}
           onOpenRemoteManage={() => setRemoteManageOpen(true)}
           onPushChanges={handlePushChangesRealtime}

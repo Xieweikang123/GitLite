@@ -171,6 +171,21 @@ pub struct WorkspaceStatus {
     pub conflicted_files: Vec<FileChange>,
 }
 
+/// 切换分支的预判结果（供 UI 提前提示，不产生副作用）
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CheckoutPreflight {
+    /// 请求的分支名（原样回显，供前端做 key 匹配）
+    pub branch: String,
+    /// 是否可以直接切换
+    pub can_switch: bool,
+    /// 目标分支是否存在（远程分支会映射到同名本地分支）
+    pub branch_exists: bool,
+    /// 会被目标分支覆盖的本地改动路径
+    pub blocking_files: Vec<String>,
+    /// 不能切换的原因（可切换时为 None）
+    pub reason: Option<String>,
+}
+
 /// 拉取结果（供前端展示与日志；`kind` 为结构化分支标识）
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PullOutcome {
@@ -4411,6 +4426,207 @@ fn format_checkout_failure(msg: &str) -> String {
     format!("检出失败: {}", msg.trim())
 }
 
+/// 预判能否切换到目标分支，复刻 `git switch` 的“本地改动是否会被覆盖”规则。
+///
+/// 与 `checkout_branch` 中的 `workspace_was_clean` 不同：脏工作区并不必然禁止切换，
+/// 只有“本地改动的路径在 HEAD 与目标分支之间内容不同”时 Git 才会拒绝。
+///
+/// 批量计算时对每个分支树差异做缓存；工作区完全干净时直接短路，不计算任何树差异。
+/// 本函数**只读**：不会像 `checkout_target_branch_name` 那样为远程分支创建本地分支。
+fn collect_checkout_preflights(
+    repo: &Repository,
+    requested_names: &[String],
+) -> Result<Vec<CheckoutPreflight>, String> {
+    let head_tree = repo
+        .head()
+        .map_err(|e| format!("Failed to get HEAD: {}", e))?
+        .peel_to_tree()
+        .map_err(|e| format!("Failed to peel HEAD to tree: {}", e))?;
+
+    // 本地已跟踪的改动（暂存 + 未暂存 + 冲突）路径
+    let ws = collect_workspace_status(repo)?;
+    let mut dirty_paths: HashSet<String> = HashSet::new();
+    for f in ws
+        .staged_files
+        .iter()
+        .chain(ws.unstaged_files.iter())
+        .chain(ws.conflicted_files.iter())
+    {
+        let p = normalize_repo_rel_path(&f.path);
+        if !p.is_empty() {
+            dirty_paths.insert(p);
+        }
+    }
+
+    let untracked_paths: Vec<String> = ws
+        .untracked_files
+        .iter()
+        .map(|p| normalize_repo_rel_path(p))
+        .filter(|p| !p.is_empty())
+        .collect();
+
+    // 完全没有本地改动 → 任何存在的分支都可切换，无需计算树差异
+    let workspace_clean = dirty_paths.is_empty() && untracked_paths.is_empty();
+
+    let repo_state_clean = repo.state() == RepositoryState::Clean;
+
+    // 分支树差异路径缓存（按解析后的本地分支名）
+    let mut branch_diff_cache: std::collections::HashMap<String, HashSet<String>> =
+        std::collections::HashMap::new();
+
+    let mut out = Vec::with_capacity(requested_names.len());
+    for requested in requested_names {
+        let requested = requested.trim();
+        if requested.is_empty() {
+            out.push(CheckoutPreflight {
+                branch: String::new(),
+                can_switch: false,
+                branch_exists: false,
+                blocking_files: Vec::new(),
+                reason: Some("分支名不能为空".to_string()),
+            });
+            continue;
+        }
+
+        // 纯解析：本地同名分支优先，否则远程分支映射到同名本地分支（不创建）
+        let local_exists = repo
+            .find_branch(requested, git2::BranchType::Local)
+            .is_ok();
+        let remote_exists = repo
+            .find_branch(requested, git2::BranchType::Remote)
+            .is_ok();
+        let resolved = if local_exists {
+            requested.to_string()
+        } else if remote_exists {
+            requested
+                .split_once('/')
+                .map(|(_, rest)| rest)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(requested)
+                .to_string()
+        } else {
+            requested.to_string()
+        };
+
+        if !local_exists && !remote_exists {
+            out.push(CheckoutPreflight {
+                branch: requested.to_string(),
+                can_switch: false,
+                branch_exists: false,
+                blocking_files: Vec::new(),
+                reason: Some(format!(
+                    "未找到分支「{}」，请检查分支名或先拉取远程分支",
+                    requested
+                )),
+            });
+            continue;
+        }
+
+        if !repo_state_clean {
+            out.push(CheckoutPreflight {
+                branch: requested.to_string(),
+                can_switch: false,
+                branch_exists: true,
+                blocking_files: Vec::new(),
+                reason: Some(
+                    "仓库处于进行中的操作状态（如合并/变基），请先完成或中止后再切换。"
+                        .to_string(),
+                ),
+            });
+            continue;
+        }
+
+        if workspace_clean {
+            out.push(CheckoutPreflight {
+                branch: requested.to_string(),
+                can_switch: true,
+                branch_exists: true,
+                blocking_files: Vec::new(),
+                reason: None,
+            });
+            continue;
+        }
+
+        // 目标提交树：优先本地分支；仅远程分支时用远程 ref（避免创建本地分支）
+        let target_ref = if local_exists {
+            resolved.clone()
+        } else {
+            requested.to_string()
+        };
+        let branch_diff_paths = match branch_diff_cache.get(&target_ref) {
+            Some(cached) => cached.clone(),
+            None => {
+                let target_tree = repo
+                    .revparse_single(&target_ref)
+                    .and_then(|o| o.peel_to_tree())
+                    .map_err(|e| format!("无法解析分支「{}」: {}", target_ref, e.message()))?;
+                let mut diff_opts = git2::DiffOptions::new();
+                diff_opts.include_typechange(true);
+                let branch_diff = repo
+                    .diff_tree_to_tree(
+                        Some(&head_tree),
+                        Some(&target_tree),
+                        Some(&mut diff_opts),
+                    )
+                    .map_err(|e| format!("计算分支差异失败: {}", e.message()))?;
+                let paths = diff_paths_set(&branch_diff)?;
+                branch_diff_cache.insert(target_ref.clone(), paths.clone());
+                paths
+            }
+        };
+
+        let mut blocking: Vec<String> = dirty_paths
+            .iter()
+            .filter(|p| branch_diff_paths.contains(*p))
+            .cloned()
+            .collect();
+
+        // 未跟踪文件若与目标分支新增/修改的路径同名，同样会被拒绝
+        blocking.extend(
+            untracked_paths
+                .iter()
+                .filter(|p| branch_diff_paths.contains(*p))
+                .cloned(),
+        );
+
+        blocking.sort();
+        blocking.dedup();
+
+        if blocking.is_empty() {
+            out.push(CheckoutPreflight {
+                branch: requested.to_string(),
+                can_switch: true,
+                branch_exists: true,
+                blocking_files: Vec::new(),
+                reason: None,
+            });
+        } else {
+            out.push(CheckoutPreflight {
+                branch: requested.to_string(),
+                can_switch: false,
+                branch_exists: true,
+                blocking_files: blocking,
+                reason: Some(
+                    "有未提交的修改，无法切换分支。请先提交或暂存后再切换。".to_string(),
+                ),
+            });
+        }
+    }
+
+    Ok(out)
+}
+
+/// 预判一批分支能否切换（只读，不产生任何副作用；供 UI 提前禁用/提示）。
+#[tauri::command]
+async fn check_checkout_preflight(
+    repo_path: String,
+    branch_names: Vec<String>,
+) -> Result<Vec<CheckoutPreflight>, String> {
+    let repo = Repository::open(&repo_path)
+        .map_err(|e| format!("Failed to open repository: {}", e))?;
+    collect_checkout_preflights(&repo, &branch_names)
+}
+
 /// 使用系统 Git 切换本地分支（与 SourceTree 一致；Windows 上对占用目录比 libgit2 更宽容）。
 fn git_switch_local_branch(repo_path: &str, branch_name: &str) -> Result<(), String> {
     let name = branch_name.trim();
@@ -7309,6 +7525,7 @@ fn main() {
             fetch_origin_and_branch_sync_overview,
             fast_forward_local_branch,
             get_commits_branch_labels,
+            check_checkout_preflight,
             checkout_branch,
             create_branch,
             delete_branch,
@@ -7844,6 +8061,121 @@ mod numstat_tests {
         // HEAD 不得改变
         let repo = Repository::open(&dir).unwrap();
         assert_eq!(repo.head().unwrap().shorthand().unwrap(), "base");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 预判：本地改动的文件在两分支间内容相同 → 仍可切换（Git 允许携带改动）。
+    #[test]
+    fn checkout_preflight_allows_dirty_file_unchanged_between_branches() {
+        let dir = tmp_repo("preflight-same");
+        let repo = Repository::open(&dir).unwrap();
+        write_file(&dir, "shared.txt", b"base\n");
+        write_file(&dir, "only-base.txt", b"x\n");
+        commit_all(&repo, "initial");
+
+        repo.branch("base", &repo.head().unwrap().peel_to_commit().unwrap(), false)
+            .unwrap();
+        repo.branch("other", &repo.head().unwrap().peel_to_commit().unwrap(), false)
+            .unwrap();
+
+        // 在 base 上本地修改 shared.txt；other 与该文件内容相同（都是 base）
+        write_file(&dir, "shared.txt", b"local-edit\n");
+
+        let results = collect_checkout_preflights(&repo, &["other".to_string()]).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(
+            results[0].can_switch,
+            "内容相同的本地改动不应阻止切换: {:?}",
+            results[0]
+        );
+        assert!(results[0].blocking_files.is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 预判：本地改动会被目标分支覆盖 → 禁止切换，并列出阻塞文件。
+    #[test]
+    fn checkout_preflight_blocks_overlapping_dirty_file() {
+        let dir = tmp_repo("preflight-overlap");
+        let repo = Repository::open(&dir).unwrap();
+        write_file(&dir, "shared.txt", b"base\n");
+        commit_all(&repo, "initial");
+
+        repo.branch("base", &repo.head().unwrap().peel_to_commit().unwrap(), false)
+            .unwrap();
+        repo.branch("other", &repo.head().unwrap().peel_to_commit().unwrap(), false)
+            .unwrap();
+
+        // other 上把 shared.txt 改成不同内容
+        run_git_in_repo(dir.to_string_lossy().as_ref(), &["checkout", "--", "other"]).unwrap();
+        write_file(&dir, "shared.txt", b"other\n");
+        commit_all(&Repository::open(&dir).unwrap(), "other edit");
+        run_git_in_repo(dir.to_string_lossy().as_ref(), &["checkout", "--", "base"]).unwrap();
+
+        // base 上留下未提交改动
+        write_file(&dir, "shared.txt", b"local-edit\n");
+
+        let repo = Repository::open(&dir).unwrap();
+        let results = collect_checkout_preflights(&repo, &["other".to_string()]).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].can_switch, "应被阻止: {:?}", results[0]);
+        assert!(results[0].branch_exists);
+        assert_eq!(results[0].blocking_files, vec!["shared.txt".to_string()]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 预判：工作区干净时所有分支可切换；未跟踪文件不阻塞。
+    #[test]
+    fn checkout_preflight_clean_and_untracked() {
+        let dir = tmp_repo("preflight-clean");
+        let repo = Repository::open(&dir).unwrap();
+        write_file(&dir, "a.txt", b"a\n");
+        commit_all(&repo, "initial");
+        repo.branch("base", &repo.head().unwrap().peel_to_commit().unwrap(), false)
+            .unwrap();
+        repo.branch("other", &repo.head().unwrap().peel_to_commit().unwrap(), false)
+            .unwrap();
+
+        let results =
+            collect_checkout_preflights(&repo, &["base".to_string(), "other".to_string()])
+                .unwrap();
+        assert!(results.iter().all(|r| r.can_switch));
+
+        // 未跟踪文件与目标分支无重叠 → 仍可切换
+        write_file(&dir, "scratch.txt", b"tmp\n");
+        let repo = Repository::open(&dir).unwrap();
+        let results = collect_checkout_preflights(&repo, &["other".to_string()]).unwrap();
+        assert!(results[0].can_switch, "未跟踪文件不应阻止切换: {:?}", results[0]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 预判：不存在的分支报告 branch_exists=false，且**不产生副作用**（不为远程分支创建本地分支）。
+    #[test]
+    fn checkout_preflight_missing_branch_and_read_only() {
+        let dir = tmp_repo("preflight-missing");
+        let repo = Repository::open(&dir).unwrap();
+        write_file(&dir, "a.txt", b"a\n");
+        commit_all(&repo, "initial");
+
+        let missing = collect_checkout_preflights(&repo, &["nope".to_string()]).unwrap();
+        assert!(!missing[0].can_switch);
+        assert!(!missing[0].branch_exists);
+        assert!(missing[0].reason.as_deref().unwrap_or("").contains("未找到分支"));
+
+        // 模拟远程跟踪分支：直接创建 refs/remotes/origin/feat，预判不应创建本地分支
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.reference("refs/remotes/origin/feat", head.id(), true, "test")
+            .unwrap();
+        let remote = collect_checkout_preflights(&repo, &["origin/feat".to_string()]).unwrap();
+        assert!(remote[0].branch_exists);
+        assert!(remote[0].can_switch, "干净工作区下远程分支应可切换");
+        assert!(
+            repo.find_branch("feat", git2::BranchType::Local).is_err(),
+            "预判是只读的，不应创建本地分支"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

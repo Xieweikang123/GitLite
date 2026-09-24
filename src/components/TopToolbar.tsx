@@ -3,7 +3,7 @@ import { GitBranch, Network, RotateCcw, Timer } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { BranchSwitcher } from './BranchSwitcher'
 import { Button } from './ui/button'
-import { BranchInfo, BranchSyncOverview, CommitInfo, type RepoInfo } from '../types/git'
+import { BranchInfo, BranchSyncOverview, CheckoutPreflight, CommitInfo, type RepoInfo } from '../types/git'
 
 interface TopToolbarProps {
   onBranchSelect: (branchName: string) => void
@@ -12,6 +12,7 @@ interface TopToolbarProps {
   onRenameBranch?: (oldName: string, newName: string) => Promise<boolean>
   onMergeBranch?: (sourceBranch: string, ffOnly: boolean) => Promise<boolean>
   onFetchRemoteOverview?: () => Promise<BranchSyncOverview[]>
+  onCheckCheckoutPreflight?: (branchNames: string[]) => Promise<CheckoutPreflight[]>
   onOpenRemoteRepository?: () => void
   onOpenRemoteManage?: () => void
   onPushChanges?: () => void | Promise<void>
@@ -35,6 +36,7 @@ export function TopToolbar({
   onRenameBranch,
   onMergeBranch,
   onFetchRemoteOverview,
+  onCheckCheckoutPreflight,
   onOpenRemoteRepository,
   onOpenRemoteManage,
   onPushChanges,
@@ -77,6 +79,7 @@ export function TopToolbar({
               onRenameBranch={onRenameBranch}
               onMergeBranch={onMergeBranch}
               onFetchRemoteOverview={onFetchRemoteOverview}
+              onCheckCheckoutPreflight={onCheckCheckoutPreflight}
               onPushChanges={onPushChanges}
               onPullChanges={onPullChanges}
               hasOriginRemote={repoInfo.has_origin_remote ?? true}

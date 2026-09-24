@@ -360,3 +360,42 @@ Do NOT:
   but the explicit workspace snapshot keeps the intent readable and decoupled.
 - Do not report a failure without telling the user their work is backed up and where
   to find it; the silent stash is worthless if the error text doesn't point at it.
+
+## Pre-flight branch-switch eligibility (check_checkout_preflight) — engineering notes
+
+Context: GitLite used to be entirely *optimistic* about branch switching: the UI let you
+click any branch, and only after `git switch` refused did
+`format_checkout_failure` turn the stderr into "有未提交的修改，无法切换分支". The
+frustration was that nothing told you *in advance* which branches were reachable.
+
+Root cause: there was no read-only predicate. `checkout_branch` computed
+`workspace_was_clean`, but that flag only decides whether a *failed* switch may be rolled
+back — it is far too blunt to gate the UI: a dirty workspace does **not** imply a switch
+is impossible.
+
+Principle: mirror Git's actual rule, which is path-level, not workspace-level. A switch
+is refused only when a locally-modified tracked path (or an untracked path) also differs
+between `HEAD` and the target branch's tree ("local changes would be overwritten").
+
+Resolution:
+- `check_checkout_preflight(repo_path, branch_names)` — batch, **read-only**; returns
+  `[{ branch, can_switch, branch_exists, blocking_files, reason }]`.
+- `blocking = (staged ∪ unstaged ∪ conflicted ∪ untracked) ∩ diff(HEAD, target_tree)`;
+  empty ⇒ switchable. `branch_diff_cache` dedupes tree diffs across branches, and a
+  fully-clean workspace short-circuits before computing any diff.
+- Branch resolution is pure (`find_branch`, no `checkout_target_branch_name`) so a remote
+  branch listed in the UI never gets a local branch created just by opening the popover.
+- Frontend (`BranchSwitcher`) fetches the preflight when the panel opens / the branch
+  list changes, marks blocked rows with a 「有改动」 badge + disabled cursor, and on click
+  shows the reason instead of firing a doomed checkout. The preflight is advisory: the
+  click still falls through to `checkout_branch` when no verdict is known.
+
+Do NOT:
+- Do not gate on `workspace_was_clean`. Reusing it here would forbid switching away from
+  a branch whose dirty files are identical on the target — a legal, everyday operation.
+- Do not make the preflight create refs/objects. It is queried on hover/popover-open; a
+  mutating resolver (`checkout_target_branch_name`) would litter local branches.
+- Do not block the click when the preflight is unknown (query failed / not yet returned).
+  The preflight is a hint; `checkout_branch` remains the authority, and a stale verdict
+  must not strand the user.
+

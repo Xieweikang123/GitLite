@@ -19,6 +19,7 @@ import {
   RemoteManagementInfo,
   DirectoryRepoEntry,
   BranchSyncOverview,
+  CheckoutPreflight,
 } from '../types/git'
 import { formatTauriInvokeError } from '../utils/tauriError'
 import { getClientCalendarOffsetEastMinutes } from '../utils/clientCalendarOffset'
@@ -1165,6 +1166,26 @@ export function useGit() {
     }
   }, [repoInfo])
 
+  const checkCheckoutPreflight = useCallback(
+    async (branchNames: string[]): Promise<CheckoutPreflight[]> => {
+      if (!repoInfo) return []
+      const names = branchNames.map((n) => n.trim()).filter(Boolean)
+      if (names.length === 0) return []
+
+      try {
+        return await invoke<CheckoutPreflight[]>('check_checkout_preflight', {
+          repoPath: repoInfo.path,
+          branchNames: names,
+        })
+      } catch (err) {
+        // 预判失败不应阻断切换：静默返回空，让用户照常点击（后端仍会兜底校验）
+        console.error('切换分支预判失败:', err)
+        return []
+      }
+    },
+    [repoInfo]
+  )
+
   const pushChangesWithLogs = useCallback(async () => {
     if (!repoInfo) throw new Error('No repository open')
     
@@ -1297,6 +1318,7 @@ export function useGit() {
     fetchChanges,
     fetchChangesWithLogs,
     fetchOriginAndSyncOverview,
+    checkCheckoutPreflight,
     pushChangesWithLogs,
     pushChangesWithRealtimeLogs,
     pullChangesWithLogs,

@@ -185,6 +185,16 @@ export interface WorkspaceStatus {
   conflicted_files?: FileChange[]
 }
 
+/** 与后端 `check_checkout_preflight` 返回一致：切换分支的只读预判 */
+export interface CheckoutPreflight {
+  branch: string
+  can_switch: boolean
+  branch_exists: boolean
+  /** 会被目标分支覆盖的本地改动路径 */
+  blocking_files: string[]
+  reason?: string | null
+}
+
 /** 与后端 `pull_changes` 返回一致 */
 export interface PullOutcome {
   kind: string
