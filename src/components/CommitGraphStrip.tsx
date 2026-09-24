@@ -484,6 +484,8 @@ export function CommitGraphStrip({
         </g>
         <g className={cn(railClickable && 'pointer-events-none')}>
           {commits.map((c, i) => {
+            // 竖轨模式：标签未到的行（分页刚追加）先不画节点，免得落在 0 列又跳位
+            if (branchMode && branchNamesByCommitId!.get(c.id) === undefined) return null
             const lane = branchMode
               ? primaryBranchColumnIndex(
                   c,

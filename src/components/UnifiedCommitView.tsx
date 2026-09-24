@@ -702,6 +702,17 @@ export function UnifiedCommitView({
   const [branchLabelsByCommit, setBranchLabelsByCommit] = useState<
     Map<string, BranchOnCommit[]>
   >(() => new Map())
+  /** 已确认标签的累计快照：只在标签真正变化时更新引用，避免分页追加时整图重算 */
+  const stableBranchLabelsRef = useRef<Map<string, BranchOnCommit[]>>(new Map())
+  /** 竖轨列序快照（只追加、不重排），key = 仓库 + 当前分支 + 可见提交集 */
+  const stableBranchOrderRef = useRef<{ key: string; names: string[] }>({
+    key: '',
+    names: [],
+  })
+  /** 与 stableBranchOrderRef 同步的列序 state，供渲染读取 */
+  const [branchRailOrder, setBranchRailOrder] = useState<string[]>([])
+  /** 竖轨模式一旦就绪即保持：分页追加的新行短暂缺标签时不再退回 DAG，避免整图闪变 */
+  const [branchRailModeLatched, setBranchRailModeLatched] = useState(false)
   /** 本地/远程引用 tip 所在提交（用于行内徽章，区别于竖线用的祖先标签） */
   const [branchTipsByCommit, setBranchTipsByCommit] = useState<
     Map<string, BranchOnCommit[]>
@@ -890,6 +901,15 @@ export function UnifiedCommitView({
 
   useEffect(() => {
     setGraphRailBranchFilter(null)
+  }, [repoPath, commitLogScope, commitLogRev])
+
+  // 仓库 / 历史范围 / 查看的引用变化：清空累计标签与冻结列序，避免沿用上一个视图的竖轨
+  useEffect(() => {
+    stableBranchLabelsRef.current = new Map()
+    setBranchLabelsByCommit(new Map())
+    stableBranchOrderRef.current = { key: '', names: [] }
+    setBranchRailOrder([])
+    setBranchRailModeLatched(false)
   }, [repoPath, commitLogScope, commitLogRev])
 
   // 提交列表右键菜单：点击外部、滚动、Esc 关闭
@@ -1314,35 +1334,79 @@ export function UnifiedCommitView({
   }, [filteredCommits, branchLabelsByCommit])
 
   // 每个提交在哪些远程跟踪分支历史上（仅「全部分支」需要竖轨；当前分支用 DAG，避免其它远程把图拉偏）
+  // 增量：只请求尚缺标签的提交，并保留累计快照；分页追加时不重算已有行，避免整图重排/闪变。
   useEffect(() => {
-    if (!repoPath || filteredCommits.length === 0 || commitLogScope !== 'all') {
+    if (!repoPath || commitLogScope !== 'all') {
+      stableBranchLabelsRef.current = new Map()
+      setBranchLabelsByCommit(new Map())
+      return
+    }
+    if (filteredCommits.length === 0) {
+      stableBranchLabelsRef.current = new Map()
       setBranchLabelsByCommit(new Map())
       return
     }
     const commitIds = filteredCommits.map((c) => c.id)
     const idSet = new Set(commitIds)
+    // 丢弃已不在当前可见集内的条目，避免累计 map 无限增长
+    const snapshot = stableBranchLabelsRef.current
+    for (const id of [...snapshot.keys()]) {
+      if (!idSet.has(id)) snapshot.delete(id)
+    }
+    const missingIds = commitIds.filter((id) => !snapshot.has(id))
+    // 已全部命中：不请求、也不改引用，渲染保持稳定
+    if (missingIds.length === 0) return
+    const missingSet = new Set(missingIds)
     let cancelled = false
     invoke<CommitBranchLabels[]>('get_commits_branch_labels', {
       repoPath,
-      commitIds,
+      commitIds: missingIds,
     })
       .then((rows) => {
         if (cancelled) return
-        setBranchLabelsByCommit((prev) => {
-          const next = new Map(prev)
-          for (const row of rows) {
-            if (idSet.has(row.commit_id)) {
-              next.set(row.commit_id, row.branches)
-            }
+        const base = stableBranchLabelsRef.current
+        let changed = false
+        for (const row of rows) {
+          if (!missingSet.has(row.commit_id)) continue
+          const prev = base.get(row.commit_id)
+          const sameBranches =
+            prev &&
+            prev.length === row.branches.length &&
+            prev.every(
+              (b, i) =>
+                b.name === row.branches[i]?.name &&
+                b.is_remote === row.branches[i]?.is_remote
+            )
+          if (sameBranches) continue
+          base.set(row.commit_id, row.branches)
+          changed = true
+        }
+        // 请求成功但某行缺结果时补空数组，避免该行永远「未命中」而反复请求
+        for (const id of missingIds) {
+          if (!base.has(id)) {
+            base.set(id, [])
+            changed = true
           }
-          for (const key of [...next.keys()]) {
-            if (!idSet.has(key)) next.delete(key)
-          }
-          return next
-        })
+        }
+        if (changed) {
+          stableBranchLabelsRef.current = new Map(base)
+          setBranchLabelsByCommit(stableBranchLabelsRef.current)
+        }
       })
       .catch(() => {
-        if (!cancelled) setBranchLabelsByCommit(new Map())
+        if (cancelled) return
+        const base = stableBranchLabelsRef.current
+        let changed = false
+        for (const id of missingIds) {
+          if (!base.has(id)) {
+            base.set(id, [])
+            changed = true
+          }
+        }
+        if (changed) {
+          stableBranchLabelsRef.current = new Map(base)
+          setBranchLabelsByCommit(stableBranchLabelsRef.current)
+        }
       })
     return () => {
       cancelled = true
@@ -1423,15 +1487,21 @@ export function UnifiedCommitView({
   /**
    * 分支竖轨模式须「当前列表每一行都已写入标签结果」（含空数组），否则 frozen 列 +
    * 残缺行映射会让 buildBranchColumnRails 只在少数行上命中，出现「多条竖线挤在最底一行」的假图。
+   * 一旦在某仓库/范围就绪过，就保持竖轨模式（latch）；分页追加的新行短暂缺标签时只让这几行
+   * 不画，不整图退回 DAG，避免滚动到底时左侧整块闪变。
    */
   const graphBranchModeReady =
     filteredCommits.length > 0 &&
     branchLabelsCompleteForVisibleCommits &&
     branchNamesByCommitIdForGraph.size === filteredCommits.length
 
+  useEffect(() => {
+    if (graphBranchModeReady) setBranchRailModeLatched(true)
+  }, [graphBranchModeReady])
+
   /**
-   * 当前列表内出现过的分支名 → 列顺序（未做「竖线筛选」下的稳定重排）。
-   * 主序：竖线在列表中的「跨度」倒序；同跨度再按当前分支 / 本地 / 远程，最后按名字。
+   * 当前列表内出现过的分支名 → 列顺序（span 倒序 / 当前分支优先 / 名字）。
+   * 仅用于「首次出现某分支时决定它插到哪一列」，之后列序由下方 append-only 快照冻结。
    */
   const branchRailColumnsBase = useMemo(() => {
     const set = new Set<string>()
@@ -1491,12 +1561,30 @@ export function UnifiedCommitView({
     }
   }, [graphRailBranchFilter, branchRailColumnsBase, branchLabelsCompleteForVisibleCommits])
 
+  /**
+   * 列序只追加、不重排：新出现的分支名追加到末尾，已有列号在整个滚动/分页过程中保持不变。
+   * 跨度只影响竖线画多长，不再影响列号，于是追加更旧提交时竖轨不会横向平移、宽度也不跳。
+   */
+  useLayoutEffect(() => {
+    // 竖线筛选激活时 filteredCommits 只剩该分支，base 不代表全量列，跳过硬追加
+    if (graphRailBranchFilter) return
+    const key = `${repoPath ?? ''}|${currentBranch ?? ''}|${historyFocusBranch ?? ''}`
+    if (stableBranchOrderRef.current.key !== key) {
+      stableBranchOrderRef.current = { key, names: [] }
+    }
+    const known = stableBranchOrderRef.current.names
+    const knownSet = new Set(known)
+    const appended = branchRailColumnsBase.filter((n) => !knownSet.has(n))
+    if (appended.length === 0) return
+    const next = [...known, ...appended].slice(0, MAX_BRANCH_RAIL_COLS)
+    stableBranchOrderRef.current = { key, names: next }
+    setBranchRailOrder(next)
+  }, [branchRailColumnsBase, repoPath, currentBranch, historyFocusBranch, graphRailBranchFilter])
+
   const branchRailColumns = useMemo(() => {
     if (graphRailBranchFilter) {
       const frozen = branchRailOrderBeforeGraphFilterRef.current
-      if (!frozen.length) {
-        return branchRailColumnsBase
-      }
+      if (!frozen.length) return branchRailOrder
       const inView = new Set(branchRailColumnsBase)
       const ordered: string[] = []
       for (const n of frozen) {
@@ -1507,27 +1595,12 @@ export function UnifiedCommitView({
       }
       return ordered.slice(0, MAX_BRANCH_RAIL_COLS)
     }
-    if (
-      !branchLabelsCompleteForVisibleCommits &&
-      branchRailOrderBeforeGraphFilterRef.current.length > 0
-    ) {
-      const base = branchRailColumnsBase
-      const frozen = branchRailOrderBeforeGraphFilterRef.current
-      const inBase = new Set(base)
-      const ordered: string[] = []
-      for (const n of frozen) {
-        if (inBase.has(n)) ordered.push(n)
-      }
-      for (const n of base) {
-        if (!ordered.includes(n)) ordered.push(n)
-      }
-      return ordered.slice(0, MAX_BRANCH_RAIL_COLS)
-    }
+    if (branchRailOrder.length > 0) return branchRailOrder
     return branchRailColumnsBase
   }, [
     graphRailBranchFilter,
+    branchRailOrder,
     branchRailColumnsBase,
-    branchLabelsCompleteForVisibleCommits,
   ])
 
   useLayoutEffect(() => {
@@ -2846,14 +2919,14 @@ export function UnifiedCommitView({
                   branchColorKeyByCommitId={graphBranchColorByCommit}
                   branchRailColumns={
                     railFilterEnabled &&
-                    graphBranchModeReady &&
+                    (branchRailModeLatched || graphBranchModeReady) &&
                     branchRailColumns.length > 0
                       ? branchRailColumns
                       : undefined
                   }
                   branchNamesByCommitId={
                     railFilterEnabled &&
-                    graphBranchModeReady &&
+                    (branchRailModeLatched || graphBranchModeReady) &&
                     branchNamesByCommitIdForGraph.size > 0
                       ? branchNamesByCommitIdForGraph
                       : undefined
